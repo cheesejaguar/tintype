@@ -576,7 +576,11 @@ pub fn finalize_video(checkpoint: &Path, weights: &Path, scores: &Path, video_fp
 /// Freeze a checkpoint: copy it into place, write its spec, score the
 /// calibration data and fit the three profiles.
 #[allow(clippy::too_many_arguments)]
-pub fn finalize(checkpoint: &Path, weights: &Path, scores: &Path, photo_fpr: f64, strict_fpr: f64, sensitive_fpr: f64, video_fpr: f64, device: Device) -> Result<()> {
+/// `later` adds what came after the phase-3 weights: `later.0` are training
+/// manifests whose validation split joins the calibration data, `later.1`
+/// are evaluation manifests scored since (their real photos join it too).
+#[allow(clippy::too_many_arguments)]
+pub fn finalize(checkpoint: &Path, weights: &Path, scores: &Path, photo_fpr: f64, strict_fpr: f64, sensitive_fpr: f64, video_fpr: f64, later: (&[PathBuf], &[PathBuf]), device: Device) -> Result<()> {
     if let Some(p) = weights.parent() {
         std::fs::create_dir_all(p)?;
     }
@@ -587,11 +591,14 @@ pub fn finalize(checkpoint: &Path, weights: &Path, scores: &Path, photo_fpr: f64
     // Calibration data: the validation split of every training store, the
     // development shards, and the development-visible benchmarks.
     let (vi, vv) = (PathBuf::from("data/splits/val_images.tsv"), PathBuf::from("data/splits/val_videos.tsv"));
-    write_val_split(&crate::plans::TRAIN_IMAGE_MANIFESTS, false, &vi)?;
+    let later_train: Vec<String> = later.0.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let train_images: Vec<&str> = crate::plans::TRAIN_IMAGE_MANIFESTS.iter().copied().chain(later_train.iter().map(String::as_str)).collect();
+    write_val_split(&train_images, false, &vi)?;
     write_val_split(&crate::plans::TRAIN_VIDEO_MANIFESTS, true, &vv)?;
     let existing = |v: Vec<&str>| -> Vec<PathBuf> { v.into_iter().map(PathBuf::from).filter(|p| p.exists()).collect() };
     let mut images = vec![vi];
     images.extend(existing(crate::plans::EVAL_IMAGE_MANIFESTS.to_vec()));
+    images.extend(later.1.iter().filter(|p| p.exists()).cloned());
     let mut videos = vec![vv];
     videos.extend(existing(vec![
         "data/vstore/vdev/manifest.tsv",

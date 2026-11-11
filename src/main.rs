@@ -164,6 +164,12 @@ enum Cmd {
         /// False-positive target for video, averaged over real sources.
         #[arg(long, default_value_t = 0.01)]
         video_fpr: f64,
+        /// Training manifests added after phase 3: their validation split joins the calibration data.
+        #[arg(long)]
+        also_trained_on: Vec<PathBuf>,
+        /// Evaluation manifests scored since phase 3: their items join the calibration data.
+        #[arg(long)]
+        also_scored_on: Vec<PathBuf>,
         #[arg(long, default_value = "auto")]
         device: String,
     },
@@ -490,8 +496,8 @@ fn main() -> Result<()> {
             veracity::eval::evaluate(&suite, &weights, &video_weights, &tag, &scores, baselines.then_some(&b), reuse, parse_device(&device)?)
         }
         #[cfg(target_os = "macos")]
-        Cmd::Finalize { checkpoint, weights, scores, photo_fpr, strict_fpr, sensitive_fpr, video_fpr, device } => {
-            veracity::eval::finalize(&checkpoint, &weights, &scores, photo_fpr, strict_fpr, sensitive_fpr, video_fpr, parse_device(&device)?)
+        Cmd::Finalize { checkpoint, weights, scores, photo_fpr, strict_fpr, sensitive_fpr, video_fpr, also_trained_on, also_scored_on, device } => {
+            veracity::eval::finalize(&checkpoint, &weights, &scores, photo_fpr, strict_fpr, sensitive_fpr, video_fpr, (&also_trained_on, &also_scored_on), parse_device(&device)?)
         }
         #[cfg(target_os = "macos")]
         Cmd::FinalizeVideo { checkpoint, weights, scores, video_fpr, second_opinion, device } => {
