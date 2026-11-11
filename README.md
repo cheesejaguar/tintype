@@ -30,6 +30,10 @@ scored once. Each system is at its shipped threshold.
 | Veracity `--strict` | 0.996 | 0.815 | 292 / 39.0 |
 | Veracity `--sensitive` | 0.960 | 0.975 | 282 |
 | Veracity `--fast` | 0.995 | 0.761 | 455 / 52.6 |
+| **Photos, newest batch** (12,305 AI, 10,747 real) | | | images/s, GPU / CPU |
+| Veracity | 0.988 | 0.897 | 530–563 / 77–78 |
+| Veracity `--photo-second-opinion` | 0.972 | 0.935 | 281–288 / 39–41 |
+| Community Forensics | 0.945 | 0.789 | 82 / 26 (291–295 / 39–42 through this engine at 16 bits) |
 | **Video** (1,156 AI, 900 real) | | | seconds per clip |
 | Veracity | 0.997 | 0.941 | 0.09 |
 | Veracity `--second-opinion` | 0.997 | 0.960 | 0.26 |
@@ -45,7 +49,21 @@ What that table does not show:
   on those sets, level on four and ahead on five. Veracity's lead comes from
   current commercial generators in social-media photos, where Community
   Forensics finds 40% and Veracity 86%.
-- This is the third blind photo batch. After the first, the default
+- `--photo-second-opinion` is the answer to that, and a partial one. It
+  sends the photos the default profile does not flag with confidence – about
+  half of a balanced test set, nine real photos in ten – to Community
+  Forensics' own released network. On the newest batch (30 sets, fixed in
+  writing and fetched after the mode was built) precision and recall are both
+  at or above Community Forensics' on 26 sets, against 12 for the default
+  alone. The other four: one real photo flagged to none on Midjourney and on
+  WFIR, lower precision with higher recall on SAN, and lower recall on
+  face-swap deepfakes (0.480 against 0.573). The mode runs at the speed of
+  Community Forensics through this engine, not faster; it is 3.5× (GPU) and
+  1.6× (CPU) faster than Community Forensics as released. It flags 3.1% of
+  real photos where the default flags 1.2% and Community Forensics 5.2%.
+- The first photo table is the third blind photo batch; the newest batch is
+  the fourth, and its speeds were measured after the later speed work, which
+  is why they are higher. After the first, the default
   threshold was loosened (the stricter setting is now `--strict`); after the
   second, the photo weights were retrained with older generators added. Each
   change was fixed in writing before the next batch was fetched.
@@ -113,6 +131,19 @@ weights. The two models make different mistakes, so together they beat either
 alone, and because most clips never reach the second network the pair is
 still several times faster than WaveRep by itself. With a second opinion every
 frame of every clip is looked at.
+
+**And one for photos.** `--photo-second-opinion` does the same with the
+[Community Forensics](https://github.com/JeongsooP/Community-Forensics)
+384-pixel network (MIT): a photo the default profile is not sure about is
+also scored by it, and the two scores are combined. Community Forensics is
+the stronger of the two on images from older GANs, Veracity on current
+commercial generators; together they find more than either (recall 0.935
+against 0.897 and 0.789 on the newest blind batch) at a precision between
+the two. `veracity data baselines` fetches the weights:
+
+```bash
+veracity detect --photo-second-opinion baselines/commfor-384.safetensors *.jpg
+```
 
 **Small network, wide training set.** The network is a plain ViT-S/16 at
 224 px. It starts from the Community Forensics 224 px checkpoint (MIT) and is

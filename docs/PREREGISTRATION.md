@@ -230,6 +230,14 @@ and its band fixed, and before any of the confirm7 data had been downloaded.
   Community Forensics (through this engine, and as released in PyTorch), on
   the GPU and the CPU.
 
+**What happened when it was run** (added afterwards): the plan ran as
+written and no set was skipped. Two sets came out smaller than 400 per
+class: WFIR (200 left per class) and SDXL, whose real photos were all
+duplicates of real photos already used and were dropped, leaving it AI only.
+The scoring run stopped once when the disk filled, before any score had been
+read, and was restarted with the reference score files kept; see
+[BENCHMARK.md](BENCHMARK.md#blind-batch-7-the-photo-second-opinion).
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames

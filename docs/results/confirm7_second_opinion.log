@@ -1,0 +1,86 @@
+# Seventh blind photo batch: the photo second opinion against Community Forensics, set by set
+# precision / recall / real photos flagged, each system at its shipped threshold; '<' marks a set where the
+# second-opinion mode is below Community Forensics on precision (P) or recall (R)
+set                       AI  real | CF P / R / FP      | default P / R / FP | second P / R / FP
+aigibench-BLIP           400   400 | 0.939 / 1.000 /  26 | 0.990 / 1.000 /   4 | 0.971 / 1.000 /  12
+aigibench-DALLE-3        400   365 | 0.983 / 0.855 /   6 | 0.997 / 0.993 /   1 | 0.990 / 0.993 /   4
+aigibench-FLUX1-dev      400   366 | 0.945 / 0.735 /  17 | 0.992 / 0.990 /   3 | 0.973 / 0.985 /  11
+aigibench-GLIDE          397   388 | 0.947 / 0.995 /  22 | 0.995 / 0.957 /   2 | 0.968 / 0.995 /  13
+aigibench-IP-Adapter     400   373 | 0.957 / 0.885 /  16 | 0.988 / 0.833 /   4 | 0.971 / 0.932 /  11
+aigibench-Imagen3        400   374 | 0.895 / 0.385 /  18 | 0.989 / 0.922 /   4 | 0.971 / 0.912 /  11
+aigibench-Infinite-ID    400   381 | 0.964 / 0.927 /  14 | 0.995 / 1.000 /   2 | 0.988 / 1.000 /   5
+aigibench-InstantID      399   368 | 0.929 / 0.654 /  20 | 0.995 / 0.990 /   2 | 0.978 / 0.982 /   9
+aigibench-Midjourney     394   313 | 1.000 / 0.650 /   0 | 0.997 / 0.970 /   1 | 0.997 / 0.967 /   1  < P
+aigibench-PhotoMaker     399   373 | 0.950 / 0.712 /  15 | 0.996 / 0.692 /   1 | 0.978 / 0.774 /   7
+aigibench-ProGAN         400   399 | 0.920 / 1.000 /  35 | 0.942 / 0.980 /  24 | 0.928 / 1.000 /  31
+aigibench-R3GAN          400   365 | 0.950 / 1.000 /  21 | 0.997 / 0.958 /   1 | 0.971 / 1.000 /  12
+aigibench-SD3            400   383 | 0.946 / 0.795 /  18 | 0.993 / 1.000 /   3 | 0.973 / 0.998 /  11
+aigibench-SDXL           400     0 | 1.000 / 0.998 /   0 | 1.000 / 1.000 /   0 | 1.000 / 1.000 /   0
+aigibench-StyleGAN-XL    400   369 | 0.955 / 1.000 /  19 | 1.000 / 0.885 /   0 | 0.971 / 1.000 /  12
+aigibench-StyleGAN3      400   382 | 0.997 / 0.985 /   1 | 0.991 / 0.870 /   3 | 0.997 / 0.990 /   1
+aigibench-StyleSwim      400   369 | 0.957 / 1.000 /  18 | 0.994 / 0.843 /   2 | 0.978 / 1.000 /   9
+aigibench-WFIR           200   200 | 1.000 / 1.000 /   0 | 0.995 / 0.955 /   1 | 0.995 / 1.000 /   1  < P
+classic-biggan           300   300 | 0.974 / 1.000 /   8 | 0.980 / 0.997 /   6 | 0.980 / 1.000 /   6
+classic-crn              300   300 | 0.723 / 0.930 / 107 | 0.964 / 0.973 /  11 | 0.853 / 0.983 /  51
+classic-cyclegan         300   300 | 0.971 / 0.997 /   9 | 0.974 / 0.983 /   8 | 0.977 / 1.000 /   7
+classic-deepfake         300   300 | 0.989 / 0.573 /   2 | 0.977 / 0.143 /   1 | 0.993 / 0.480 /   1  < R
+classic-gaugan           300   300 | 0.993 / 1.000 /   2 | 1.000 / 0.983 /   0 | 1.000 / 1.000 /   0
+classic-imle             300   300 | 0.734 / 0.987 / 107 | 0.984 / 0.997 /   5 | 0.867 / 1.000 /  46
+classic-san              219   200 | 0.992 / 0.543 /   1 | 0.974 / 0.689 /   4 | 0.970 / 0.735 /   5  < P
+classic-seeingdark       180   180 | 0.831 / 0.572 /  21 | 1.000 / 0.817 /   0 | 0.975 / 0.856 /   4
+classic-stargan          300   300 | 1.000 / 0.993 /   0 | 1.000 / 0.983 /   0 | 1.000 / 0.993 /   0
+classic-stylegan         300   292 | 0.964 / 0.970 /  11 | 0.982 / 0.927 /   5 | 0.967 / 0.980 /  10
+classic-stylegan2        300   282 | 0.961 / 0.980 /  12 | 0.985 / 0.860 /   4 | 0.971 / 0.993 /   9
+sofake-ood              2217  1525 | 0.981 / 0.421 /  18 | 0.985 / 0.836 /  28 | 0.985 / 0.839 /  29
+pooled commfor          P=0.9451 R=0.7889 real flagged 564 found 9707
+pooled veracity         P=0.9884 R=0.8970 real flagged 130 found 11038
+pooled veracity-second  P=0.9722 R=0.9349 real flagged 329 found 11504
+photos 23052; probability changed by the second stage on 11067 (48.0%)
+veracity {'both': 12, 'rhi': 13, 'req': 1, 'rlo': 16, 'phi': 23, 'peq': 2, 'plo': 5} of 30
+veracity-second {'both': 26, 'rhi': 19, 'req': 10, 'rlo': 1, 'phi': 25, 'peq': 2, 'plo': 3} of 30
+
+# Timing: 2,096 photos, every eleventh of the batch, decode to verdict, two rounds (load averages in brackets)
+# 'auto' is the Apple GPU engine at 16 bits; 'as released' is the authors' PyTorch pipeline (mps = Metal, 32-bit)
+### veracity default auto (2.32 4.58 6.57)
+scored 2096 images (0 unreadable) in 3.7s: 563.4 img/s end-to-end, 671.9 img/s model-only, 1.68 views per image
+### veracity + second opinion auto (2.32 4.58 6.57)
+scored 2096 images (0 unreadable, 1007 given a second opinion) in 7.3s: 287.7 img/s end-to-end, 355.1 img/s model-only, 1.68 views per image
+### commfor through this engine auto (2.19 4.48 6.51)
+scored 2096 images (0 unreadable) in 7.1s: 294.8 img/s end-to-end, 367.1 img/s model-only, 1.00 views per image
+### commfor through this engine gpu-f32 (2.17 4.44 6.48)
+scored 2096 images (0 unreadable) in 18.7s: 112.2 img/s end-to-end, 121.7 img/s model-only, 1.00 views per image
+### commfor as released mps (3.60 4.64 6.51)
+scored 2096 images (0 unreadable) in 25.5s: 82.2 img/s end-to-end, 89.8 img/s model-only
+### veracity default cpu (2.85 4.37 6.35)
+scored 2096 images (0 unreadable) in 26.8s: 78.2 img/s end-to-end, 79.6 img/s model-only, 1.68 views per image
+### veracity + second opinion cpu (3.63 4.41 6.30)
+scored 2096 images (0 unreadable, 1007 given a second opinion) in 51.7s: 40.6 img/s end-to-end, 41.5 img/s model-only, 1.68 views per image
+### commfor through this engine cpu (7.15 5.21 6.48)
+scored 2096 images (0 unreadable) in 50.6s: 41.5 img/s end-to-end, 42.7 img/s model-only, 1.00 views per image
+### commfor as released cpu (7.48 5.56 6.53)
+scored 2096 images (0 unreadable) in 81.5s: 25.7 img/s end-to-end, 26.5 img/s model-only
+### veracity default auto (6.10 5.76 6.52)
+scored 2096 images (0 unreadable) in 4.0s: 529.8 img/s end-to-end, 648.8 img/s model-only, 1.68 views per image
+### veracity + second opinion auto (5.86 5.71 6.50)
+scored 2096 images (0 unreadable, 1007 given a second opinion) in 7.5s: 281.1 img/s end-to-end, 353.8 img/s model-only, 1.68 views per image
+### commfor through this engine auto (5.64 5.67 6.48)
+scored 2096 images (0 unreadable) in 7.2s: 290.7 img/s end-to-end, 367.8 img/s model-only, 1.00 views per image
+### commfor through this engine gpu-f32 (6.23 5.79 6.51)
+scored 2096 images (0 unreadable) in 18.8s: 111.7 img/s end-to-end, 121.1 img/s model-only, 1.00 views per image
+### commfor as released mps (4.88 5.51 6.40)
+scored 2096 images (0 unreadable) in 25.7s: 81.5 img/s end-to-end, 89.3 img/s model-only
+### veracity default cpu (4.47 5.37 6.32)
+scored 2096 images (0 unreadable) in 27.4s: 76.5 img/s end-to-end, 77.8 img/s model-only, 1.68 views per image
+### veracity + second opinion cpu (4.66 5.37 6.29)
+scored 2096 images (0 unreadable, 1007 given a second opinion) in 53.3s: 39.3 img/s end-to-end, 40.4 img/s model-only, 1.68 views per image
+### commfor through this engine cpu (6.44 5.76 6.38)
+scored 2096 images (0 unreadable) in 53.9s: 38.9 img/s end-to-end, 40.0 img/s model-only, 1.00 views per image
+### commfor as released cpu (8.62 6.59 6.65)
+scored 2096 images (0 unreadable) in 80.3s: 26.1 img/s end-to-end, 26.9 img/s model-only
+### done
+
+# The mode run for real on blind batch 6 (seen data for it), GPU then CPU: verdicts against the arithmetic on score files
+photos 16324, in band 7850, verdicts differing from the offline arithmetic 0, largest probability difference 0.0000
+sets at or above CF on both: default 5, second opinion 18 of 19; real flagged: CF 256, default 111, second 187
+photos 16324, in band 7841, verdicts differing from the offline arithmetic 0, largest probability difference 0.0000
+sets at or above CF on both: default 5, second opinion 18 of 19; real flagged: CF 251, default 111, second 187

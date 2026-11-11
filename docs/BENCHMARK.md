@@ -7,12 +7,14 @@ run by the same Rust binary.
 
 ## Summary
 
-Results on the four blind batches – data downloaded only after the
+Results on the five blind batches – data downloaded only after the
 configuration under test and the protocol had been written down, and scored
 once. Each system is at its shipped threshold.
 
 | | Veracity | Reference |
 |---|---|---|
+| **Photos**, batch 7: 12,305 AI and 10,747 real | default profile: precision 0.988, recall 0.897 | Community Forensics: 0.945, 0.789 |
+| | with the photo second opinion: 0.972, 0.935 | SwinV2 detector: 0.841, 0.587 |
 | **Photos**, batch 6: 8,628 AI and 7,696 real | default profile, current weights: precision 0.986, recall 0.904 | Community Forensics: 0.966, 0.818 |
 | | | SwinV2 detector: 0.834, 0.541 |
 | **Photos**, batch 5: 7,079 AI and 6,278 real | default profile, phase-3 weights: 0.980, 0.875 | Community Forensics: 0.963, 0.762 |
@@ -44,6 +46,22 @@ Where Veracity is not ahead, or the comparison needs a qualifier:
   So-Fake-OOD – current commercial generators in social-media photos – where
   Community Forensics finds 0.40 and Veracity 0.86. No single threshold puts
   Veracity ahead of Community Forensics on recall on every set.
+- **The photo second opinion closes most of that, not all.** On batch 7,
+  with `--photo-second-opinion`, precision and recall are both at or above
+  Community Forensics' on 26 of 30 sets (the default alone: 12). The four
+  others: Midjourney and WFIR, where one real photo is flagged to Community
+  Forensics' none; SAN, where precision is 0.970 against 0.992 with recall
+  0.735 against 0.543; and the FaceForensics++ deepfakes – face swaps – where
+  recall is 0.480 against 0.573.
+- **The photo second opinion is Community Forensics' own network, and it
+  costs its speed.** The mode sends about half the photos of a balanced test
+  set – nine real photos in ten – to that network. It is then as fast as
+  Community Forensics through this engine, no faster (288 against 295
+  images/s on the GPU, 41 against 42 on the CPU), and 3.5× and 1.6× faster
+  than Community Forensics as released. On a stream of mostly real photos it
+  is slower than Community Forensics through this engine. It also flags more
+  real photos than the default: 3.1% against 1.2% on batch 7 (Community
+  Forensics: 5.2%).
 - **The default threshold was moved after batch 3.** There the default was
   what is now `--strict`: more precise than the SwinV2 detector on every set
   but with lower recall on three of five (pooled 0.865 against 0.918). The
@@ -142,6 +160,98 @@ In every table: precision and recall at each system's shipped threshold, with
 that set's own real items, which removes the choice of threshold.
 
 ## Photos
+
+### Blind batch 7: the photo second opinion
+
+Batch 6 left the default profile ahead of Community Forensics pooled and
+behind it on recall on fourteen of nineteen sets. `--photo-second-opinion`
+is the attempt to close that set by set: a photo the default profile does
+not flag with confidence (calibrated first-stage logit between -7 and 0.5)
+is also scored by the Community Forensics 384-pixel network, and is flagged
+when half the first logit plus that network's logit is positive. The band
+was chosen on the 48 photo sets scored before this batch and written down,
+with what was expected, before the batch was fetched
+([PREREGISTRATION.md](PREREGISTRATION.md)). The batch: fresh files from every
+collection the earlier photo batches drew on, and five families of the
+classic test set that no batch had used (plan `confirm7`).
+
+| Batch 7, pooled (12,305 AI, 10,747 real) | Precision | Recall | Real photos flagged | AUROC |
+|---|---|---|---|---|
+| Community Forensics | 0.945 | 0.789 | 564 (5.2%) | 0.958 |
+| SwinV2 detector | 0.841 | 0.587 | 1,366 (12.7%) | 0.794 |
+| **Veracity**, default | **0.988** | **0.897** | 130 (1.2%) | 0.987 |
+| **Veracity + second opinion** | **0.972** | **0.935** | 329 (3.1%) | 0.987 |
+
+Set by set, as precision / recall (real photos flagged); bold where both are
+at or above Community Forensics':
+
+| Set | AI / real | Community Forensics | Veracity | Veracity + second opinion |
+|---|---|---|---|---|
+| So-Fake-OOD | 2217 / 1525 | 0.981 / 0.421 (18) | **0.985 / 0.836 (28)** | **0.985 / 0.839 (29)** |
+| Midjourney | 394 / 313 | 1.000 / 0.650 (0) | 0.997 / 0.970 (1) | 0.997 / 0.967 (1) |
+| FLUX.1-dev | 400 / 366 | 0.945 / 0.735 (17) | **0.992 / 0.990 (3)** | **0.973 / 0.985 (11)** |
+| DALL-E 3 | 400 / 365 | 0.983 / 0.855 (6) | **0.997 / 0.993 (1)** | **0.990 / 0.993 (4)** |
+| Imagen 3 | 400 / 374 | 0.895 / 0.385 (18) | **0.989 / 0.922 (4)** | **0.971 / 0.912 (11)** |
+| SD3 | 400 / 383 | 0.946 / 0.795 (18) | **0.993 / 1.000 (3)** | **0.973 / 0.998 (11)** |
+| SDXL | 400 / 0 | – / 0.998 | **– / 1.000** | **– / 1.000** |
+| GLIDE | 397 / 388 | 0.947 / 0.995 (22) | 0.995 / 0.957 (2) | **0.968 / 0.995 (13)** |
+| BLIP | 400 / 400 | 0.939 / 1.000 (26) | **0.990 / 1.000 (4)** | **0.971 / 1.000 (12)** |
+| IP-Adapter | 400 / 373 | 0.957 / 0.885 (16) | 0.988 / 0.833 (4) | **0.971 / 0.932 (11)** |
+| InstantID | 399 / 368 | 0.929 / 0.654 (20) | **0.995 / 0.990 (2)** | **0.978 / 0.982 (9)** |
+| Infinite-ID | 400 / 381 | 0.964 / 0.927 (14) | **0.995 / 1.000 (2)** | **0.988 / 1.000 (5)** |
+| PhotoMaker | 399 / 373 | 0.950 / 0.712 (15) | 0.996 / 0.692 (1) | **0.978 / 0.774 (7)** |
+| ProGAN | 400 / 399 | 0.920 / 1.000 (35) | 0.942 / 0.980 (24) | **0.928 / 1.000 (31)** |
+| R3GAN | 400 / 365 | 0.950 / 1.000 (21) | 0.997 / 0.958 (1) | **0.971 / 1.000 (12)** |
+| StyleGAN3 | 400 / 382 | 0.997 / 0.985 (1) | 0.991 / 0.870 (3) | **0.997 / 0.990 (1)** |
+| StyleGAN-XL | 400 / 369 | 0.955 / 1.000 (19) | 1.000 / 0.885 (0) | **0.971 / 1.000 (12)** |
+| StyleSwim | 400 / 369 | 0.957 / 1.000 (18) | 0.994 / 0.843 (2) | **0.978 / 1.000 (9)** |
+| WFIR | 200 / 200 | 1.000 / 1.000 (0) | 0.995 / 0.955 (1) | 0.995 / 1.000 (1) |
+| StyleGAN (classic) | 300 / 292 | 0.964 / 0.970 (11) | 0.982 / 0.927 (5) | **0.967 / 0.980 (10)** |
+| StyleGAN2 (classic) | 300 / 282 | 0.961 / 0.980 (12) | 0.985 / 0.860 (4) | **0.971 / 0.993 (9)** |
+| BigGAN | 300 / 300 | 0.974 / 1.000 (8) | 0.980 / 0.997 (6) | **0.980 / 1.000 (6)** |
+| CycleGAN | 300 / 300 | 0.971 / 0.997 (9) | 0.974 / 0.983 (8) | **0.977 / 1.000 (7)** |
+| GauGAN | 300 / 300 | 0.993 / 1.000 (2) | 1.000 / 0.983 (0) | **1.000 / 1.000 (0)** |
+| StarGAN | 300 / 300 | 1.000 / 0.993 (0) | 1.000 / 0.983 (0) | **1.000 / 0.993 (0)** |
+| CRN | 300 / 300 | 0.723 / 0.930 (107) | **0.964 / 0.973 (11)** | **0.853 / 0.983 (51)** |
+| IMLE | 300 / 300 | 0.734 / 0.987 (107) | **0.984 / 0.997 (5)** | **0.867 / 1.000 (46)** |
+| SAN | 219 / 200 | 0.992 / 0.543 (1) | 0.974 / 0.689 (4) | 0.970 / 0.735 (5) |
+| SITD | 180 / 180 | 0.831 / 0.572 (21) | **1.000 / 0.817 (0)** | **0.975 / 0.856 (4)** |
+| FaceForensics++ deepfakes | 300 / 300 | 0.989 / 0.573 (2) | 0.977 / 0.143 (1) | 0.993 / 0.480 (1) |
+
+- With the second opinion, recall is higher than Community Forensics' on 19
+  sets, equal on 10 and lower on one; precision is higher on 25, equal on two
+  and lower on three. Both are at or above on 26 of the 30 sets – 25 of the
+  29 that have real photos – against 12 (11) for the default alone, whose
+  recall is lower on 16 sets.
+- The four exceptions are the ones listed in the summary. On the deepfake
+  set the second opinion recovers most of what the default misses (0.143 to
+  0.480) and still ends below Community Forensics.
+- The second stage looked at 48.0% of the photos. It flagged 749 photos the
+  default had passed (525 AI, 224 real) and cleared 84 the default had
+  flagged (59 AI, 25 real): 466 more detections and 199 more false alarms.
+- SDXL has no real photos (all 400 drawn were identical to real photos used
+  elsewhere and were dropped) and WFIR has 200 per class, all that earlier
+  batches had left. The prediction written beforehand was "more sets than the
+  default manages, not all of them", from 46 of 48 in-sample and 43 of 48 held
+  out.
+- The scoring run stopped once, after 25 sets, when the disk filled. No
+  score had been read. It was restarted keeping the reference detectors'
+  score files (each checked against its manifest) and recomputing Veracity's,
+  which came out byte for byte the same.
+
+Speed on this batch, decode to verdict, on 2,096 of its photos (every
+eleventh), two rounds
+([results/confirm7_second_opinion.log](results/confirm7_second_opinion.log)):
+
+| Batch 7 sample | GPU, images/s | CPU, images/s |
+|---|---|---|
+| **Veracity**, default (1.7 views per image) | **530–563** | **77–78** |
+| **Veracity + second opinion** (48% of photos to the second stage) | **281–288** | **39–41** |
+| Community Forensics, as released (PyTorch, 32-bit) | 82 | 26 |
+| Community Forensics, Rust port, 32-bit on the GPU | 112 | – |
+| Community Forensics, Rust port, 16-bit on the GPU (not a released configuration) | 291–295 | 39–42 |
+
+Raw tables: [results/confirm7.md](results/confirm7.md).
 
 ### Blind batch 6: the retrained photo weights
 
@@ -842,7 +952,39 @@ ship it (PyTorch 2.15) and its network through this engine
 | **Veracity**, 130-clip sample (127 read) | **1.000 / 0.948** | 0 of 50 | 1.6–2.0 |
 | WaveRep as released, run on Linux, same 127 | 0.986 / 0.909 | 1 of 50 | 26.4 |
 
-The three photo detectors were run one after another on each set, and
+Those tables predate the five speed changes. The build with them was run in
+the same virtual machine afterwards, alternating with the build before them
+on each set ([results/linux_after_speed.log](results/linux_after_speed.log)):
+
+| On Linux, after the speed changes | Before | After |
+|---|---|---|
+| Photos, batch 6, photos/s | 24.9 | **35.2** (faster on 19 of 19 sets, 1.3–1.5×) |
+| Photos, precision / recall | 0.986 / 0.904 | 0.986 / 0.905; no verdict differs from the same build's macOS CPU engine |
+| Video, seconds per clip | 1.41 | **0.43**; two frames were enough for 1,176 of the 1,756 clips read |
+| Video, precision / recall | 0.997 / 0.942 | 0.997 / 0.942; no verdict differs from the build before or from the macOS CPU engine |
+
+The photo second opinion was run there too, on batch 6, which is seen data
+for that mode: Community Forensics as released, the default, the second
+opinion and the Community Forensics port, one after another on each set.
+
+| On Linux, batch 6 (in-sample for the second opinion) | Precision / recall | Photos/s |
+|---|---|---|
+| Veracity, default | 0.986 / 0.905 | 31.1 |
+| Veracity + second opinion | 0.978 / 0.947 | 15.2 |
+| Community Forensics, as released | 0.965 / 0.819 | 11.7 |
+| Community Forensics network, Rust port | 0.966 / 0.818 | 15.3 |
+
+With the second opinion, precision and recall were both at or above
+Community Forensics' on 18 of the 19 sets (StyleGAN3: recall 0.980 against
+0.985), no verdict differed from the macOS CPU engine, and the mode was 1.3×
+faster than Community Forensics as released pooled – faster on 17 sets and
+within timing noise of it on PhotoMaker and StyleGAN-XL, where two thirds of
+the photos went to the second stage – and level with the port. On the CPU
+the mode costs the default plus the 384-pixel network on the photos sent to
+it; that network's matrix products already run at the core's peak rate.
+
+The rest of this section describes the earlier tables. The three photo
+detectors were run one after another on each set, and
 Veracity was the fastest on all 19: 1.3–2.8× the released pipeline and
 1.2–2.6× the port. Precision and recall are what they are on macOS,
 including the per-set picture: the default profile is behind Community
@@ -902,6 +1044,8 @@ veracity data baselines
 veracity data confirm3 && veracity evaluate confirm3 --baselines
 veracity data confirm4 && veracity evaluate confirm4 --baselines
 veracity data confirm5 && veracity evaluate confirm5 --baselines
+veracity data confirm6 && veracity evaluate confirm6 --baselines
+veracity data confirm7 && veracity evaluate confirm7 --baselines
 veracity data benchmarks && veracity evaluate benchmarks --baselines
 ```
 

@@ -1,0 +1,155 @@
+# Linux (aarch64 Ubuntu 26.04 VM on the same Mac, 8 vCPUs, CPU engine) after the speed changes.
+# Run by the companion session; raw logs, with the VM's home directory written as ~.
+
+## Run 13a: scratch merge of the speed work and the Linux work (same code as commit 63c20e9) against the Linux branch before it (f520640); build, tests, blind photo batch 6
+77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881  ~/veracity-combined/models/veracity-video.safetensors
+9dcb21dc9800591ffd758a3c7ca6aa65fa5a9f09a223fecc952f34294ae9aeba  ~/veracity-combined/models/veracity.safetensors
+77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881  ~/veracity/models/veracity-video.safetensors
+9dcb21dc9800591ffd758a3c7ca6aa65fa5a9f09a223fecc952f34294ae9aeba  ~/veracity/models/veracity.safetensors
+### build
+   Compiling candle-core v0.11.1
+   Compiling veracity v0.1.0 (~/veracity-combined)
+    Finished `release` profile [optimized] target(s) in 29.82s
+build seconds 30
+### tests
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+### photos: set, binary, files, seconds (whole process), rows
+fresh7-aigibench-BLIP	combined	800	14.749818302	800
+fresh7-aigibench-BLIP	f520640	800	20.143376564	800
+fresh7-aigibench-GLIDE	combined	784	17.983492288	784
+fresh7-aigibench-GLIDE	f520640	784	24.965433623	784
+fresh7-aigibench-IP-Adapter	combined	768	25.737666546	768
+fresh7-aigibench-IP-Adapter	f520640	768	38.757378409	768
+fresh7-aigibench-Infinite-ID	combined	772	20.017418360	772
+fresh7-aigibench-Infinite-ID	f520640	772	28.711112781	772
+fresh7-aigibench-InstantID	combined	768	20.918727656	768
+fresh7-aigibench-InstantID	f520640	768	28.844971425	768
+fresh7-aigibench-PhotoMaker	combined	774	29.985872914	774
+fresh7-aigibench-PhotoMaker	f520640	774	40.850101036	774
+fresh7-aigibench-ProGAN	combined	800	19.364470116	800
+fresh7-aigibench-ProGAN	f520640	800	26.562082377	800
+fresh7-aigibench-R3GAN	combined	766	17.941830539	766
+fresh7-aigibench-R3GAN	f520640	766	25.012478952	766
+fresh7-aigibench-StyleGAN-XL	combined	775	23.310383385	775
+fresh7-aigibench-StyleGAN-XL	f520640	775	33.776594114	775
+fresh7-aigibench-StyleGAN3	combined	773	25.748536834	773
+fresh7-aigibench-StyleGAN3	f520640	773	35.361487055	773
+fresh7-aigibench-StyleSwim	combined	772	24.344151425	772
+fresh7-aigibench-StyleSwim	f520640	772	35.422791650	772
+fresh7-aigibench-WFIR	combined	798	24.535479791	798
+fresh7-aigibench-WFIR	f520640	798	34.230615035	798
+fresh7-classic-biggan	combined	598	12.202681406	598
+fresh7-classic-biggan	f520640	598	17.154148993	598
+fresh7-classic-cyclegan	combined	596	14.438742694	596
+fresh7-classic-cyclegan	f520640	596	20.905930968	596
+fresh7-classic-gaugan	combined	598	12.017172640	598
+fresh7-classic-gaugan	f520640	598	15.812475995	598
+fresh7-classic-stargan	combined	598	10.888262431	598
+fresh7-classic-stargan	f520640	598	14.935938168	598
+fresh7-classic-stylegan	combined	598	16.160406707	598
+fresh7-classic-stylegan	f520640	598	22.759321482	598
+fresh7-classic-stylegan2	combined	585	17.875810580	585
+fresh7-classic-stylegan2	f520640	585	26.067550124	585
+fresh7-sofake-ood	combined	3401	115.543664383	3401
+fresh7-sofake-ood	f520640	3401	164.028793083	3401
+RUN13_DONE
+
+## Run 13b: the same two builds on the blind video batch
+### video: set, binary, files, seconds (whole process), rows
+fresh5-comgenvid	combined	600	233.170920981	600
+fresh5-comgenvid	f520640	600	513.550073325	600
+fresh5-genvideo-val	combined	660	289.100584432	660
+fresh5-genvideo-val	f520640	660	1066.326259582	660
+fresh5-video	combined	796	361.886138552	796
+fresh5-video	f520640	796	1314.898872465	796
+RUN13_DONE
+
+## Run 14: commit 6cde2b7 on blind photo batch 6 (seen data for the second-opinion mode): Community Forensics as released, default, second opinion, Community Forensics port
+### build
+   Compiling veracity v0.1.0 (~/veracity-so)
+    Finished `release` profile [optimized] target(s) in 49.18s
+build seconds 49
+### tests
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+### photos: set, detector, files, seconds (whole process), rows
+fresh7-aigibench-BLIP	commfor-released	800	92.407643148	800
+fresh7-aigibench-BLIP	default	800	22.707338739	800
+fresh7-aigibench-BLIP	second-opinion	800	54.017643652	800
+fresh7-aigibench-BLIP	commfor-port	800	70.887940865	800
+fresh7-aigibench-GLIDE	commfor-released	784	88.905936993	784
+fresh7-aigibench-GLIDE	default	784	23.911350178	784
+fresh7-aigibench-GLIDE	second-opinion	784	65.937928914	784
+fresh7-aigibench-GLIDE	commfor-port	784	60.275273757	784
+fresh7-aigibench-IP-Adapter	commfor-released	768	83.179314283	768
+fresh7-aigibench-IP-Adapter	default	768	41.901415629	768
+fresh7-aigibench-IP-Adapter	second-opinion	768	65.458584579	768
+fresh7-aigibench-IP-Adapter	commfor-port	768	58.861772216	768
+fresh7-aigibench-Infinite-ID	commfor-released	772	91.704141115	772
+fresh7-aigibench-Infinite-ID	default	772	26.415345226	772
+fresh7-aigibench-Infinite-ID	second-opinion	772	55.836739095	772
+fresh7-aigibench-Infinite-ID	commfor-port	772	71.075716154	772
+fresh7-aigibench-InstantID	commfor-released	768	93.933394094	768
+fresh7-aigibench-InstantID	default	768	27.796647531	768
+fresh7-aigibench-InstantID	second-opinion	768	51.510470538	768
+fresh7-aigibench-InstantID	commfor-port	768	46.035558925	768
+fresh7-aigibench-PhotoMaker	commfor-released	774	61.928447033	774
+fresh7-aigibench-PhotoMaker	default	774	31.271539954	774
+fresh7-aigibench-PhotoMaker	second-opinion	774	62.542065465	774
+fresh7-aigibench-PhotoMaker	commfor-port	774	54.100399575	774
+fresh7-aigibench-ProGAN	commfor-released	800	53.901017953	800
+fresh7-aigibench-ProGAN	default	800	18.995325065	800
+fresh7-aigibench-ProGAN	second-opinion	800	39.987876004	800
+fresh7-aigibench-ProGAN	commfor-port	800	47.851733569	800
+fresh7-aigibench-R3GAN	commfor-released	766	51.531415220	766
+fresh7-aigibench-R3GAN	default	766	20.601636738	766
+fresh7-aigibench-R3GAN	second-opinion	766	46.811646237	766
+fresh7-aigibench-R3GAN	commfor-port	766	53.613488440	766
+fresh7-aigibench-StyleGAN-XL	commfor-released	775	53.852998869	775
+fresh7-aigibench-StyleGAN-XL	default	775	23.219924030	775
+fresh7-aigibench-StyleGAN-XL	second-opinion	775	56.407971760	775
+fresh7-aigibench-StyleGAN-XL	commfor-port	775	45.167258808	775
+fresh7-aigibench-StyleGAN3	commfor-released	773	60.855248046	773
+fresh7-aigibench-StyleGAN3	default	773	28.149101114	773
+fresh7-aigibench-StyleGAN3	second-opinion	773	48.298776731	773
+fresh7-aigibench-StyleGAN3	commfor-port	773	44.196698555	773
+fresh7-aigibench-StyleSwim	commfor-released	772	61.786211241	772
+fresh7-aigibench-StyleSwim	default	772	25.929096336	772
+fresh7-aigibench-StyleSwim	second-opinion	772	47.416209313	772
+fresh7-aigibench-StyleSwim	commfor-port	772	52.951333089	772
+fresh7-aigibench-WFIR	commfor-released	798	60.343838471	798
+fresh7-aigibench-WFIR	default	798	25.059664969	798
+fresh7-aigibench-WFIR	second-opinion	798	49.452130905	798
+fresh7-aigibench-WFIR	commfor-port	798	50.520814678	798
+fresh7-classic-biggan	commfor-released	598	51.116139389	598
+fresh7-classic-biggan	default	598	12.615648975	598
+fresh7-classic-biggan	second-opinion	598	29.198373451	598
+fresh7-classic-biggan	commfor-port	598	31.904197496	598
+fresh7-classic-cyclegan	commfor-released	596	51.338250388	596
+fresh7-classic-cyclegan	default	596	14.968154760	596
+fresh7-classic-cyclegan	second-opinion	596	35.848464816	596
+fresh7-classic-cyclegan	commfor-port	596	40.597750606	596
+fresh7-classic-gaugan	commfor-released	598	45.048911160	598
+fresh7-classic-gaugan	default	598	15.489001997	598
+fresh7-classic-gaugan	second-opinion	598	32.468691139	598
+fresh7-classic-gaugan	commfor-port	598	39.540581229	598
+fresh7-classic-stargan	commfor-released	598	47.638850851	598
+fresh7-classic-stargan	default	598	12.160959086	598
+fresh7-classic-stargan	second-opinion	598	31.822830541	598
+fresh7-classic-stargan	commfor-port	598	36.416857827	598
+fresh7-classic-stylegan	commfor-released	598	50.638827837	598
+fresh7-classic-stylegan	default	598	17.005293464	598
+fresh7-classic-stylegan	second-opinion	598	39.491754180	598
+fresh7-classic-stylegan	commfor-port	598	37.066158135	598
+fresh7-classic-stylegan2	commfor-released	585	48.018577502	585
+fresh7-classic-stylegan2	default	585	20.827051601	585
+fresh7-classic-stylegan2	second-opinion	585	36.065538383	585
+fresh7-classic-stylegan2	commfor-port	585	31.801342002	585
+fresh7-sofake-ood	commfor-released	3401	245.033134720	3401
+fresh7-sofake-ood	default	3401	116.516198746	3401
+fresh7-sofake-ood	second-opinion	3401	223.881307858	3401
+fresh7-sofake-ood	commfor-port	3401	194.345113335	3401
+RUN14_DONE
