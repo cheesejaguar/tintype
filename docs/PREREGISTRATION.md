@@ -124,9 +124,9 @@ frozen and before any of the confirm6 data had been downloaded.
   10 more real shards of Community Forensics (Small), Tiny-GenImage, StyleGAN2
   and StyleGAN3 faces, two IP-Adapter FaceID sets and CelebA-HQ faces.
   Training files identical to any evaluation file were removed first (916).
-- **Adoption**: the phase-6 weights replace the phase-3 photo weights, by the
-  rule set beforehand: pooled recall on batch 5 must rise and pooled precision
-  and recall on batch 3 must not fall by more than 0.01. In-sample they give
+- **Adoption**: the phase-6 weights replace the phase-3 photo weights. The
+  test was that pooled recall on batch 5 rises and pooled precision and
+  recall on batch 3 do not fall by more than 0.01. In-sample they give
   0.992 / 0.892 on batch 5 (phase 3: 0.980 / 0.875) and 0.994 / 0.932 on
   batch 3 (0.988 / 0.932). Video keeps its own checkpoint, unchanged.
 - **Calibration data**: validation split of every photo training store,
