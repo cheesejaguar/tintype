@@ -101,6 +101,9 @@ enum Cmd {
         /// WaveRep weights: give uncertain clips a second opinion (see `detect --second-opinion`).
         #[arg(long)]
         second_opinion: Option<PathBuf>,
+        /// Look at every frame of every clip (no early exit).
+        #[arg(long)]
+        all_frames: bool,
         #[arg(long, default_value_t = 64)]
         batch: usize,
         #[arg(long, default_value = "auto")]
@@ -211,6 +214,25 @@ enum Cmd {
         /// Smallest real source that counts for the strictest / balanced rules.
         #[arg(long, default_value_t = 100)]
         min_source: usize,
+    },
+    /// Time the parts of the pipeline separately: decoding, cropping, and the
+    /// network alone at several batch sizes.
+    Profile {
+        #[arg(long)]
+        weights: PathBuf,
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Number of images to decode.
+        #[arg(long, default_value_t = 1000)]
+        n: usize,
+        #[arg(long, default_value = "auto")]
+        device: String,
+        /// Batch sizes to time the network at.
+        #[arg(long, value_delimiter = ',', default_value = "16,32,64,128")]
+        batches: Vec<usize>,
+        /// Skip the decoding and cropping measurements.
+        #[arg(long)]
+        model_only: bool,
     },
     /// Single-item latency: one image at a time, decode to verdict.
     Latency {
@@ -422,10 +444,16 @@ fn main() -> Result<()> {
             }
             if !vids.is_empty() {
                 let video_weights = video_weights.unwrap_or_else(|| veracity::detector::video_weights_for(&weights));
-                let mut det = Detector::load(&video_weights, None, 64, device)?;
+                // A second opinion is asked for on the logit of all frames, so it turns
+                // early exit off; so does `--all-views`.
+                let exit = ModelSpec::load_for(&video_weights).ok().and_then(|s| s.video).and_then(|v| v.early_exit).filter(|_| second_opinion.is_none() && !all_views);
+                let mut det = Detector::load(&video_weights, None, if exit.is_some() { 96 } else { 64 }, device)?;
                 let profile_frames = det.use_video_profile();
                 let sampling = veracity::video::Sampling { frames: frames.unwrap_or(profile_frames), ..Default::default() };
-                let (res, _) = det.score_videos(&vids, sampling, threads);
+                let (res, _) = match &exit {
+                    Some(e) => det.score_videos_adaptive(&vids, sampling, threads, e),
+                    None => det.score_videos(&vids, sampling, threads),
+                };
                 // Clip logit (mean over frames of the mean over views) and frame count.
                 let clips: Vec<Option<(f32, usize)>> = res
                     .iter()
@@ -469,8 +497,8 @@ fn main() -> Result<()> {
             veracity::eval::score_images(&weights, &system(&reference, fast, sensitive, strict)?, &manifest, &out, parse_device(&device)?, batch, views.as_deref(), all_views).map(|_| ())
         }
         #[cfg(target_os = "macos")]
-        Cmd::ScoreVideo { weights, reference, manifest, out, frames, views, second_opinion, batch, device } => {
-            veracity::eval::score_videos(&weights, &system(&reference, false, false, false)?, &manifest, &out, parse_device(&device)?, batch, frames, views.as_deref(), second_opinion.as_deref()).map(|_| ())
+        Cmd::ScoreVideo { weights, reference, manifest, out, frames, views, second_opinion, all_frames, batch, device } => {
+            veracity::eval::score_videos(&weights, &system(&reference, false, false, false)?, &manifest, &out, parse_device(&device)?, batch, frames, views.as_deref(), second_opinion.as_deref(), all_frames).map(|_| ())
         }
         Cmd::Report { systems, per_generator, markdown, pooled, at_rate_of } => {
             let mut loaded = Vec::new();
@@ -549,7 +577,7 @@ fn main() -> Result<()> {
             let stepwise = exit.is_some() && matches!(device, Device::Cpu);
             let det = Detector::load(&weights, Some(spec), if stepwise { 2 } else { nv }, device)?;
             let pre = det.preprocessor();
-            let mut buf = vec![0f32; nv * 3 * det.spec.img * det.spec.img];
+            let mut buf = vec![0u8; nv * 3 * det.spec.img * det.spec.img];
             let mut ms = Vec::new();
             for (k, it) in items.iter().take(n + 5).enumerate() {
                 let t = std::time::Instant::now();
@@ -567,6 +595,44 @@ fn main() -> Result<()> {
             ms.sort_by(|a, b| a.total_cmp(b));
             let q = |f: f64| ms[((ms.len() - 1) as f64 * f) as usize];
             println!("single-image latency over {} images: median {:.1} ms, p90 {:.1} ms, mean {:.1} ms", ms.len(), q(0.5), q(0.9), ms.iter().sum::<f64>() / ms.len() as f64);
+            Ok(())
+        }
+        #[cfg(target_os = "macos")]
+        Cmd::Profile { weights, manifest, n, device, batches, model_only } => {
+            use rayon::prelude::*;
+            use std::time::Instant;
+            let spec = ModelSpec::load_for(&weights)?;
+            let device = parse_device(&device)?;
+            if !model_only {
+                let items = ingest::read_manifest(&manifest)?;
+                let paths: Vec<PathBuf> = items.iter().take(n).map(|i| i.path.clone()).collect();
+                let t = Instant::now();
+                let imgs: Vec<veracity::image_io::Rgb> = paths.par_iter().filter_map(|p| veracity::image_io::load(p).ok()).collect();
+                let s = t.elapsed().as_secs_f64();
+                let mp: f64 = imgs.iter().map(|i| i.w as f64 * i.h as f64 / 1e6).sum();
+                println!("decode: {} images, {:.0} megapixels in {:.2}s: {:.0} img/s, {:.0} MP/s", imgs.len(), mp, s, imgs.len() as f64 / s, mp / s);
+                let pre = Detector::load(&weights, Some(spec.clone()), 1, Device::Cpu)?.preprocessor();
+                let t = Instant::now();
+                let k: usize = imgs.par_iter().map(|im| pre.crops(im).len()).sum();
+                let s = t.elapsed().as_secs_f64();
+                println!("crops: {} views of {} images in {:.2}s: {:.0} img/s", k, imgs.len(), s, imgs.len() as f64 / s);
+            }
+            let vl = 3 * spec.img * spec.img;
+            for &b in &batches {
+                let det = Detector::load(&weights, Some(spec.clone()), b, device)?;
+                let mut rng = veracity::rng::Rng::new(7);
+                let x: Vec<u8> = (0..b * vl).map(|_| rng.below(256) as u8).collect();
+                for _ in 0..3 {
+                    std::hint::black_box(det.logits(&x));
+                }
+                let (t, mut runs) = (Instant::now(), 0usize);
+                while t.elapsed().as_secs_f64() < 3.0 {
+                    std::hint::black_box(det.logits(&x));
+                    runs += 1;
+                }
+                let s = t.elapsed().as_secs_f64();
+                println!("network batch {b}: {:.1} ms per batch, {:.0} views/s", s * 1e3 / runs as f64, (runs * b) as f64 / s);
+            }
             Ok(())
         }
         #[cfg(target_os = "macos")]
@@ -591,7 +657,7 @@ fn main() -> Result<()> {
             })
         }
         #[cfg(not(target_os = "macos"))]
-        Cmd::Score { .. } | Cmd::ScoreVideo { .. } | Cmd::Evaluate { .. } | Cmd::Finalize { .. } | Cmd::FinalizeVideo { .. } | Cmd::Calibrate { .. } | Cmd::Latency { .. } | Cmd::Train { .. } => {
+        Cmd::Score { .. } | Cmd::ScoreVideo { .. } | Cmd::Evaluate { .. } | Cmd::Finalize { .. } | Cmd::FinalizeVideo { .. } | Cmd::Calibrate { .. } | Cmd::Latency { .. } | Cmd::Profile { .. } | Cmd::Train { .. } => {
             anyhow::bail!("this command uses the Apple GPU engine and needs macOS on Apple Silicon; `detect --device cpu` works everywhere")
         }
         Cmd::Data { plan, dry_run, connections } => {

@@ -69,6 +69,18 @@ pub fn sample_frames(path: &Path, s: Sampling) -> Result<Vec<Rgb>> {
     }
 }
 
+/// Frames `from..to` of the ones [`sample_frames`] returns for `s` (spread
+/// sampling only), without decoding past the last one wanted.
+pub fn sample_frames_range(path: &Path, s: Sampling, from: usize, to: usize) -> Result<Vec<Rgb>> {
+    #[cfg(target_os = "macos")]
+    return decode(|| crate::avf::frames_uniform_range(path, s.frames, s.max_seconds, from, to));
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (s, from, to);
+        unsupported(path)
+    }
+}
+
 /// Combine per-frame logits into one clip logit. The mean is the
 /// log-likelihood-ratio average, the same rule the strongest frame-level
 /// video detectors use.

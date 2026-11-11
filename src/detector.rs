@@ -5,7 +5,7 @@ use crate::metrics::sigmoid;
 #[cfg(target_os = "macos")]
 use crate::mps::{Graph, Precision, T};
 #[cfg(target_os = "macos")]
-use crate::mps_vit::{build_head, build_vit, Frozen};
+use crate::mps_vit::{build_head, build_vit_cls, Frozen};
 use crate::vit::VitConfig;
 use crate::weights::Weights;
 use anyhow::{Context, Result};
@@ -89,17 +89,30 @@ pub struct EarlyExit {
 impl EarlyExit {
     /// The schedule fitted on the development sets: most textured native crop
     /// first, then the whole image, then the remaining crops, with a check
-    /// after every view.
+    /// after every view. The margins are the tightest that left pooled
+    /// precision and recall on those sets where they were (within 0.001).
     pub fn standard() -> Self {
         Self {
             order: vec![2, 0, 1, 3, 4, 5],
             stages: vec![
-                ExitStage { views: 1, below: 7.0, above: 9.0 },
-                ExitStage { views: 2, below: 5.0, above: 5.0 },
-                ExitStage { views: 3, below: 3.5, above: 3.5 },
-                ExitStage { views: 4, below: 2.5, above: 2.5 },
-                ExitStage { views: 5, below: 2.0, above: 2.0 },
+                ExitStage { views: 1, below: 6.0, above: 6.0 },
+                ExitStage { views: 2, below: 3.0, above: 3.0 },
+                ExitStage { views: 3, below: 2.0, above: 2.0 },
+                ExitStage { views: 4, below: 1.5, above: 1.5 },
+                ExitStage { views: 5, below: 1.0, above: 1.0 },
             ],
+        }
+    }
+
+    /// The schedule for clips, counted in frames: the first and last frame
+    /// of the clip's first half, then two more from it, then the rest of it,
+    /// then the second half. On the development clips it changed no verdict.
+    /// Keeping to the first half first lets decoding stop there for the four
+    /// clips in five that are decided by then.
+    pub fn video_standard() -> Self {
+        Self {
+            order: vec![0, 7, 3, 5, 1, 2, 4, 6, 8, 12, 10, 14, 9, 13, 11, 15],
+            stages: vec![ExitStage { views: 2, below: 4.0, above: 4.0 }, ExitStage { views: 4, below: 3.0, above: 3.0 }, ExitStage { views: 8, below: 3.0, above: 3.0 }],
         }
     }
 
@@ -198,13 +211,17 @@ pub struct VideoSpec {
     /// Band and threshold of the optional second stage (`--second-opinion`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub second_opinion: Option<SecondOpinion>,
+    /// Early exit over frames (see [`Detector::score_videos_adaptive`]);
+    /// absent means every frame of every clip is looked at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub early_exit: Option<EarlyExit>,
 }
 
 impl VideoSpec {
     /// One whole-frame view plus five native-resolution crops (centre and
     /// four quadrants) on each of 16 frames.
     pub fn standard(size: u32, fit_resize: u32) -> Self {
-        Self { frames: 16, views: thorough_views(size, fit_resize), logit_scale: 1.0, logit_bias: 0.0, second_opinion: None }
+        Self { frames: 16, views: thorough_views(size, fit_resize), logit_scale: 1.0, logit_bias: 0.0, second_opinion: None, early_exit: None }
     }
 }
 
@@ -268,7 +285,7 @@ impl ModelSpec {
             sensitive: None,
             strict: None,
             early_exit: None,
-            arch: "swinv2_large_w16_256".into(),
+            arch: "swinv2_large_w16_256".into()
         }
     }
 
@@ -287,7 +304,7 @@ impl ModelSpec {
             sensitive: None,
             strict: None,
             early_exit: None,
-            arch: "vit_base_patch14_reg4_dinov2".into(),
+            arch: "vit_base_patch14_reg4_dinov2".into()
         }
     }
 
@@ -328,14 +345,48 @@ pub fn video_weights_for(weights: &Path) -> std::path::PathBuf {
 pub struct Preprocessor {
     views: Vec<View>,
     view_len: usize,
+    #[cfg(target_os = "macos")]
+    feed: Option<std::sync::Arc<PixelFeed>>,
 }
 
 impl Preprocessor {
-    /// Write all views of `img` into `out` (len `views * 3 * img * img`).
-    pub fn apply(&self, img: &Rgb, out: &mut [f32]) {
+    /// Write all views of `img` into `out` (`views * img * img * 3` bytes:
+    /// interleaved 8-bit RGB, which is what the engines take).
+    pub fn apply(&self, img: &Rgb, out: &mut [u8]) {
         for (crop, chunk) in self.crops(img).iter().zip(out.chunks_exact_mut(self.view_len)) {
-            crop.write_chw(chunk);
+            chunk.copy_from_slice(&crop.data);
         }
+    }
+
+    /// Bytes of one view in the form the engine is fed (see
+    /// [`Detector::logits_fed`]).
+    pub fn fed_len(&self) -> usize {
+        #[cfg(target_os = "macos")]
+        if let Some(f) = &self.feed {
+            return self.view_len * f.width();
+        }
+        self.view_len
+    }
+
+    /// One crop in the form the engine is fed, written into `out`
+    /// (`fed_len` bytes). Decode workers do this, so that putting a batch
+    /// together is a plain copy.
+    pub fn encode(&self, crop: &Rgb, out: &mut [u8]) {
+        #[cfg(target_os = "macos")]
+        if let Some(f) = &self.feed {
+            return f.convert_view(&crop.data, out);
+        }
+        out.copy_from_slice(&crop.data);
+    }
+
+    /// Every view of `img` in the form the engine is fed, one after another.
+    pub fn encoded(&self, img: &Rgb) -> Vec<u8> {
+        let n = self.fed_len();
+        let mut out = vec![0u8; self.views.len() * n];
+        for (crop, o) in self.crops(img).iter().zip(out.chunks_exact_mut(n)) {
+            self.encode(crop, o);
+        }
+        out
     }
 
     /// Every view of `img` as a cropped image, in view order.
@@ -370,13 +421,62 @@ impl Device {
 
 enum Engine {
     #[cfg(target_os = "macos")]
-    Mps { g: Graph, inp: T, out: T },
+    Mps { g: Graph, inp: T, out: T, pixels: std::sync::Arc<PixelFeed> },
     /// Accelerate-backed engine (macOS).
     #[cfg(target_os = "macos")]
     Cpu { vit: crate::cpu_vit::CpuVit },
     /// Portable engine on candle.
     #[cfg(not(target_os = "macos"))]
     Cpu { vit: crate::vit::Vit },
+}
+
+/// Turns interleaved 8-bit RGB into what the GPU graph takes: planar,
+/// normalised values already in the graph's precision, by table lookup.
+/// Half-precision values go across as they are, so the GPU neither receives
+/// 32-bit floats nor has to cast them. Decode workers do the conversion.
+#[cfg(target_os = "macos")]
+pub struct PixelFeed {
+    half: bool,
+    lut16: [[u16; 256]; 3],
+    lut32: [[f32; 256]; 3],
+}
+
+#[cfg(target_os = "macos")]
+impl PixelFeed {
+    fn new(prec: Precision) -> Self {
+        let (k, o) = image_io::norm_consts();
+        let lut32: [[f32; 256]; 3] = std::array::from_fn(|c| std::array::from_fn(|v| v as f32 * k[c] - o[c]));
+        let lut16 = std::array::from_fn(|c| std::array::from_fn(|v| half::f16::from_f32(lut32[c][v]).to_bits()));
+        Self { half: prec == Precision::F16, lut16, lut32 }
+    }
+
+    /// Bytes per value handed to the graph.
+    fn width(&self) -> usize {
+        if self.half {
+            2
+        } else {
+            4
+        }
+    }
+
+    /// One view: `src` is `n * 3` interleaved bytes, `dst` receives the three
+    /// planes, `width()` bytes per value.
+    fn convert_view(&self, src: &[u8], dst: &mut [u8]) {
+        let n = src.len() / 3;
+        if self.half {
+            for (i, px) in src.chunks_exact(3).enumerate() {
+                for c in 0..3 {
+                    dst[(c * n + i) * 2..][..2].copy_from_slice(&self.lut16[c][px[c] as usize].to_ne_bytes());
+                }
+            }
+        } else {
+            for (i, px) in src.chunks_exact(3).enumerate() {
+                for c in 0..3 {
+                    dst[(c * n + i) * 4..][..4].copy_from_slice(&self.lut32[c][px[c] as usize].to_ne_bytes());
+                }
+            }
+        }
+    }
 }
 
 pub struct Detector {
@@ -400,9 +500,10 @@ impl Detector {
             anyhow::ensure!(device != Device::Cpu, "the SwinV2 reference network runs on the GPU engine only");
             let g = Graph::new(if device == Device::Gpu { Precision::F16 } else { Precision::F32 })?;
             let s = spec.img as isize;
-            let inp = g.placeholder(&[batch as isize, 3, s, s]);
-            let out = g.cast_out(&crate::swin::build_swin(&g, w, &crate::swin::SwinConfig::large_w16_256(), &g.cast_in(&inp), batch)?);
-            return Ok(Self { engine: Engine::Mps { g, inp, out }, batch, spec });
+            let inp = g.placeholder_native(&[batch as isize, 3, s, s]);
+            let out = g.cast_out(&crate::swin::build_swin(&g, w, &crate::swin::SwinConfig::large_w16_256(), &inp, batch)?);
+            let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
+            return Ok(Self { engine: Engine::Mps { g, inp, out, pixels }, batch, spec });
         }
         let cfg = VitConfig::by_name(&spec.arch, spec.img).ok_or_else(|| anyhow::anyhow!("unknown architecture `{}`", spec.arch))?;
         let engine = match device {
@@ -410,10 +511,11 @@ impl Detector {
             Device::Gpu | Device::GpuF32 => {
                 let g = Graph::new(if device == Device::Gpu { Precision::F16 } else { Precision::F32 })?;
                 let s = spec.img as isize;
-                let inp = g.placeholder(&[batch as isize, 3, s, s]);
-                let v = build_vit(&g, w, &mut Frozen, &cfg, &g.cast_in(&inp), batch)?;
+                let inp = g.placeholder_native(&[batch as isize, 3, s, s]);
+                let v = build_vit_cls(&g, w, &cfg, &inp, batch)?;
                 let out = g.cast_out(&build_head(&g, w, &mut Frozen, &v.cls)?);
-                Engine::Mps { g, inp, out }
+                let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
+                Engine::Mps { g, inp, out, pixels }
             }
             #[cfg(not(target_os = "macos"))]
             Device::Gpu | Device::GpuF32 => anyhow::bail!("the GPU engine is only available on macOS; use the CPU engine"),
@@ -448,12 +550,28 @@ impl Detector {
         3 * self.spec.img * self.spec.img
     }
 
-    /// Raw logits for `batch` preprocessed views (CHW, concatenated).
-    pub fn logits(&self, x: &[f32]) -> Vec<f32> {
+    /// Raw logits for `batch` views given as interleaved 8-bit RGB, one
+    /// after another.
+    pub fn logits(&self, x: &[u8]) -> Vec<f32> {
+        #[cfg(target_os = "macos")]
+        if let Engine::Mps { pixels, .. } = &self.engine {
+            use rayon::prelude::*;
+            let (vl, fl) = (self.view_len(), self.view_len() * pixels.width());
+            let mut fed = vec![0u8; x.len() / vl * fl];
+            fed.par_chunks_mut(fl).zip(x.par_chunks(vl)).for_each(|(o, v)| pixels.convert_view(v, o));
+            return self.logits_fed(&fed);
+        }
+        self.logits_fed(x)
+    }
+
+    /// Raw logits for `batch` views already in the form the engine is fed
+    /// ([`Preprocessor::encode`]): planar normalised values in the graph's
+    /// precision on the GPU, interleaved 8-bit RGB on the CPU.
+    pub fn logits_fed(&self, x: &[u8]) -> Vec<f32> {
         let s = self.spec.img;
         match &self.engine {
             #[cfg(target_os = "macos")]
-            Engine::Mps { g, inp, out } => g.run(&[(inp, x, &[self.batch as isize, 3, s as isize, s as isize])], &[out.clone()], &[]).remove(0),
+            Engine::Mps { g, inp, out, .. } => g.run_native((inp, x, &[self.batch as isize, 3, s as isize, s as isize]), &[out.clone()]).remove(0),
             #[cfg(target_os = "macos")]
             Engine::Cpu { vit } => vit.forward(x),
             #[cfg(not(target_os = "macos"))]
@@ -462,7 +580,7 @@ impl Detector {
                 let vl = self.view_len();
                 x.par_chunks(vl * 2)
                     .flat_map_iter(|c| {
-                        let t = candle_core::Tensor::from_slice(c, (c.len() / vl, 3, s, s), &candle_core::Device::Cpu).expect("tensor");
+                        let t = candle_core::Tensor::from_slice(&image_io::hwc_u8_to_chw_f32(c, s), (c.len() / vl, 3, s, s), &candle_core::Device::Cpu).expect("tensor");
                         vit.forward(&t).and_then(|o| o.flatten_all()?.to_vec1::<f32>()).expect("cpu forward")
                     })
                     .collect()
@@ -473,7 +591,15 @@ impl Detector {
     /// The preprocessing half of the detector; unlike the GPU graph it is
     /// `Send + Sync`, so decode workers can share it.
     pub fn preprocessor(&self) -> Preprocessor {
-        Preprocessor { views: self.spec.views.iter().map(|&v| v.into()).collect(), view_len: self.view_len() }
+        Preprocessor {
+            views: self.spec.views.iter().map(|&v| v.into()).collect(),
+            view_len: self.view_len(),
+            #[cfg(target_os = "macos")]
+            feed: match &self.engine {
+                Engine::Mps { pixels, .. } => Some(pixels.clone()),
+                Engine::Cpu { .. } => None,
+            },
+        }
     }
 
     /// Switch to the fast photo profile. Call before building a detector
@@ -512,29 +638,30 @@ impl Detector {
         -self.spec.logit_bias / self.spec.logit_scale
     }
 
-    /// Logits for the first `n` views in `x`, whatever the engine's batch size.
-    fn logits_n(&self, x: &[f32], n: usize) -> Vec<f32> {
-        let vl = self.view_len();
+    /// Logits for the first `n` views in `x` (in fed form, `fl` bytes each),
+    /// whatever the engine's batch size.
+    fn logits_n(&self, x: &[u8], n: usize, fl: usize) -> Vec<f32> {
         let mut out = Vec::with_capacity(n);
         match &self.engine {
             #[cfg(target_os = "macos")]
             Engine::Mps { .. } => {
                 // The graph has a fixed batch: pad the last one.
-                let mut buf = vec![0f32; self.batch * vl];
-                for chunk in x[..n * vl].chunks(self.batch * vl) {
-                    let k = chunk.len() / vl;
+                let mut buf = Vec::new();
+                for chunk in x[..n * fl].chunks(self.batch * fl) {
+                    let k = chunk.len() / fl;
                     let l = if k == self.batch {
-                        self.logits(chunk)
+                        self.logits_fed(chunk)
                     } else {
+                        buf.resize(self.batch * fl, 0u8);
                         buf[..chunk.len()].copy_from_slice(chunk);
-                        self.logits(&buf)
+                        self.logits_fed(&buf)
                     };
                     out.extend_from_slice(&l[..k]);
                 }
             }
             Engine::Cpu { .. } => {
-                for chunk in x[..n * vl].chunks(self.batch * vl) {
-                    out.extend(self.logits(chunk));
+                for chunk in x[..n * fl].chunks(self.batch * fl) {
+                    out.extend(self.logits_fed(chunk));
                 }
             }
         }
@@ -543,7 +670,7 @@ impl Detector {
 
     /// Early exit for one image whose views are already prepared (all of
     /// them, in the profile's order): the logits of the views looked at.
-    pub fn logits_adaptive(&self, all_views: &[f32], exit: &EarlyExit) -> Vec<f32> {
+    pub fn logits_adaptive(&self, all_views: &[u8], exit: &EarlyExit) -> Vec<f32> {
         let (nv, vl, thr) = (self.spec.views.len(), self.view_len(), self.threshold_logit());
         let mut seen: Vec<f32> = Vec::with_capacity(nv);
         let mut buf = Vec::new();
@@ -554,7 +681,16 @@ impl Detector {
                 buf.extend_from_slice(&all_views[v * vl..(v + 1) * vl]);
             }
             let n = upto - seen.len();
-            seen.extend(self.logits_n(&buf, n));
+            let l = match &self.engine {
+                #[cfg(target_os = "macos")]
+                Engine::Mps { .. } => {
+                    let mut padded = buf.clone();
+                    padded.resize(self.batch.max(n).div_ceil(self.batch) * self.batch * vl, 0);
+                    padded.chunks(self.batch * vl).flat_map(|c| self.logits(c)).take(n).collect::<Vec<f32>>()
+                }
+                Engine::Cpu { .. } => self.logits_n(&buf, n, vl),
+            };
+            seen.extend(l);
             if exit.decided(&seen, thr) {
                 break;
             }
@@ -563,89 +699,184 @@ impl Detector {
     }
 
     /// Score image files with early exit: per file, the logits of the views
-    /// that were looked at, in the order they were looked at. Each image is
-    /// decoded and cropped once; its crops wait in memory while it moves from
-    /// stage to stage, and every stage runs in full batches drawn from all
-    /// the images currently waiting at it.
+    /// that were looked at, in the order they were looked at.
     pub fn score_files_adaptive(&self, paths: &[PathBuf], threads: usize, exit: &EarlyExit) -> (Vec<Option<Vec<f32>>>, Timing) {
-        use std::collections::{HashMap, VecDeque};
-        let (nv, vl, thr) = (self.spec.views.len(), self.view_len(), self.threshold_logit());
         let pre = self.preprocessor();
-        let checkpoints = exit.checkpoints(nv);
-        let in_flight_cap = 4 * self.batch.max(16);
+        self.score_staged(paths.len(), threads, exit, self.spec.views.len(), |i| image_io::load(&paths[i]).ok().map(|img| pre.crops(&img)))
+    }
+
+    /// Score clips with early exit over frames. `exit` is written in frames:
+    /// `order` is the order the frames are looked at, and a stage's `views`
+    /// is a number of frames. Every view of a frame is looked at; a clip
+    /// whose mean logit is already clear after a stage is not shown the rest
+    /// of its frames. Returns, per clip, the per-view logits of the frames
+    /// looked at, in looking order.
+    ///
+    /// When the schedule looks at the whole first half of the clip before
+    /// anything in the second half, and checks at that point, decoding stops
+    /// at the half-way mark too: only the clips still undecided there are
+    /// opened again for their second half.
+    pub fn score_videos_adaptive(&self, paths: &[PathBuf], sampling: crate::video::Sampling, threads: usize, exit: &EarlyExit) -> (Vec<Option<Vec<Vec<f32>>>>, Timing) {
+        let (nv, nf) = (self.spec.views.len(), sampling.frames);
+        let (pre, thr) = (self.preprocessor(), self.threshold_logit());
+        let order: Vec<usize> = exit.order.iter().copied().filter(|&f| f < nf).collect();
+        if order.len() != nf {
+            // Not a schedule for this many frames.
+            return self.score_videos(paths, sampling, threads);
+        }
+        let half = nf / 2;
+        let halves = half > 0 && order[..half].iter().all(|&f| f < half) && exit.stages.iter().any(|st| st.views == half);
+        // Frames decoded up front, and the schedule counted in views over them.
+        let first = if halves { half } else { nf };
+        let by_view = EarlyExit {
+            order: order[..first].iter().flat_map(|&f| (0..nv).map(move |v| f * nv + v)).collect(),
+            stages: exit.stages.iter().filter(|st| st.views <= first && st.views < nf).map(|st| ExitStage { views: st.views * nv, ..*st }).collect(),
+        };
+        // Clips that do not yield the usual number of frames go the plain way.
+        let odd = std::sync::Mutex::new(Vec::new());
+        let (res, mut t) = self.score_staged(paths.len(), threads, &by_view, first * nv, |i| {
+            let frames = crate::video::sample_frames_range(&paths[i], sampling, 0, first).ok()?;
+            if frames.len() != first {
+                odd.lock().unwrap().push(i);
+                return None;
+            }
+            Some(frames.iter().flat_map(|f| pre.crops(f)).collect())
+        });
+        let frames_of = |l: Vec<f32>| -> Vec<Vec<f32>> { l.chunks(nv).map(|c| c.to_vec()).collect() };
+        // Clips that saw the whole first half and are still undecided.
+        let more: Vec<usize> = (0..paths.len()).filter(|&i| halves && res[i].as_ref().is_some_and(|l| l.len() == first * nv && !by_view.decided(l, thr))).collect();
+        let mut out: Vec<Option<Vec<Vec<f32>>>> = res.into_iter().map(|r| r.map(frames_of)).collect();
+        if !more.is_empty() {
+            let (rest, t2) = self.score_stream(more.len(), threads, |j| crate::video::sample_frames_range(&paths[more[j]], sampling, half, nf).ok());
+            for (&i, r) in more.iter().zip(rest) {
+                // Second-half frames arrive in clip order; file them in looking order.
+                let (Some(seen), Some(r)) = (out[i].as_mut(), r) else { continue };
+                seen.extend(order[half..].iter().filter_map(|&f| r.get(f - half).cloned()));
+            }
+            t.wall_s += t2.wall_s;
+            t.model_s += t2.model_s;
+        }
+        let odd = odd.into_inner().unwrap();
+        if !odd.is_empty() {
+            let (plain, t2) = self.score_videos(&odd.iter().map(|&i| paths[i].clone()).collect::<Vec<_>>(), sampling, threads);
+            for (&i, r) in odd.iter().zip(plain) {
+                out[i] = r;
+            }
+            t.wall_s += t2.wall_s;
+            t.model_s += t2.model_s;
+        }
+        (out, t)
+    }
+
+    /// The early-exit pipeline. `load(i)` yields item `i` as `units` crops (a
+    /// photo's views, or every view of every frame of a clip) on worker
+    /// threads, once; the crops wait in memory while the item moves from
+    /// stage to stage, and every batch is filled with the next crops of
+    /// whichever items are waiting, whatever stage they are at. Returns, per item, the logits of
+    /// the crops looked at, in looking order.
+    pub fn score_staged<F>(&self, n_items: usize, threads: usize, exit: &EarlyExit, units: usize, load: F) -> (Vec<Option<Vec<f32>>>, Timing)
+    where
+        F: Fn(usize) -> Option<Vec<Rgb>> + Sync,
+    {
+        use std::collections::{HashMap, VecDeque};
+        let thr = self.threshold_logit();
+        let pre = self.preprocessor();
+        let vl = pre.fed_len();
+        let checkpoints = exit.checkpoints(units);
+        // About four batches' worth of photos, fewer of anything larger.
+        let in_flight_cap = (4 * self.batch.max(16) * self.spec.views.len() / units).max(8);
         let start = std::time::Instant::now();
         let mut model_s = 0f64;
-        let mut results: Vec<Option<Vec<f32>>> = vec![None; paths.len()];
+        let mut results: Vec<Option<Vec<f32>>> = vec![None; n_items];
         let next = AtomicUsize::new(0);
         std::thread::scope(|s| {
-            let (tx, rx) = crossbeam_channel::bounded::<(usize, Vec<Rgb>)>(threads.max(1) * 2);
+            let (tx, rx) = crossbeam_channel::bounded::<(usize, Vec<u8>)>(threads.max(1) * 2);
             for _ in 0..threads.max(1) {
                 let tx = tx.clone();
-                let (next, pre) = (&next, &pre);
+                let (next, load, pre) = (&next, &load, &pre);
                 s.spawn(move || loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= paths.len() {
+                    if i >= n_items {
                         break;
                     }
-                    let Ok(img) = image_io::load(&paths[i]) else { continue };
-                    if tx.send((i, pre.crops(&img))).is_err() {
+                    let Some(crops) = load(i) else { continue };
+                    debug_assert_eq!(crops.len(), units);
+                    // In the engine's own form, so a batch is put together by copying.
+                    let mut fed = vec![0u8; units * vl];
+                    for (c, o) in crops.iter().zip(fed.chunks_exact_mut(vl)) {
+                        pre.encode(c, o);
+                    }
+                    if tx.send((i, fed)).is_err() {
                         break;
                     }
                 });
             }
             drop(tx);
-            let mut crops: HashMap<usize, Vec<Rgb>> = HashMap::new();
+            let mut crops: HashMap<usize, Vec<u8>> = HashMap::new();
             let mut seen: HashMap<usize, Vec<f32>> = HashMap::new();
-            // Images waiting for stage k (their next views are order[checkpoints[k-1]..checkpoints[k]]).
+            // Items waiting for stage k (their next crops are order[checkpoints[k-1]..checkpoints[k]]).
             let mut waiting: Vec<VecDeque<usize>> = vec![VecDeque::new(); checkpoints.len()];
-            let mut buf = vec![0f32; self.batch * vl];
+            let mut buf = vec![0u8; self.batch * vl];
             let mut open = true;
+            // Crops an item at stage k needs next: order[from(k)..checkpoints[k]].
+            let from = |k: usize| if k == 0 { 0 } else { checkpoints[k - 1] };
             loop {
-                let pending = |k: usize, q: &VecDeque<usize>| q.len() * (checkpoints[k] - if k == 0 { 0 } else { checkpoints[k - 1] });
-                // The stage with the most views waiting; later stages win ties, to finish images.
-                let best = (0..waiting.len()).rev().max_by_key(|&k| pending(k, &waiting[k])).unwrap();
-                let ready = pending(best, &waiting[best]);
-                if ready < self.batch && open && crops.len() < in_flight_cap {
+                let pending: usize = waiting.iter().enumerate().map(|(k, q)| q.len() * (checkpoints[k] - from(k))).sum();
+                if pending < self.batch && open && crops.len() < in_flight_cap {
                     match rx.recv() {
                         Ok((i, c)) => {
                             crops.insert(i, c);
-                            seen.insert(i, Vec::with_capacity(nv));
+                            seen.insert(i, Vec::with_capacity(units));
                             waiting[0].push_back(i);
                         }
                         Err(_) => open = false,
                     }
                     continue;
                 }
-                if ready == 0 {
+                if pending == 0 {
                     break;
                 }
-                let from = if best == 0 { 0 } else { checkpoints[best - 1] };
-                let per = checkpoints[best] - from;
-                let take = (self.batch / per).max(1).min(waiting[best].len());
-                let ids: Vec<usize> = waiting[best].drain(..take).collect();
-                {
-                    use rayon::prelude::*;
-                    let (crops, ids) = (&crops, &ids);
-                    buf[..take * per * vl].par_chunks_mut(vl).enumerate().for_each(|(slot, out)| {
-                        crops[&ids[slot / per]][exit.order[from + slot % per]].write_chw(out);
-                    });
+                // One batch, filled from every stage: later stages first, to
+                // finish items and free their crops.
+                let mut plan: Vec<(usize, usize)> = Vec::new();
+                let mut n = 0;
+                for k in (0..waiting.len()).rev() {
+                    let per = checkpoints[k] - from(k);
+                    while n + per <= self.batch.max(per) && (n == 0 || n + per <= self.batch) {
+                        let Some(i) = waiting[k].pop_front() else { break };
+                        plan.push((i, k));
+                        n += per;
+                    }
+                }
+                if buf.len() < n * vl {
+                    buf.resize(n * vl, 0);
+                }
+                let mut slot = 0;
+                for &(i, k) in &plan {
+                    for &u in &exit.order[from(k)..checkpoints[k]] {
+                        buf[slot * vl..(slot + 1) * vl].copy_from_slice(&crops[&i][u * vl..(u + 1) * vl]);
+                        slot += 1;
+                    }
                 }
                 let t = std::time::Instant::now();
-                let logits = self.logits_n(&buf, take * per);
+                let logits = self.logits_n(&buf, n, vl);
                 model_s += t.elapsed().as_secs_f64();
-                for (j, i) in ids.into_iter().enumerate() {
+                let mut at = 0;
+                for (i, k) in plan {
+                    let per = checkpoints[k] - from(k);
                     let l = seen.get_mut(&i).unwrap();
-                    l.extend_from_slice(&logits[j * per..(j + 1) * per]);
-                    if l.len() == nv || exit.decided(l, thr) {
+                    l.extend_from_slice(&logits[at..at + per]);
+                    at += per;
+                    if l.len() == units || exit.decided(l, thr) {
                         results[i] = seen.remove(&i);
                         crops.remove(&i);
                     } else {
-                        waiting[best + 1].push_back(i);
+                        waiting[k + 1].push_back(i);
                     }
                 }
             }
         });
-        (results, Timing { images: paths.len(), wall_s: start.elapsed().as_secs_f64(), model_s })
+        (results, Timing { images: n_items, wall_s: start.elapsed().as_secs_f64(), model_s })
     }
 
     /// Switch this detector to its video profile (views and calibration).
@@ -672,12 +903,12 @@ impl Detector {
     /// per-view logits.
     pub fn score_images(&self, imgs: &[Rgb]) -> Vec<Vec<f32>> {
         let (nv, vl) = (self.spec.views.len(), self.view_len());
-        let mut flat = vec![0f32; imgs.len() * nv * vl];
+        let mut flat = vec![0u8; imgs.len() * nv * vl];
         use rayon::prelude::*;
         let pre = self.preprocessor();
         flat.par_chunks_exact_mut(nv * vl).zip(imgs.par_iter()).for_each(|(o, im)| pre.apply(im, o));
         let mut logits = Vec::with_capacity(imgs.len() * nv);
-        let mut buf = vec![0f32; self.batch * vl];
+        let mut buf = vec![0u8; self.batch * vl];
         for chunk in flat.chunks(self.batch * vl) {
             buf[..chunk.len()].copy_from_slice(chunk);
             logits.extend_from_slice(&self.logits(&buf)[..chunk.len() / vl]);
@@ -706,14 +937,15 @@ impl Detector {
     where
         F: Fn(usize) -> Option<Vec<Rgb>> + Sync,
     {
-        let (nv, vl) = (self.spec.views.len(), self.view_len());
+        let nv = self.spec.views.len();
+        let pre = self.preprocessor();
+        let vl = pre.fed_len();
         let next = AtomicUsize::new(0);
-        // (item, number of images, all views of all images)
-        let (tx, rx) = crossbeam_channel::bounded::<(usize, usize, Vec<f32>)>(threads.max(1) * 2);
+        // (item, number of images, all views of all images in fed form)
+        let (tx, rx) = crossbeam_channel::bounded::<(usize, usize, Vec<u8>)>(threads.max(1) * 2);
         let mut results: Vec<Option<Vec<Vec<f32>>>> = vec![None; n_items];
         let start = std::time::Instant::now();
         let mut model_s = 0f64;
-        let pre = self.preprocessor();
         std::thread::scope(|s| {
             for _ in 0..threads.max(1) {
                 let tx = tx.clone();
@@ -724,9 +956,9 @@ impl Detector {
                         break;
                     }
                     let Some(imgs) = load(i) else { continue };
-                    let mut v = vec![0f32; imgs.len() * nv * vl];
-                    for (im, o) in imgs.iter().zip(v.chunks_exact_mut(nv * vl)) {
-                        pre.apply(im, o);
+                    let mut v = Vec::with_capacity(imgs.len() * nv * vl);
+                    for im in &imgs {
+                        v.extend_from_slice(&pre.encoded(im));
                     }
                     if tx.send((i, imgs.len(), v)).is_err() {
                         break;
@@ -734,16 +966,16 @@ impl Detector {
                 });
             }
             drop(tx);
-            let mut buf = vec![0f32; self.batch * vl];
+            let mut buf = vec![0u8; self.batch * vl];
             // Slots filled in `buf`: which item each view belongs to.
             let mut owners: Vec<usize> = Vec::with_capacity(self.batch);
             let mut acc: std::collections::HashMap<usize, Vec<f32>> = std::collections::HashMap::new();
-            let mut flush = |owners: &mut Vec<usize>, buf: &[f32], acc: &mut std::collections::HashMap<usize, Vec<f32>>| {
+            let mut flush = |owners: &mut Vec<usize>, buf: &[u8], acc: &mut std::collections::HashMap<usize, Vec<f32>>| {
                 if owners.is_empty() {
                     return;
                 }
                 let t = std::time::Instant::now();
-                let logits = self.logits(buf);
+                let logits = self.logits_fed(buf);
                 model_s += t.elapsed().as_secs_f64();
                 for (k, &i) in owners.iter().enumerate() {
                     acc.entry(i).or_default().push(logits[k]);
@@ -811,10 +1043,48 @@ mod tests {
         assert_eq!(e.looked_at(&[0.0, 0.0, 11.5, 0.0, 0.0, 0.0], thr).len(), 1);
         // Undecided after one, clear after two (mean 8 is 6 over).
         assert_eq!(e.looked_at(&[9.0, 0.0, 7.0, 0.0, 0.0, 0.0], thr), vec![7.0, 9.0]);
-        // Clear after four (mean -1 is 3 under).
-        assert_eq!(e.looked_at(&[0.0, -2.0, 0.0, -2.0, 5.0, 5.0], thr).len(), 4);
+        // Clear after four (mean 0 is 2 under).
+        assert_eq!(e.looked_at(&[0.5, 1.0, 0.0, -1.5, 5.0, 5.0], thr).len(), 4);
         // Near the threshold throughout: all six, in looking order.
         assert_eq!(e.looked_at(&[2.0, 3.0, 1.0, 2.5, 4.0, 5.0], thr), vec![1.0, 2.0, 3.0, 2.5, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn clip_schedule_covers_every_frame_once() {
+        let e = EarlyExit::video_standard();
+        let mut o = e.order.clone();
+        o.sort_unstable();
+        assert_eq!(o, (0..16).collect::<Vec<_>>());
+        // The first half of the clip is looked at before the second, with a
+        // check when it is done, so decoding can stop there.
+        assert!(e.order[..8].iter().all(|&f| f < 8) && e.stages.iter().any(|st| st.views == 8));
+        assert!(e.stages.windows(2).all(|w| w[0].views < w[1].views));
+        // Margins stay outside the second-opinion band's reach from the threshold on the low side.
+        assert!(e.stages.iter().all(|st| st.below >= 3.0 && st.above >= 3.0));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fed_pixels_match_the_float_normalisation() {
+        let mut im = Rgb::new(4, 4);
+        for (i, v) in im.data.iter_mut().enumerate() {
+            *v = (i * 37 % 256) as u8;
+        }
+        let mut want = vec![0f32; 48];
+        im.write_chw(&mut want);
+        for prec in [Precision::F32, Precision::F16] {
+            let f = PixelFeed::new(prec);
+            let mut got = vec![0u8; 48 * f.width()];
+            f.convert_view(&im.data, &mut got);
+            for (i, w) in want.iter().enumerate() {
+                let g = if prec == Precision::F32 {
+                    f32::from_ne_bytes(got[i * 4..][..4].try_into().unwrap())
+                } else {
+                    half::f16::from_bits(u16::from_ne_bytes(got[i * 2..][..2].try_into().unwrap())).to_f32()
+                };
+                assert!((g - w).abs() < 2e-3, "{prec:?} value {i}: {g} vs {w}");
+            }
+        }
     }
 
     #[test]

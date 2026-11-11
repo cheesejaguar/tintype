@@ -63,6 +63,12 @@ What that table does not show:
   early exit; looking at all six views of every image, Veracity is the slower
   of the two in the same engine (180 against 253 images/s at 16 bits).
 
+- The speed column was measured before a later round of speed work, which
+  made the default photo profile about 1.6 times faster and video about
+  three times faster on the same files, with the same pooled precision and
+  recall when the latest blind batches were re-scored
+  ([the before-and-after table](docs/BENCHMARK.md#five-speed-changes-before-and-after)).
+
 [docs/BENCHMARK.md](docs/BENCHMARK.md) has every set, the speed tables, how the
 reference detectors were ported and checked, and the other places where
 Veracity is not ahead. [docs/RESEARCH.md](docs/RESEARCH.md) is the survey
@@ -83,15 +89,21 @@ network on six views and averages the logits:
 
 **But only as many looks as it takes.** Most images are obvious. The views are
 looked at one at a time, most textured crop first, and as soon as the running
-score is far enough from the threshold the rest are skipped: about three
-views per image on average instead of six, with one verdict in 700 changed on
-the development sets. `--all-views` turns this off.
+score is far enough from the threshold the rest are skipped: about two views
+per image on average instead of six. The margins were fitted on the
+development sets, where they left pooled precision and recall within 0.002 of
+looking at everything. `--all-views` turns this off.
 
 **Video is frames, looked at the same way.** 16 frames are taken evenly across
-a clip, each gets the six views, and the clip score is the mean logit. Video
-has its own checkpoint: the photo weights trained on for two more phases on
-clips only, including the kinds of real footage the photo weights mistook for
-generated video (cartoons, animation, gameplay).
+a clip, each gets the six views, and the clip score is the mean logit. Clips
+stop early too: two frames from the first half of the clip, then four, then
+all eight of that half, and only then the second half, stopping as soon as
+the score is clear. That is about five frames per clip on average, decoding
+stops at the half-way mark for the four clips in five decided by then, and on
+the 6,783 development and blind clips it changed no verdict. Video has its own checkpoint: the photo weights
+trained on for two more phases on clips only, including the kinds of real
+footage the photo weights mistook for generated video (cartoons, animation,
+gameplay).
 
 **A second opinion, if you want one.** `--second-opinion` sends the clips the
 video model is unsure about – about one in eight in the tests – to the
@@ -99,7 +111,8 @@ video model is unsure about – about one in eight in the tests – to the
 network, re-implemented here in Rust and run on its authors' released
 weights. The two models make different mistakes, so together they beat either
 alone, and because most clips never reach the second network the pair is
-still several times faster than WaveRep by itself.
+still several times faster than WaveRep by itself. With a second opinion every
+frame of every clip is looked at.
 
 **Small network, wide training set.** The network is a plain ViT-S/16 at
 224 px. It starts from the Community Forensics 224 px checkpoint (MIT) and is
@@ -222,6 +235,7 @@ veracity evaluate confirm4 --baselines
 | `score`, `score-video` | Score one manifest (`--reference commfor|swinv2|waverep` runs a reference detector) |
 | `report` | Precision, recall, F1, FPR, AUROC, recall at 1% FPR, bootstrap intervals; `--at-rate-of` compares systems at one system's false-positive rate |
 | `latency` | Single-image latency, decode to verdict |
+| `profile` | Decoding, cropping and the network timed separately, the network at several batch sizes |
 | `ingest`, `index-folder`, `overlap`, `check-videos`, `parquet-info` | Dataset tooling |
 
 ## Limits

@@ -70,6 +70,13 @@ impl Graph {
         unsafe { self.g.placeholderWithShape_dataType_name(Some(&ints(shape)), MPSDataType::Float32, None) }
     }
 
+    /// Input placeholder in the working precision itself: no cast on the
+    /// GPU, and half the bytes to hand over in half precision. Feed it with
+    /// [`Graph::run_native`].
+    pub fn placeholder_native(&self, shape: &[isize]) -> T {
+        unsafe { self.g.placeholderWithShape_dataType_name(Some(&ints(shape)), self.prec.mps(), None) }
+    }
+
     fn data_for(&self, data: &[f32]) -> Retained<NSData> {
         match self.prec {
             Precision::F32 => NSData::with_bytes(f32_bytes(data)),
@@ -215,18 +222,23 @@ impl Graph {
     /// Run the graph. `feeds` are `(placeholder, data, shape)`; returns one
     /// `Vec<f32>` per target (targets must be Float32).
     pub fn run(&self, feeds: &[(&T, &[f32], &[isize])], targets: &[T], ops: &[Op]) -> Vec<Vec<f32>> {
+        let feeds: Vec<(&T, &[u8], &[isize], MPSDataType)> = feeds.iter().map(|&(t, d, s)| (t, f32_bytes(d), s, MPSDataType::Float32)).collect();
+        self.run_typed(&feeds, targets, ops)
+    }
+
+    /// Run the graph on one feed whose bytes are already in the working
+    /// precision (see [`Graph::placeholder_native`]).
+    pub fn run_native(&self, feed: (&T, &[u8], &[isize]), targets: &[T]) -> Vec<Vec<f32>> {
+        self.run_typed(&[(feed.0, feed.1, feed.2, self.prec.mps())], targets, &[])
+    }
+
+    fn run_typed(&self, feeds: &[(&T, &[u8], &[isize], MPSDataType)], targets: &[T], ops: &[Op]) -> Vec<Vec<f32>> {
         autoreleasepool(|_| unsafe {
             let keys: Vec<&MPSGraphTensor> = feeds.iter().map(|f| &**f.0).collect();
             let vals: Vec<Retained<MPSGraphTensorData>> = feeds
                 .iter()
-                .map(|(_, data, shape)| {
-                    MPSGraphTensorData::initWithDevice_data_shape_dataType(
-                        MPSGraphTensorData::alloc(),
-                        &self.dev,
-                        &NSData::with_bytes(f32_bytes(data)),
-                        &ints(shape),
-                        MPSDataType::Float32,
-                    )
+                .map(|(_, data, shape, ty)| {
+                    MPSGraphTensorData::initWithDevice_data_shape_dataType(MPSGraphTensorData::alloc(), &self.dev, &NSData::with_bytes(data), &ints(shape), *ty)
                 })
                 .collect();
             let feeds = NSDictionary::from_retained_objects(&keys, &vals);

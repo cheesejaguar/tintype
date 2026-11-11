@@ -312,36 +312,48 @@ pub fn probe(path: &Path) -> Result<VideoInfo> {
 /// `n` frames spread evenly over the first `max_seconds` of the clip: frame
 /// `k` is the one nearest to `k * span / n` after the first frame.
 pub fn frames_uniform(path: &Path, n: usize, max_seconds: f64) -> Result<Vec<Rgb>> {
-    with_deadline(path, move |p| frames_uniform_inner(p, n, max_seconds))
+    frames_uniform_range(path, n, max_seconds, 0, n)
 }
 
-fn frames_uniform_inner(path: &Path, n: usize, max_seconds: f64) -> Result<Vec<Rgb>> {
+/// Frames `from..to` of the `n` that [`frames_uniform`] picks: the same
+/// frames, but decoding stops once the last one wanted has been reached, and
+/// frames before `from` are decoded without being converted.
+pub fn frames_uniform_range(path: &Path, n: usize, max_seconds: f64, from: usize, to: usize) -> Result<Vec<Rgb>> {
+    with_deadline(path, move |p| frames_uniform_inner(p, n, max_seconds, from, to.min(n)))
+}
+
+fn frames_uniform_inner(path: &Path, n: usize, max_seconds: f64, from: usize, to: usize) -> Result<Vec<Rgb>> {
     let mut r = open(path, None)?;
     let span = if r.info.duration > 0.0 { r.info.duration.min(max_seconds) } else { max_seconds };
-    let mut out: Vec<Rgb> = Vec::with_capacity(n);
+    let mut out: Vec<Rgb> = Vec::with_capacity(to.saturating_sub(from));
+    // Index of the next of the `n` targets.
+    let mut k = 0;
     let mut prev: Option<(f64, Yuv)> = None;
     let mut t0 = None;
-    while out.len() < n {
+    while k < to {
         let Some((pts, f)) = r.next() else { break };
         let start = *t0.get_or_insert(pts);
-        while out.len() < n {
-            let target = start + out.len() as f64 * span / n as f64;
+        while k < to {
+            let target = start + k as f64 * span / n as f64;
             if pts < target {
                 break;
             }
-            // The target lies between the previous frame and this one.
-            let use_prev = prev.as_ref().is_some_and(|(pp, _)| target - pp < pts - target);
-            out.push(if use_prev { prev.as_ref().unwrap().1.to_rgb() } else { f.to_rgb() });
+            if k >= from {
+                // The target lies between the previous frame and this one.
+                let use_prev = prev.as_ref().is_some_and(|(pp, _)| target - pp < pts - target);
+                out.push(if use_prev { prev.as_ref().unwrap().1.to_rgb() } else { f.to_rgb() });
+            }
+            k += 1;
         }
         prev = Some((pts, f));
     }
-    // Targets past the last decoded frame reuse it.
+    // A clip too short to reach any target still yields its last frame.
     if let Some((_, last)) = &prev {
-        if out.is_empty() {
+        if k == 0 && from == 0 {
             out.push(last.to_rgb());
         }
     }
-    if out.is_empty() {
+    if out.is_empty() && from == 0 {
         bail!("no frames decoded from {}", path.display());
     }
     Ok(out)

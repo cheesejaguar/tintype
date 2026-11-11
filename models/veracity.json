@@ -195,28 +195,28 @@
     "stages": [
       {
         "views": 1,
-        "below": 7.0,
-        "above": 9.0
+        "below": 6.0,
+        "above": 6.0
       },
       {
         "views": 2,
-        "below": 5.0,
-        "above": 5.0
+        "below": 3.0,
+        "above": 3.0
       },
       {
         "views": 3,
-        "below": 3.5,
-        "above": 3.5
+        "below": 2.0,
+        "above": 2.0
       },
       {
         "views": 4,
-        "below": 2.5,
-        "above": 2.5
+        "below": 1.5,
+        "above": 1.5
       },
       {
         "views": 5,
-        "below": 2.0,
-        "above": 2.0
+        "below": 1.0,
+        "above": 1.0
       }
     ]
   },

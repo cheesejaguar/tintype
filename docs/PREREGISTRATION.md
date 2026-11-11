@@ -162,3 +162,14 @@ frozen and before any of the confirm6 data had been downloaded.
   higher recall; the strict, sensitive and fast profiles; the phase-3 weights
   on the same batch; AUROC; recall at 1% FPR; recall at each reference
   detector's own false-positive rate; views per image.
+
+## Note on the later speed changes
+
+The early-exit margins for photos were tightened, and early exit over frames
+was added for clips, after every batch above had been unsealed. Both
+schedules were fitted on development data only. The figures quoted for them
+on blind batches (photo batch 6, the video batch) are re-scores of data
+already seen, and for photos the choice among four candidate schedules was
+made with those re-scores visible. They are reported as such in
+[BENCHMARK.md](BENCHMARK.md#five-speed-changes-before-and-after) and do not
+replace the blind results.

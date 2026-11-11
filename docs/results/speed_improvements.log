@@ -1,0 +1,105 @@
+### r1 gpu default before
+scored 5000 images (0 unreadable) in 17.4s: 286.6 img/s end-to-end, 353.0 img/s model-only, 2.79 views per image
+### r1 gpu default after
+scored 5000 images (0 unreadable) in 10.9s: 460.0 img/s end-to-end, 512.9 img/s model-only, 2.05 views per image
+### r1 gpu fast before
+scored 5000 images (0 unreadable) in 10.8s: 463.9 img/s end-to-end, 485.3 img/s model-only, 2.00 views per image
+### r1 gpu fast after
+scored 5000 images (0 unreadable) in 10.0s: 501.6 img/s end-to-end, 531.6 img/s model-only, 2.00 views per image
+### r1 gpu all-views before
+scored 1000 images (0 unreadable) in 6.1s: 164.7 img/s end-to-end, 168.6 img/s model-only, 6.00 views per image
+### r1 gpu all-views after
+scored 1000 images (0 unreadable) in 5.5s: 182.6 img/s end-to-end, 185.5 img/s model-only, 6.00 views per image
+### r1 video before
+scored 147 clips (0 unreadable) in 14.9s: 9.85 clips/s end-to-end (101.5 ms/clip), model time 14.4s
+### r1 video after
+scored 147 clips (0 unreadable) in 4.9s: 29.71 clips/s end-to-end (33.7 ms/clip), model time 4.1s
+### r2 gpu default before
+scored 5000 images (0 unreadable) in 17.1s: 292.4 img/s end-to-end, 357.9 img/s model-only, 2.79 views per image
+### r2 gpu default after
+scored 5000 images (0 unreadable) in 10.6s: 470.9 img/s end-to-end, 508.8 img/s model-only, 2.05 views per image
+### r2 gpu fast before
+scored 5000 images (0 unreadable) in 11.2s: 447.9 img/s end-to-end, 474.2 img/s model-only, 2.00 views per image
+### r2 gpu fast after
+scored 5000 images (0 unreadable) in 10.1s: 497.4 img/s end-to-end, 524.8 img/s model-only, 2.00 views per image
+### r2 gpu all-views before
+scored 1000 images (0 unreadable) in 6.2s: 161.0 img/s end-to-end, 165.3 img/s model-only, 6.00 views per image
+### r2 gpu all-views after
+scored 1000 images (0 unreadable) in 5.6s: 177.8 img/s end-to-end, 181.4 img/s model-only, 6.00 views per image
+### r2 video before
+scored 147 clips (0 unreadable) in 15.0s: 9.79 clips/s end-to-end (102.2 ms/clip), model time 14.5s
+### r2 video after
+scored 147 clips (0 unreadable) in 5.1s: 28.96 clips/s end-to-end (34.5 ms/clip), model time 4.2s
+### r3 gpu default before
+scored 5000 images (0 unreadable) in 17.6s: 283.7 img/s end-to-end, 352.6 img/s model-only, 2.79 views per image
+### r3 gpu default after
+scored 5000 images (0 unreadable) in 10.8s: 461.9 img/s end-to-end, 500.0 img/s model-only, 2.05 views per image
+### r3 gpu fast before
+scored 5000 images (0 unreadable) in 11.2s: 445.9 img/s end-to-end, 472.4 img/s model-only, 2.00 views per image
+### r3 gpu fast after
+scored 5000 images (0 unreadable) in 10.0s: 501.7 img/s end-to-end, 521.3 img/s model-only, 2.00 views per image
+### r3 gpu all-views before
+scored 1000 images (0 unreadable) in 6.2s: 160.3 img/s end-to-end, 164.0 img/s model-only, 6.00 views per image
+### r3 gpu all-views after
+scored 1000 images (0 unreadable) in 5.6s: 177.2 img/s end-to-end, 180.1 img/s model-only, 6.00 views per image
+### r3 video before
+scored 147 clips (0 unreadable) in 15.3s: 9.59 clips/s end-to-end (104.3 ms/clip), model time 14.7s
+### r3 video after
+scored 147 clips (0 unreadable) in 5.3s: 27.89 clips/s end-to-end (35.9 ms/clip), model time 4.2s
+### r1 cpu default before
+scored 1000 images (0 unreadable) in 27.4s: 36.5 img/s end-to-end, 37.4 img/s model-only, 2.78 views per image
+### r1 cpu default after
+scored 1000 images (0 unreadable) in 18.7s: 53.6 img/s end-to-end, 54.1 img/s model-only, 2.04 views per image
+### r2 cpu default before
+scored 1000 images (0 unreadable) in 27.8s: 36.0 img/s end-to-end, 36.8 img/s model-only, 2.78 views per image
+### r2 cpu default after
+scored 1000 images (0 unreadable) in 19.0s: 52.8 img/s end-to-end, 53.5 img/s model-only, 2.04 views per image
+### cpu all-views before
+scored 1000 images (0 unreadable) in 48.1s: 20.8 img/s end-to-end, 20.9 img/s model-only, 6.00 views per image
+### cpu all-views after
+scored 1000 images (0 unreadable) in 40.6s: 24.6 img/s end-to-end, 24.7 img/s model-only, 6.00 views per image
+### cpu video before
+scored 147 clips (0 unreadable) in 105.0s: 1.40 clips/s end-to-end (714.2 ms/clip), model time 104.6s
+### cpu video after
+scored 147 clips (0 unreadable) in 26.7s: 5.50 clips/s end-to-end (181.9 ms/clip), model time 26.5s
+### confirm6 photos before
+scored 16324 images (0 unreadable) in 45.7s: 357.2 img/s end-to-end, 453.7 img/s model-only, 2.30 views per image
+### confirm6 photos after
+scored 16324 images (0 unreadable) in 28.2s: 579.5 img/s end-to-end, 640.1 img/s model-only, 1.71 views per image
+### confirm4 video before
+scored 2056 clips (0 unreadable) in 178.4s: 11.53 clips/s end-to-end (86.8 ms/clip), model time 175.9s
+### confirm4 video after
+scored 2056 clips (0 unreadable) in 91.1s: 22.57 clips/s end-to-end (44.3 ms/clip), model time 58.3s
+### done
+
+### second pass, video only, after decoding was made to stop at the half-way mark
+### (another job was using the GPU for part of this pass; compare within a pair)
+### r1 video before
+scored 147 clips (0 unreadable) in 23.9s: 6.15 clips/s end-to-end (162.7 ms/clip), model time 23.3s
+### r1 video after
+scored 147 clips (0 unreadable) in 7.2s: 20.40 clips/s end-to-end (49.0 ms/clip), model time 6.9s
+### r2 video before
+scored 147 clips (0 unreadable) in 23.6s: 6.24 clips/s end-to-end (160.4 ms/clip), model time 23.0s
+### r2 video after
+scored 147 clips (0 unreadable) in 6.2s: 23.81 clips/s end-to-end (42.0 ms/clip), model time 5.8s
+### r3 video before
+scored 147 clips (0 unreadable) in 25.2s: 5.84 clips/s end-to-end (171.3 ms/clip), model time 24.6s
+### r3 video after
+scored 147 clips (0 unreadable) in 7.4s: 19.85 clips/s end-to-end (50.4 ms/clip), model time 7.0s
+### r1 blind video batch before
+scored 2056 clips (0 unreadable) in 320.9s: 6.41 clips/s end-to-end (156.1 ms/clip), model time 316.0s
+### r1 blind video batch after
+scored 2056 clips (0 unreadable) in 66.6s: 30.86 clips/s end-to-end (32.4 ms/clip), model time 58.2s
+### r2 blind video batch before
+scored 2056 clips (0 unreadable) in 192.8s: 10.67 clips/s end-to-end (93.8 ms/clip), model time 189.3s
+### r2 blind video batch after
+scored 2056 clips (0 unreadable) in 64.9s: 31.67 clips/s end-to-end (31.6 ms/clip), model time 61.3s
+### r1 cpu video before
+scored 147 clips (0 unreadable) in 181.2s: 0.81 clips/s end-to-end (1232.3 ms/clip), model time 180.7s
+### r1 cpu video after
+scored 147 clips (0 unreadable) in 41.4s: 3.55 clips/s end-to-end (281.7 ms/clip), model time 41.1s
+### r2 cpu video before
+scored 147 clips (0 unreadable) in 151.0s: 0.97 clips/s end-to-end (1027.5 ms/clip), model time 150.6s
+### r2 cpu video after
+scored 147 clips (0 unreadable) in 36.5s: 4.02 clips/s end-to-end (248.5 ms/clip), model time 36.2s
+### done

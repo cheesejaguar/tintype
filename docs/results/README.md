@@ -18,3 +18,4 @@ of the speed runs. [../BENCHMARK.md](../BENCHMARK.md) presents them.
 | `confirm6_at_reference_rates.md` | That batch with Veracity at each reference detector's false-positive rate |
 | `*_phase6_weights.md` | The earlier suites re-scored with the phase-6 photo weights (seen data) |
 | `speed_interleaved.log` | Phase-6 and phase-3 photo weights and Community Forensics, alternated on the same files with the machine under load |
+| `speed_improvements.log` | The build before and after the five speed changes, alternated on the same files, then both builds on blind batch 6 (photos) and the blind video batch |

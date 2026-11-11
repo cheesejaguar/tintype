@@ -170,25 +170,29 @@ impl CpuVit {
         })
     }
 
-    /// Logits for `x`, a concatenation of normalised CHW views.
-    pub fn forward(&self, x: &[f32]) -> Vec<f32> {
+    /// Logits for `x`: views of interleaved 8-bit RGB, one after another.
+    pub fn forward(&self, x: &[u8]) -> Vec<f32> {
         let c = &self.cfg;
         let (p, side, d) = (c.patch, c.img / c.patch, c.dim);
         let (np, n) = (side * side, side * side + 1);
         let view = 3 * c.img * c.img;
         let b = x.len() / view;
         let pdim = 3 * p * p;
+        let (k, o) = crate::image_io::norm_consts();
 
-        // Unfold into patch rows (channel, row, column order, as the conv weight).
+        // Unfold into normalised patch rows (channel, row, column order, as
+        // the conv weight).
         let mut patches = vec![0f32; b * np * pdim];
         patches.par_chunks_mut(np * pdim).zip(x.par_chunks(view)).for_each(|(out, img)| {
             for py in 0..side {
                 for px in 0..side {
                     let row = &mut out[(py * side + px) * pdim..][..pdim];
-                    for ch in 0..3 {
-                        for dy in 0..p {
-                            let src = ch * c.img * c.img + (py * p + dy) * c.img + px * p;
-                            row[ch * p * p + dy * p..][..p].copy_from_slice(&img[src..src + p]);
+                    for dy in 0..p {
+                        let src = &img[((py * p + dy) * c.img + px * p) * 3..][..p * 3];
+                        for (dx, rgb) in src.chunks_exact(3).enumerate() {
+                            for ch in 0..3 {
+                                row[ch * p * p + dy * p + dx] = rgb[ch] as f32 * k[ch] - o[ch];
+                            }
                         }
                     }
                 }
@@ -215,10 +219,26 @@ impl CpuVit {
         let mut qkv = vec![0f32; rows * 3 * d];
         let mut att = vec![0f32; rows * d];
         let mut hid = vec![0f32; rows * d * c.mlp_ratio];
-        for blk in &self.blocks {
+        // `s[i, j] = softmax_j(scale * q_i . k_j)` for `nq` queries against `n` keys.
+        let attend = |q: &[f32], k: &[f32], s: &mut [f32], nq: usize| {
+            gemm(q, k, s, nq, n, hd, true, 0.0);
+            for row in s.chunks_mut(n) {
+                let m = row.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                for e in row.iter_mut() {
+                    *e = (*e - m) * scale;
+                }
+            }
+            exp_inplace(s);
+            for row in s.chunks_mut(n) {
+                let inv = 1.0 / row.iter().sum::<f32>();
+                row.iter_mut().for_each(|e| *e *= inv);
+            }
+        };
+        let last = self.blocks.len() - 1;
+        for blk in &self.blocks[..last] {
             blk.norm1.apply(&t, &mut y);
             blk.qkv.apply(&y, &mut qkv, rows);
-            // One task per (view, head).
+            // One task per view.
             att.par_chunks_mut(n * d).zip(qkv.par_chunks(n * 3 * d)).for_each(|(out, src)| {
                 let (mut q, mut k, mut v) = (vec![0f32; n * hd], vec![0f32; n * hd], vec![0f32; n * hd]);
                 let (mut s, mut o) = (vec![0f32; n * n], vec![0f32; n * hd]);
@@ -229,18 +249,7 @@ impl CpuVit {
                         k[i * hd..][..hd].copy_from_slice(&r[d + head * hd..][..hd]);
                         v[i * hd..][..hd].copy_from_slice(&r[2 * d + head * hd..][..hd]);
                     }
-                    gemm(&q, &k, &mut s, n, n, hd, true, 0.0);
-                    for row in s.chunks_mut(n) {
-                        let m = row.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                        for e in row.iter_mut() {
-                            *e = (*e - m) * scale;
-                        }
-                    }
-                    exp_inplace(&mut s);
-                    for row in s.chunks_mut(n) {
-                        let inv = 1.0 / row.iter().sum::<f32>();
-                        row.iter_mut().for_each(|e| *e *= inv);
-                    }
+                    attend(&q, &k, &mut s, n);
                     gemm(&s, &v, &mut o, n, hd, n, false, 0.0);
                     for i in 0..n {
                         out[i * d + head * hd..][..hd].copy_from_slice(&o[i * hd..][..hd]);
@@ -257,11 +266,39 @@ impl CpuVit {
             t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b);
         }
 
-        // Only the class token feeds the head.
-        let mut cls = vec![0f32; b * d];
-        for i in 0..b {
-            cls[i * d..][..d].copy_from_slice(&t[i * n * d..][..d]);
-        }
+        // Last block: only its class-token output is read, so only the class
+        // token's query is attended (against every key and value) and only
+        // that one token goes through the projection and the MLP. Same
+        // result as running the block in full, at about a quarter of the cost.
+        let blk = &self.blocks[last];
+        blk.norm1.apply(&t, &mut y);
+        blk.qkv.apply(&y, &mut qkv, rows);
+        let mut cls_att = vec![0f32; b * d];
+        cls_att.par_chunks_mut(d).zip(qkv.par_chunks(n * 3 * d)).for_each(|(out, src)| {
+            let (mut k, mut v) = (vec![0f32; n * hd], vec![0f32; n * hd]);
+            let mut s = vec![0f32; n];
+            for head in 0..h {
+                for i in 0..n {
+                    let r = &src[i * 3 * d..];
+                    k[i * hd..][..hd].copy_from_slice(&r[d + head * hd..][..hd]);
+                    v[i * hd..][..hd].copy_from_slice(&r[2 * d + head * hd..][..hd]);
+                }
+                attend(&src[head * hd..][..hd], &k, &mut s, 1);
+                gemm(&s, &v, &mut out[head * hd..][..hd], 1, hd, n, false, 0.0);
+            }
+        });
+        // Class tokens only from here on: `[b, d]`.
+        let mut cls: Vec<f32> = (0..b).flat_map(|i| t[i * n * d..][..d].iter().copied()).collect();
+        let mut yc = vec![0f32; b * d];
+        blk.proj.apply(&cls_att, &mut yc, b);
+        cls.iter_mut().zip(&yc).for_each(|(a, v)| *a += v);
+        blk.norm2.apply(&cls, &mut yc);
+        let mut hc = vec![0f32; b * d * c.mlp_ratio];
+        blk.fc1.apply(&yc, &mut hc, b);
+        gelu_inplace(&mut hc);
+        blk.fc2.apply(&hc, &mut yc, b);
+        cls.iter_mut().zip(&yc).for_each(|(a, v)| *a += v);
+
         let mut cn = vec![0f32; b * d];
         self.norm.apply(&cls, &mut cn);
         let mut out = vec![0f32; b * self.head.out];

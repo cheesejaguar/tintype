@@ -123,10 +123,18 @@ pub fn waverep_logits(weights: &Path, paths: &[PathBuf], device: Device, batch: 
 /// With `second` (the WaveRep weights) and a second-opinion band
 /// in the checkpoint's video profile, clips inside the band get the second
 /// stage and their probability comes from both.
+///
+/// Clips stop early when the checkpoint's video profile has an early-exit
+/// schedule: the frame logits written are then those of the frames looked
+/// at, in looking order. `all_frames` turns that off, and so does a second
+/// opinion, whose band is defined on the logit of all frames.
 #[allow(clippy::too_many_arguments)]
-pub fn score_videos(weights: &Path, sys: &System, manifests: &[PathBuf], out: &Path, device: Device, batch: usize, frames: Option<usize>, views: Option<&str>, second: Option<&Path>) -> Result<Timing> {
+pub fn score_videos(weights: &Path, sys: &System, manifests: &[PathBuf], out: &Path, device: Device, batch: usize, frames: Option<usize>, views: Option<&str>, second: Option<&Path>, all_frames: bool) -> Result<Timing> {
     let items = items_of(manifests)?;
     let waverep = matches!(sys, System::WaveRep);
+    let exit = if waverep || all_frames || second.is_some() { None } else { ModelSpec::load_for(weights).ok().and_then(|s| s.video).and_then(|v| v.early_exit) };
+    // Early exit runs 2, 4 or 8 frames of six views at a time: 96 holds whole clips at every stage.
+    let batch = if exit.is_some() { 96 } else { batch };
     let mut det = Detector::load(weights, waverep.then(ModelSpec::waverep), if waverep { batch.min(16) } else { batch }, device)?;
     let band = if waverep { None } else { det.spec.video.as_ref().and_then(|v| v.second_opinion) };
     let profile_frames = if waverep { 64 } else { det.use_video_profile() };
@@ -135,7 +143,10 @@ pub fn score_videos(weights: &Path, sys: &System, manifests: &[PathBuf], out: &P
     }
     let sampling = crate::video::Sampling { frames: frames.unwrap_or(profile_frames), consecutive: waverep, ..Default::default() };
     let paths: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
-    let (res, mut t) = det.score_videos(&paths, sampling, if waverep { threads().min(4) } else { threads() });
+    let (res, mut t) = match &exit {
+        Some(e) => det.score_videos_adaptive(&paths, sampling, threads(), e),
+        None => det.score_videos(&paths, sampling, if waverep { threads().min(4) } else { threads() }),
+    };
     // One logit per frame (views averaged), then the clip logit.
     let per_frame: Vec<Option<Vec<f32>>> = res.iter().map(|r| r.as_ref().map(|fr| fr.iter().map(|v| v.iter().sum::<f32>() / v.len() as f32).collect())).collect();
     let mut probs: Vec<Option<f32>> = per_frame.iter().map(|f| f.as_ref().map(|f| det.probability(&[crate::video::aggregate(f)]))).collect();
@@ -423,11 +434,11 @@ pub fn evaluate(suite_name: &str, weights: &Path, video_weights: &Path, tag: &st
     for s in &sets {
         let m = [PathBuf::from(s.manifest)];
         if s.video {
-            score_videos(video_weights, &System::Veracity { profile: Photo::Default }, &m, &file(s.name, tag), device, 64, None, None, None)?;
+            score_videos(video_weights, &System::Veracity { profile: Photo::Default }, &m, &file(s.name, tag), device, 64, None, None, None, false)?;
             if let Some(b) = baselines {
                 let p = file(s.name, "waverep");
                 if need(&p) {
-                    score_videos(&b.waverep, &System::WaveRep, &m, &p, device, 16, None, None, None)?;
+                    score_videos(&b.waverep, &System::WaveRep, &m, &p, device, 16, None, None, None, false)?;
                 }
                 second_opinion_from_scores(&file(s.name, tag), &p, video_weights, &file(s.name, &format!("{tag}-second")))?;
             }
@@ -546,6 +557,7 @@ pub fn finalize_video(checkpoint: &Path, weights: &Path, scores: &Path, video_fp
     let mut spec = standard_spec(224);
     if let Some(v) = spec.video.as_mut() {
         v.second_opinion = second;
+        v.early_exit = Some(crate::detector::EarlyExit::video_standard());
     }
     spec.save_for(weights)?;
     let vv = PathBuf::from("data/splits/val_videos_phase4.tsv");
@@ -554,7 +566,7 @@ pub fn finalize_video(checkpoint: &Path, weights: &Path, scores: &Path, video_fp
     let mut videos = vec![vv];
     videos.extend(crate::plans::DEV_VIDEO_MANIFESTS.iter().map(PathBuf::from).filter(|p| p.exists()));
     let cv = scores.join("calib_videos_phase4.tsv");
-    score_videos(weights, &System::Veracity { profile: Photo::Default }, &videos, &cv, device, 64, None, None, None)?;
+    score_videos(weights, &System::Veracity { profile: Photo::Default }, &videos, &cv, device, 64, None, None, None, true)?;
     calibrate(weights, &[cv], video_fpr, "video", Rule::Balanced(100))
 }
 
@@ -597,7 +609,7 @@ pub fn finalize(checkpoint: &Path, weights: &Path, scores: &Path, photo_fpr: f64
     let (ci, cf, cv) = (scores.join("calib_images.tsv"), scores.join("calib_images_fast.tsv"), scores.join("calib_videos.tsv"));
     score_images(weights, &System::Veracity { profile: Photo::Default }, &images, &ci, device, 64, None, true)?;
     score_images(weights, &System::Veracity { profile: Photo::Fast }, &images, &cf, device, 64, None, true)?;
-    score_videos(weights, &System::Veracity { profile: Photo::Default }, &videos, &cv, device, 64, None, None, None)?;
+    score_videos(weights, &System::Veracity { profile: Photo::Default }, &videos, &cv, device, 64, None, None, None, true)?;
     calibrate(weights, &[ci.clone()], photo_fpr, "photo", Rule::Balanced(100))?;
     calibrate(weights, &[ci.clone()], strict_fpr, "strict", Rule::Balanced(100))?;
     calibrate(weights, &[ci], sensitive_fpr, "sensitive", Rule::Balanced(100))?;

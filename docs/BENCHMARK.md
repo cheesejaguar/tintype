@@ -725,6 +725,90 @@ for all views and 67 ms for the Community Forensics port.
 
 Video frames always get all six views; early exit applies to photos only.
 
+### Five speed changes, before and after
+
+A later pass looked for speed alone. The build before it and the build after
+it were run alternately on the same files, three times on the GPU and twice
+on the CPU, while the machine was also running a virtual machine on six of
+its cores ([results/speed_improvements.log](results/speed_improvements.log)).
+The absolute figures are therefore not comparable with the idle-machine table
+above; the ratios are the result.
+
+| Same pass, machine under load | Before | After | Ratio |
+|---|---|---|---|
+| Photos, default, GPU (5,000 images) | 288 images/s | 464 images/s | 1.61× |
+| Photos, default, CPU (1,000 images) | 36.3 images/s | 53.2 images/s | 1.47× |
+| Photos, `--fast`, GPU | 453 images/s | 500 images/s | 1.11× |
+| Photos, `--all-views`, GPU | 162 images/s | 179 images/s | 1.10× |
+| Photos, `--all-views`, CPU | 20.8 images/s | 24.6 images/s | 1.18× |
+| Video, GPU (147 clips), second pass | 6.1 clips/s | 21.4 clips/s | 3.5× |
+| Video, CPU (147 clips), second pass | 0.89 clips/s | 3.8 clips/s | 4.3× |
+| Blind batch 6 photos, GPU (16,324 images) | 357 images/s | 580 images/s | 1.62× |
+| Blind batch video, GPU (2,056 clips), second pass | 10.7 clips/s | 31.7 clips/s | 3.0× |
+
+The video rows come from a second pass, run after the last of the changes
+to video (decoding that stops half-way). Another job was using the GPU for
+part of that pass, so its absolute figures are lower still and they moved
+between repeats: the blind batch took 321 s and 193 s before the changes and
+67 s and 65 s after them, and the table uses the closer pair. Video is about
+three times faster (four on the CPU). Photos are about 1.6 times faster in
+the default profile, short of the factor of two that was the aim. What
+changed:
+
+1. **Clips stop early.** Frames are looked at in stages: the first and last
+   of the eight frames in the clip's first half, then four of them, then all
+   eight, and only then the second half. A clip whose mean logit is 4, 3 and
+   3 away from the threshold at those stages is not shown the rest: 4.8
+   frames per clip on the blind batch instead of 16. Because the first half
+   is looked at first, decoding stops at the half-way mark as well, and only
+   the clips still undecided there (17% on the blind batch) are opened again
+   for their second half. Simulated from the stored frame logits this changed
+   no verdict on 4,770 development clips or the 2,013 blind ones; re-run for
+   real on the blind batch it gives the same 0.997 / 0.941 with no verdict
+   changed. A second opinion turns it off, because its band is defined on the
+   logit of all frames.
+2. **Tighter early exit for photos.** The margins went from 7–9 / 5 / 3.5 /
+   2.5 / 2 to 6 / 3 / 2 / 1.5 / 1, fitted on the 44,336 development images
+   under the condition that pooled precision and recall stay within 0.001 of
+   the previous schedule. Views per image fall from 2.64 to 1.93 there. Blind
+   batch 6, re-scored with the real pipeline: 1.71 views instead of 2.30, and
+   the same pooled result to four decimals (0.9860 / 0.9036, 111 real images
+   flagged both times). 116 of the 16,324 verdicts differ, in both directions;
+   per set, recall moves by between −0.033 (IP-Adapter) and +0.028. This is a
+   re-score of a batch already seen, and the choice among four candidate
+   schedules was made with the blind numbers visible, so it is not a blind
+   result.
+3. **Every batch full.** With more images leaving early, the later stages
+   seldom had a full batch waiting, and the fixed-size GPU batch ran half
+   empty. A batch is now filled with the next views of whichever images are
+   waiting, whatever stage they are at.
+4. **Pixels handed over in the engine's own form.** Crops stay 8-bit until
+   the last moment. For the GPU the decode workers turn them into
+   half-precision planar values by table lookup, so the main thread only
+   copies, the GPU receives half the bytes and no longer casts them. The CPU
+   engine normalises while it cuts patches. Scores are unchanged (no verdict
+   differs on the 1,000 timing images with all views).
+5. **The last block for the class token only.** Only the class token's
+   output of the last transformer block is read, so only its query is
+   attended and only that token goes through the projection and the MLP. The
+   result is the same; the block costs about a quarter of what it did.
+
+Tried and not kept:
+
+- **Token merging** (Bolya et al., ICLR 2023), which the literature reports
+  as 1.6–1.9× on this network without retraining. Here it removes the signal:
+  on the 1,000 timing images recall fell from 0.848 to 0.786 at 8 merged
+  tokens per block and to 0.708 at 13, and dropping tokens instead of
+  averaging them was no better. Merging only in the last four blocks costs
+  much less (6 verdicts in 1,000) but saves only about 15% of the network.
+- **Fused attention** (`scaledDotProductAttention`) and **8-bit input cast on
+  the GPU**: the first was no faster at this sequence length, the second was
+  several times slower than the float input it replaced.
+
+The GPU now spends its time in the twelve blocks themselves (about 4 ms each
+for a batch of 64), so a further large gain on photos would need fewer tokens
+or fewer blocks, which means retraining with that in mind.
+
 ## Reproduce
 
 ```bash
