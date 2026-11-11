@@ -1,9 +1,9 @@
 # What was fixed before each blind batch
 
-Three batches were scored blind: the third confirmation batch (photos, and
+Four batches were scored blind: the third confirmation batch (photos, and
 video with the phase-3 weights), the fourth (video, for the dedicated video
-checkpoint) and the fifth (photos, for the balanced default threshold and
-early exit). Each note below was written before its data was downloaded and
+checkpoint), the fifth (photos, for the balanced default threshold and early
+exit) and the sixth (photos, for the retrained phase-6 weights). Each note below was written before its data was downloaded and
 is reproduced unchanged.
 
 ## Third confirmation batch: what was fixed before scoring it

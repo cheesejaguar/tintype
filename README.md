@@ -23,13 +23,13 @@ scored once. Each system is at its shipped threshold.
 
 | | Precision | Recall | Speed |
 |---|---|---|---|
-| **Photos** (7,079 AI, 6,278 real) | | | images/s, GPU / CPU |
-| Veracity | 0.980 | 0.875 | 263 / 38.8 |
-| Community Forensics | 0.963 | 0.762 | 61–67 / 25.4 (100 / 35.0 through this engine) |
-| SwinV2 detector | 0.838 | 0.677 | 8.6 (30 through this engine) |
-| Veracity `--strict` | 0.995 | 0.713 | 292 / 39.0 |
-| Veracity `--sensitive` | 0.940 | 0.957 | 282 |
-| Veracity `--fast` | 0.995 | 0.658 | 455 / 52.6 |
+| **Photos** (8,628 AI, 7,696 real) | | | images/s, GPU / CPU |
+| Veracity | 0.986 | 0.904 | 263 / 38.8 |
+| Community Forensics | 0.966 | 0.818 | 61–67 / 25.4 (100 / 35.0 through this engine) |
+| SwinV2 detector | 0.834 | 0.541 | 8.6 (30 through this engine) |
+| Veracity `--strict` | 0.996 | 0.815 | 292 / 39.0 |
+| Veracity `--sensitive` | 0.960 | 0.975 | 282 |
+| Veracity `--fast` | 0.995 | 0.761 | 455 / 52.6 |
 | **Video** (1,156 AI, 900 real) | | | seconds per clip |
 | Veracity | 0.997 | 0.941 | 0.09 |
 | Veracity `--second-opinion` | 0.997 | 0.960 | 0.26 |
@@ -37,15 +37,21 @@ scored once. Each system is at its shipped threshold.
 
 What that table does not show:
 
-- The photo result is pooled. Most of that batch is older generators (GANs,
-  GLIDE, identity adapters), and on nine of its thirteen sets Community
-  Forensics finds more of the AI images than Veracity's default does, at
-  lower precision. Veracity's lead comes from current commercial generators
-  in social-media photos, where Community Forensics finds 41% and Veracity
-  86%. `--sensitive` recovers the older generators at 4–10% false positives.
-- The default threshold was loosened after an earlier blind batch, on which
-  the stricter setting (now `--strict`) scored 0.997 / 0.865 against
-  Community Forensics' 0.970 / 0.637 and the SwinV2 detector's 0.896 / 0.918.
+- The photo result is pooled over nineteen sets. Most are older generators
+  (GANs, GLIDE, identity adapters), and on fourteen of them Community
+  Forensics finds more of the AI images than Veracity's default does (0.96–1.00
+  against 0.82–1.00 on the GAN sets), at lower precision. Allowed Community
+  Forensics' false-positive rate, Veracity is within 0.002–0.023 of its recall
+  on those sets, level on four and ahead on five. Veracity's lead comes from
+  current commercial generators in social-media photos, where Community
+  Forensics finds 40% and Veracity 86%.
+- This is the third blind photo batch. After the first, the default
+  threshold was loosened (the stricter setting is now `--strict`); after the
+  second, the photo weights were retrained with older generators added. Each
+  change was fixed in writing before the next batch was fetched.
+- Photo speeds were measured with the previous photo weights on an idle
+  machine. The current weights are the same network and need slightly fewer
+  views per image, but have not been timed on an idle machine.
 - `--second-opinion` leans on WaveRep's own released network for the clips
   Veracity's video model is unsure about. The plain "Veracity" video row uses
   only Veracity's weights; on one of the three video sets its recall is a
@@ -95,9 +101,9 @@ still several times faster than WaveRep by itself.
 
 **Small network, wide training set.** The network is a plain ViT-S/16 at
 224 px. It starts from the Community Forensics 224 px checkpoint (MIT) and is
-retrained in three phases on photos, frames and clips from about 380
-generators – the commercial image generators of 2025–26 among them – against
-real photos and footage from fourteen sources. The video checkpoint is
+retrained in four phases on photos, frames and clips from about 1,200
+generators – the commercial image generators of 2025–26 and the GAN families
+before them – against real photos and footage from sixteen sources. The video checkpoint is
 trained on clips from thirty video generators, from open models to Sora,
 Veo 3.1 and Gen-3.
 
@@ -180,9 +186,16 @@ veracity train --init runs/v3/step_007000.safetensors --manifest ... --out runs/
 veracity data dev && veracity data benchmarks && veracity data confirm1 && veracity data confirm2
 veracity finalize runs/v4/step_007000.safetensors          # spec + calibration of every profile
 
-veracity data confirm3 && veracity data confirm5           # the two blind photo batches
+veracity data confirm3 && veracity data confirm5           # the first two blind photo batches
 veracity evaluate confirm3 --baselines                     # all systems, all tables
 veracity evaluate confirm5 --baselines
+
+# the current photo weights
+veracity data phase6
+veracity train --init runs/v4/step_007000.safetensors --manifest <photo and phase-1 video stores> ... --out runs/v7 --steps 8000 --lr 2e-5 --warmup 300
+veracity finalize runs/v7/step_008000.safetensors --also-trained-on <phase-6 manifests> --also-scored-on <batch 3 and 5 manifests>
+veracity data confirm6
+veracity evaluate confirm6 --baselines
 
 # the video checkpoint
 veracity data phase4 && veracity data phase5

@@ -7,13 +7,15 @@ run by the same Rust binary.
 
 ## Summary
 
-Results on the three blind batches – data downloaded only after the
+Results on the four blind batches – data downloaded only after the
 configuration under test and the protocol had been written down, and scored
 once. Each system is at its shipped threshold.
 
 | | Veracity | Reference |
 |---|---|---|
-| **Photos**, batch 5: 7,079 AI and 6,278 real | default profile: precision 0.980, recall 0.875 | Community Forensics: 0.963, 0.762 |
+| **Photos**, batch 6: 8,628 AI and 7,696 real | default profile, current weights: precision 0.986, recall 0.904 | Community Forensics: 0.966, 0.818 |
+| | | SwinV2 detector: 0.834, 0.541 |
+| **Photos**, batch 5: 7,079 AI and 6,278 real | default profile, phase-3 weights: 0.980, 0.875 | Community Forensics: 0.963, 0.762 |
 | | | SwinV2 detector: 0.838, 0.677 |
 | **Photos**, batch 3: 6,172 AI and 4,541 real | `--strict` (the default at the time): 0.997, 0.865 | Community Forensics: 0.970, 0.637 |
 | | `--sensitive`: 0.955, 0.972 | SwinV2 detector: 0.896, 0.918 |
@@ -29,15 +31,19 @@ checkpoint is ahead of WaveRep on both.
 
 Where Veracity is not ahead, or the comparison needs a qualifier:
 
-- **Older generators, set by set.** Batch 5 is mostly AIGIBench archives of
-  GANs, GLIDE and identity-preserving adapters. On nine of its thirteen sets
-  Community Forensics finds more of the AI images than the default profile
-  (it was trained on thousands of such generators and reaches 0.98–1.00 on
-  the GAN sets, where Veracity reaches 0.73–0.99), and on PhotoMaker both
-  reference detectors do. Veracity's precision is the higher on eleven of the
-  thirteen. The pooled result is carried by So-Fake-OOD – current commercial
-  generators in social-media photos, a third of the batch's AI images – where
-  Community Forensics finds 0.41 and Veracity 0.86.
+- **Older generators, set by set.** Batches 5 and 6 are mostly GANs, GLIDE
+  and identity-preserving adapters. Community Forensics was trained on
+  thousands of such generators and reaches 0.96–1.00 recall on the GAN sets.
+  After batch 5 the photo weights were retrained with such generators added;
+  on batch 6 the default profile's recall is still below Community Forensics'
+  on fourteen of nineteen sets (eleven GAN sets, GLIDE, IP-Adapter,
+  PhotoMaker), equal on two and above on three, while its precision is higher
+  on seventeen and equal on two. Given Community Forensics' own
+  false-positive rate on each set the gap shrinks to 0.002–0.023 of recall on
+  ten sets, with four ties and five wins. The pooled results are carried by
+  So-Fake-OOD – current commercial generators in social-media photos – where
+  Community Forensics finds 0.40 and Veracity 0.86. No single threshold puts
+  Veracity ahead of Community Forensics on recall on every set.
 - **The default threshold was moved after batch 3.** There the default was
   what is now `--strict`: more precise than the SwinV2 detector on every set
   but with lower recall on three of five (pooled 0.865 against 0.918). The
@@ -126,12 +132,93 @@ set, so the data is split by what it was allowed to influence
    change; the default threshold moved from a 0.5% to a 1.5% target and early
    exit was added, both fitted on development data and written down (same
    document) before this data was downloaded. It was scored once.
+6. **Third blind photo batch** (`confirm6`). The retrained (phase-6) photo
+   weights, their thresholds and the protocol were written down before this
+   data was downloaded. It was scored once, with the phase-3 weights
+   alongside.
 
 In every table: precision and recall at each system's shipped threshold, with
 95% bootstrap intervals; "Recall at 1% FPR" sets each system's threshold on
 that set's own real items, which removes the choice of threshold.
 
 ## Photos
+
+### Blind batch 6: the retrained photo weights
+
+Batch 5 showed the photo weights finding fewer images than Community
+Forensics from older GAN and diffusion families and from identity adapters.
+The weights were trained on from there with such generators added (phase 6,
+[DATA.md](DATA.md)), calibrated by the same rules, and tested on a batch
+fixed beforehand: three more shards of So-Fake-OOD, a second sample of the
+twelve AIGIBench archives of batch 5 that shares no file with the first, and
+six families of the classic GAN test set of Wang et al. (CVPR 2020).
+
+**Pooled** (8,628 AI, 7,696 real)
+
+| System | Precision | Recall | F1 | False-positive rate | AUROC | Recall at 1% FPR |
+|---|---|---|---|---|---|---|
+| Community Forensics | 0.966 (0.962–0.970) | 0.818 (0.810–0.826) | 0.886 | 3.26% | 0.970 | 0.712 |
+| SwinV2 detector | 0.834 (0.824–0.844) | 0.541 (0.530–0.551) | 0.656 | 12.10% | 0.772 | 0.227 |
+| Veracity | 0.986 (0.983–0.989) | 0.904 (0.897–0.910) | 0.943 | 1.44% | 0.990 | 0.877 |
+| Veracity (strict) | 0.996 (0.994–0.997) | 0.815 (0.806–0.823) | 0.896 | 0.40% | 0.987 | 0.869 |
+| Veracity (fast) | 0.995 (0.993–0.997) | 0.761 (0.751–0.769) | 0.862 | 0.43% | 0.990 | 0.856 |
+| Veracity (sensitive) | 0.960 (0.956–0.964) | 0.975 (0.972–0.978) | 0.967 | 4.57% | 0.993 | 0.882 |
+| Veracity, phase-3 weights (default) | 0.977 | 0.882 | – | 2.34% | – | – |
+
+By set – precision / recall, with the share of real photos flagged in
+brackets. "At CF's rate" is Veracity's recall when it is allowed to flag as
+many real photos of that set as Community Forensics did.
+
+| Set | AI / real | Community Forensics | SwinV2 detector | Veracity | Veracity recall at CF's rate | Phase-3 weights |
+|---|---|---|---|---|---|---|
+| So-Fake-OOD, batch 5 | 2040 / 1361 | 0.976 / 0.401 (1.47%) | 0.945 / 0.812 (7.13%) | 0.980 / 0.855 (2.57%) | 0.813 | 0.985 / 0.852 |
+| BLIP-Diffusion | 400 / 400 | 0.957 / 1.000 (4.50%) | 0.915 / 1.000 (9.25%) | 0.993 / 1.000 (0.75%) | 1.000 | 0.976 / 1.000 |
+| GLIDE | 397 / 387 | 0.945 / 0.997 (5.94%) | 0.797 / 0.544 (14.21%) | 0.992 / 0.970 (0.78%) | 0.995 | 0.972 / 0.947 |
+| Infinite-ID | 400 / 372 | 0.979 / 0.915 (2.15%) | 0.861 / 0.743 (12.90%) | 0.988 / 1.000 (1.34%) | 1.000 | 0.973 / 1.000 |
+| InstantID | 400 / 368 | 0.934 / 0.667 (5.16%) | 0.860 / 0.953 (16.85%) | 0.990 / 0.985 (1.09%) | 1.000 | 0.978 / 0.990 |
+| IP-Adapter | 400 / 368 | 0.957 / 0.885 (4.35%) | 0.779 / 0.698 (21.47%) | 0.991 / 0.873 (0.82%) | 0.985 | 0.975 / 0.860 |
+| PhotoMaker | 400 / 374 | 0.963 / 0.713 (2.94%) | 0.778 / 0.578 (17.65%) | 0.992 / 0.608 (0.53%) | 0.965 | 0.978 / 0.453 |
+| ProGAN | 400 / 400 | 0.920 / 1.000 (8.75%) | 0.615 / 0.080 (5.00%) | 0.943 / 0.998 (6.00%) | 0.998 | 0.935 / 0.975 |
+| R3GAN | 400 / 366 | 0.966 / 1.000 (3.83%) | 0.752 / 0.560 (20.22%) | 0.997 / 0.968 (0.27%) | 0.998 | 0.966 / 0.983 |
+| StyleGAN-XL | 400 / 375 | 0.964 / 1.000 (4.00%) | 0.847 / 0.845 (16.27%) | 0.989 / 0.892 (1.07%) | 0.993 | 0.967 / 0.892 |
+| StyleGAN3 | 400 / 373 | 0.990 / 0.985 (1.07%) | 0.622 / 0.255 (16.62%) | 0.997 / 0.845 (0.27%) | 0.983 | 0.986 / 0.713 |
+| StyleSwim | 400 / 372 | 0.952 / 1.000 (5.38%) | 0.783 / 0.560 (16.67%) | 0.994 / 0.815 (0.54%) | 0.993 | 0.979 / 0.917 |
+| WFIR (StyleGAN faces) | 398 / 400 | 1.000 / 1.000 (0.00%) | 0.582 / 0.545 (39.00%) | 1.000 / 0.920 (0.00%) | 1.000 | 0.994 / 0.784 |
+| BigGAN (classic set) | 299 / 299 | 0.984 / 1.000 (1.67%) | 0.682 / 0.050 (2.34%) | 0.987 / 0.997 (1.34%) | 0.997 | 0.977 / 0.987 |
+| CycleGAN (classic set) | 298 / 298 | 0.974 / 0.997 (2.68%) | 0.467 / 0.047 (5.37%) | 0.983 / 0.963 (1.68%) | 0.977 | 0.968 / 0.923 |
+| GauGAN (classic set) | 299 / 299 | 0.980 / 1.000 (2.01%) | 0.583 / 0.023 (1.67%) | 0.990 / 0.997 (1.00%) | 1.000 | 0.990 / 0.990 |
+| StarGAN (classic set) | 299 / 299 | 1.000 / 1.000 (0.00%) | 0.429 / 0.010 (1.34%) | 1.000 / 1.000 (0.00%) | 1.000 | 1.000 / 1.000 |
+| StyleGAN (classic set) | 299 / 299 | 0.963 / 0.963 (3.68%) | 0.686 / 0.080 (3.68%) | 0.968 / 0.923 (3.01%) | 0.940 | 0.962 / 0.923 |
+| StyleGAN2 (classic set) | 299 / 286 | 0.943 / 0.990 (6.29%) | 0.357 / 0.017 (3.15%) | 0.988 / 0.836 (1.05%) | 0.970 | 0.987 / 0.773 |
+
+Pooled, the default profile is ahead of both reference detectors on precision
+and on recall, and the retrained weights are ahead of the phase-3 weights on
+both. Set by set:
+
+- Against the SwinV2 detector Veracity is ahead on both measures on eighteen
+  of the nineteen sets and level on recall on the other (BLIP-Diffusion, both
+  1.000).
+- Against Community Forensics Veracity's precision is the higher on seventeen
+  sets and equal on two. Its recall is higher on three (So-Fake-OOD,
+  InstantID, Infinite-ID), equal on two (BLIP-Diffusion and StarGAN, both
+  1.000) and lower on fourteen: eleven of the twelve GAN sets, GLIDE,
+  IP-Adapter and PhotoMaker. Community Forensics finds 0.96–1.00 of the GAN
+  images; Veracity finds 0.82–1.00 of them and flags fewer of those sets'
+  real photos on every one where either detector flags any.
+- Given Community Forensics' own false-positive rate on each set, Veracity's
+  recall is higher on five sets, equal on four and lower on ten, by 0.002 to
+  0.023. On images from GANs Community Forensics remains marginally the
+  better detector; on current commercial generators and identity adapters
+  Veracity is far ahead (0.855 against 0.401 on So-Fake-OOD).
+- Retraining helped where it was aimed and cost a little elsewhere: StyleGAN3
+  0.713 → 0.845, WFIR 0.784 → 0.920, PhotoMaker 0.453 → 0.608, StyleGAN2
+  0.773 → 0.836; StyleSwim 0.917 → 0.815 and R3GAN 0.983 → 0.968, with the
+  share of real photos flagged on those two falling from 2.2% and 3.8% to
+  0.5% and 0.3%.
+
+Raw tables: [results/confirm6.md](results/confirm6.md),
+[results/confirm6_phase3_weights.md](results/confirm6_phase3_weights.md),
+[results/confirm6_at_reference_rates.md](results/confirm6_at_reference_rates.md).
 
 ### Blind batch 5: the default profile
 
@@ -559,6 +646,11 @@ video checkpoint 0.158.
 ## Speed
 
 Same machine, idle, final build ([results/speed_final.log](results/speed_final.log)).
+The photo rows were measured with the phase-3 weights. The phase-6 weights
+are the same network and stop after 2.8 views per image on these files where
+the phase-3 weights needed 3.0, so their cost is the same or slightly lower;
+they could not be re-timed on an idle machine (a pass with the machine in
+use for other things gave 204 images/s on the GPU and 31 on the CPU).
 "As released" rows are the authors' own PyTorch pipelines on the same files
 (PyTorch 2.15, Metal backend, 32-bit floats;
 [results/speed_released.log](results/speed_released.log)); the other

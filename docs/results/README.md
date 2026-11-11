@@ -13,3 +13,7 @@ of the speed runs. [../BENCHMARK.md](../BENCHMARK.md) presents them.
 | `speed.log` | Throughput and latency runs on the idle machine, build before early exit |
 | `speed_final.log` | The same for the final build |
 | `speed_released.log` | The reference detectors through their authors' PyTorch pipelines, same files, idle machine |
+| `confirm6.md` | Third blind photo batch (phase-6 photo weights) |
+| `confirm6_phase3_weights.md` | The same batch scored with the phase-3 weights |
+| `confirm6_at_reference_rates.md` | That batch with Veracity at each reference detector's false-positive rate |
+| `*_phase6_weights.md` | The earlier suites re-scored with the phase-6 photo weights (seen data) |

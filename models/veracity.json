@@ -37,8 +37,8 @@
       }
     }
   ],
-  "logit_scale": 0.6523684,
-  "logit_bias": -1.5082704,
+  "logit_scale": 0.66400504,
+  "logit_bias": -1.1236415,
   "threshold": 0.5,
   "prefix": "",
   "video": {
@@ -80,8 +80,8 @@
         }
       }
     ],
-    "logit_scale": 0.96182925,
-    "logit_bias": -1.6514188
+    "logit_scale": 0.8973258,
+    "logit_bias": -0.91026974
   },
   "fast": {
     "views": [
@@ -98,8 +98,8 @@
         }
       }
     ],
-    "logit_scale": 0.3136731,
-    "logit_bias": -1.6413087
+    "logit_scale": 0.37841684,
+    "logit_bias": -1.5882723
   },
   "sensitive": {
     "views": [
@@ -139,8 +139,8 @@
         }
       }
     ],
-    "logit_scale": 0.8738813,
-    "logit_bias": -0.1904595
+    "logit_scale": 0.8863126,
+    "logit_bias": 0.68809325
   },
   "strict": {
     "views": [
@@ -180,8 +180,8 @@
         }
       }
     ],
-    "logit_scale": 0.42760944,
-    "logit_bias": -1.8012437
+    "logit_scale": 0.47940388,
+    "logit_bias": -1.6282945
   },
   "early_exit": {
     "order": [

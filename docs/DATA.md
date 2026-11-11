@@ -94,6 +94,25 @@ system's. HEVC files tagged `hev1`, which the system decoder refuses as they
 are (all of GenBuster, some AIGVDBench clips), are read through a temporary
 copy with the tag corrected.
 
+### Phase 6 (8,000 steps; plan `phase6`) – the released photo weights
+
+Continued from the phase-3 weights on every store of phases 1–3 (the
+`train-images` plan fetched again, all nine OpenFake shards this time) and:
+
+| Store | Source | Real | AI |
+|---|---|---|---|
+| `commfor-small2` | Community Forensics (Small), 25 more shards | 29.0 k | 44.9 k, about 830 generators (BigGAN, GigaGAN, StyleSwin, StyleGAN3, Gansformer among them) |
+| `tiny-genimage` | [Tiny-GenImage](https://huggingface.co/datasets/TheKernel01/Tiny-GenImage) train split | 14.0 k ImageNet | 14.0 k, 2.0 k each: ADM, BigGAN, GLIDE, VQDM, Wukong, SD 1.5, Midjourney |
+| `stylegan3` | [StyleGAN3 1024 px](https://huggingface.co/datasets/34data/StyleGAN3_1024x1024_images) | – | 2.0 k |
+| `tpdne` | [this-person-does-not-exist-10k](https://huggingface.co/datasets/javi22/this-person-does-not-exist-10k), evenly spaced | – | 3.0 k StyleGAN2 faces |
+| `ip-adapter` | IP-Adapter FaceID sets on [SD 1.5 / SDXL](https://huggingface.co/datasets/34data/ip-adapter-faceid) and [SD 3.5](https://huggingface.co/datasets/34data/sd35-ip-adapter-faceid) | – | 3.0 k each |
+| `celeba-hq` | [CelebA-HQ](https://huggingface.co/datasets/mattymchen/celeba-hq), three train shards | 7.5 k faces | – |
+
+These collections share source photos (ImageNet, COCO) with evaluation sets:
+916 training files that were byte-identical to an evaluation file were removed
+before training, after which none of 314,282 training files matched any of
+75,844 evaluation files.
+
 Sampling: both classes equally often; within a class a source is drawn with
 weight `count^0.5`. Three percent of every store, chosen by path hash, is held
 out for validation and calibration.
@@ -133,7 +152,14 @@ frozen.
    target at which Veracity is ahead of both reference detectors on the most
    development sets (1.5%; the 0.5% point stays as `--strict`), and early
    exit over the views. → scored once on *confirmation batch 5* (`confirm5`).
-   These are the numbers to trust for the default photo profile.
+   These are the numbers to trust for the default photo profile with the
+   phase-3 weights.
+7. Finding on batch 5: on GAN-era and identity-adapter sets Community
+   Forensics found more of the AI images. Decision: phase-6 training, with
+   thresholds and early exit set by the same rules. → **Phase-6 photo
+   weights** scored once on *confirmation batch 6* (`confirm6`), with the
+   phase-3 weights alongside. These are the numbers to trust for the released
+   photo weights. Batches 3 and 5 are development data for them.
 
 For the phase-3 model every set before batch 3 is development data: it was
 seen while deciding, and its real items are in the calibration set. For the
@@ -211,6 +237,18 @@ count them once.
 The AIGIBench files were read out of the remote archives by HTTP range
 requests, without downloading the archives. No real photo is shared between
 these twelve sets.
+
+### Plan `confirm6` (photos only)
+
+| Set | Source | Real | AI |
+|---|---|---|---|
+| So-Fake-OOD, batch 5 | shards 1, 33, 45 | 1,361 | 2,040 |
+| AIGIBench, second sample | 400 files per class from each of the twelve archives of batch 5, half a step away from that batch's files | 4,555 | 4,795 |
+| Classic GAN test set | [CNNDetection](https://huggingface.co/datasets/sywang/CNNDetection) `CNN_synth_testset.zip`: 300 evenly spaced files per class of StyleGAN, StyleGAN2, BigGAN, CycleGAN, GauGAN, StarGAN | 1,780 | 1,793 |
+
+Files identical to anything trained on or scored earlier, or to a file in an
+earlier set of this batch, were dropped (291 in all, mostly real photos that
+AIGIBench archives share).
 
 ## Overlap checks
 
