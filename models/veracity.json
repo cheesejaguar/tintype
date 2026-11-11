@@ -1,0 +1,146 @@
+{
+  "img": 224,
+  "views": [
+    {
+      "fit": {
+        "resize": 256,
+        "crop": 224
+      }
+    },
+    {
+      "native": {
+        "crop": 224
+      }
+    },
+    {
+      "native_rich": {
+        "crop": 224,
+        "rank": 0
+      }
+    },
+    {
+      "native_rich": {
+        "crop": 224,
+        "rank": 1
+      }
+    },
+    {
+      "native_rich": {
+        "crop": 224,
+        "rank": 2
+      }
+    },
+    {
+      "native_rich": {
+        "crop": 224,
+        "rank": 3
+      }
+    }
+  ],
+  "logit_scale": 0.42760944,
+  "logit_bias": -1.8012437,
+  "threshold": 0.5,
+  "prefix": "",
+  "video": {
+    "frames": 16,
+    "views": [
+      {
+        "fit": {
+          "resize": 256,
+          "crop": 224
+        }
+      },
+      {
+        "native": {
+          "crop": 224
+        }
+      },
+      {
+        "native_rich": {
+          "crop": 224,
+          "rank": 0
+        }
+      },
+      {
+        "native_rich": {
+          "crop": 224,
+          "rank": 1
+        }
+      },
+      {
+        "native_rich": {
+          "crop": 224,
+          "rank": 2
+        }
+      },
+      {
+        "native_rich": {
+          "crop": 224,
+          "rank": 3
+        }
+      }
+    ],
+    "logit_scale": 0.96182925,
+    "logit_bias": -1.6514188
+  },
+  "fast": {
+    "views": [
+      {
+        "fit": {
+          "resize": 256,
+          "crop": 224
+        }
+      },
+      {
+        "native_rich": {
+          "crop": 224,
+          "rank": 0
+        }
+      }
+    ],
+    "logit_scale": 0.3136731,
+    "logit_bias": -1.6413087
+  },
+  "sensitive": {
+    "views": [
+      {
+        "fit": {
+          "resize": 256,
+          "crop": 224
+        }
+      },
+      {
+        "native": {
+          "crop": 224
+        }
+      },
+      {
+        "native_rich": {
+          "crop": 224,
+          "rank": 0
+        }
+      },
+      {
+        "native_rich": {
+          "crop": 224,
+          "rank": 1
+        }
+      },
+      {
+        "native_rich": {
+          "crop": 224,
+          "rank": 2
+        }
+      },
+      {
+        "native_rich": {
+          "crop": 224,
+          "rank": 3
+        }
+      }
+    ],
+    "logit_scale": 0.8738813,
+    "logit_bias": -0.1904595
+  },
+  "arch": ""
+}

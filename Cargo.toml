@@ -1,0 +1,45 @@
+[package]
+name = "veracity"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Fast AI-generated image and video detection in pure Rust"
+
+[dependencies]
+anyhow = "1"
+candle-core = "0.11"
+candle-nn = "0.11"
+clap = { version = "4.6.7", features = ["derive"] }
+crossbeam-channel = "0.5.17"
+fast_image_resize = "6.1.0"
+flate2 = "1.1.11"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+parquet = { version = "60.1.0", default-features = false, features = ["snap", "zstd", "lz4", "flate2", "brotli", "flate2-rust_backend"] }
+rayon = "1.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tar = "0.4.46"
+ureq = "3.5.1"
+walkdir = "2.5.0"
+zip = "9.5.0"
+
+# Apple GPU engine (MPSGraph) and Accelerate BLAS for the CPU engine.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.11", features = ["accelerate"] }
+candle-nn = { version = "0.11", features = ["accelerate"] }
+half = "2.7.1"
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", features = ["objc2-core-media", "objc2-core-video", "objc2-core-foundation"] }
+objc2-core-media = { version = "0.3.2", features = ["objc2-core-video"] }
+objc2-core-video = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-metal = "0.3.2"
+objc2-metal-performance-shaders = "0.3.2"
+objc2-metal-performance-shaders-graph = "0.3.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+debug = false

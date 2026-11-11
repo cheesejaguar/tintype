@@ -1,0 +1,222 @@
+# Data
+
+Every set is public and is fetched from its original host by a named plan:
+
+```bash
+veracity data list            # the plans
+veracity data train-images    # run one
+veracity data confirm3 --dry-run
+```
+
+The plans live in [src/plans.rs](../src/plans.rs); that file is the exact
+recipe (repositories, shards, sampling rules). A plan downloads, cuts archives
+down to the selection, and writes a `manifest.tsv` per store
+(`path  label  generator  dataset`, label 1 = AI-generated). Image bytes are
+never re-encoded on the way in.
+
+## Training
+
+Three phases, each starting from the previous weights.
+
+### Phase 1 (14,000 steps from the Community Forensics 224 px checkpoint)
+
+| Plan | Store | Source | Real | AI |
+|---|---|---|---|---|
+| `train-images` | `openfake`, `openfake2` | [OpenFake](https://huggingface.co/datasets/ComplexDataLab/OpenFake) `core/train`, 9 shards | 24.0 k (LAION, Pexels) | 17.8 k, ~75 generators |
+| | `openfake-reddit` | OpenFake `supplement/reddit/2026-11`, shards 0–4 | 3.0 k | 15.8 k posted to Reddit |
+| | `frontier` | [frontier-synthetic-images-2026](https://huggingface.co/datasets/Thermostatic/frontier-synthetic-images-2026), 25 files | – | 18.1 k |
+| | `nano-banana` | [bitmind/nano-banana](https://huggingface.co/datasets/bitmind/nano-banana), shards 0–4 | – | 1.5 k |
+| | `defactify` | [Defactify](https://huggingface.co/datasets/Rajarshi-Roy-research/Defactify_Image_Dataset) train split | 7.0 k (COCO) | 35.0 k, 5 generators |
+| | `commfor-small` | [Community Forensics (Small)](https://huggingface.co/datasets/OwensLab/CommunityForensics-Small), 20 shards | 23.9 k (COCO, FFHQ, LHQ) | 35.9 k, 223 generators |
+| `train-video` | `vidguard` | [VidGuard-R1 sampled 10k](https://huggingface.co/datasets/kyoungjunpark/VidGuard-R1-sampled-video-10k) | 3.9 k ActivityNet | 2.5 k HunyuanVideo, 2.5 k CogVideoX |
+| | `genbuster` | [GenBuster-200K-mini](https://huggingface.co/datasets/l8cv/GenBuster-200K-mini) | 4.8 k OpenVid | 5.0 k: EasyAnimate, CogVideoX, LTX-Video, HunyuanVideo |
+| | `genvideo100k` | [GenVideo-100K](https://modelscope.cn/datasets/cccnju/GenVideo-100K) | – | 10 k OpenSora, 10 k ZeroScope |
+| | `aigvd` | [AIGVDBench](https://huggingface.co/datasets/AIGVDBench/AIGVDBench) | – | 1 k each: Pika, Vidu, Luma, SVD, AnimateDiff, Pyramid-Flow |
+| | `k400`, `pexels` | [Kinetics-400](https://huggingface.co/datasets/kiyoonkim/kinetics-400-targz) `val/part_0–1`; [Pexels subset](https://huggingface.co/datasets/zengxianyu/open-sora-pexels-subset) shard 0 | 2.1 k clips | – |
+
+Six generators were kept out of phases 1 and 2 so that they would be unseen
+in So-Fake-OOD: GPT-Image-1.5, gpt-image-2, Recraft v3, Seedream 3, Ideogram
+(v2) and FLUX.1 pro. The benchmark report has the per-generator table from
+that stage.
+
+### Phase 2 (7,000 steps; plan `phase2`)
+
+| Store | Source | Real | AI |
+|---|---|---|---|
+| `openfake-test-reals` | OpenFake `core/test` shards 1–2, real rows only | 7.1 k (ImageNet, DOCCI) | – |
+| `k400b`, `pexelsb` | Kinetics-400 `val/part_2–3`; Pexels shards 1–4 | 2.3 k clips | – |
+| `aigvd2` | AIGVDBench | – | 1 k Open-Sora, 1 k CogVideoX 1.5, 700 HunyuanVideo, 500 Wan, 500 Kling |
+
+plus the messenger-style augmentation (long side capped at 960–1700 px, then
+JPEG quality 55–90) on a quarter of the samples.
+
+### Phase 3 (7,000 steps; plan `phase3`) – the released weights
+
+| Store | Source | Real | AI |
+|---|---|---|---|
+| `frontier-heldout` | frontier-synthetic-images-2026: the six held-out generators and Recraft v2 | – | 3.3 k |
+| `sofake-set` | [So-Fake-Set](https://huggingface.co/datasets/saberzl/So-Fake-Set) train shards 0, 200, …, 2200; real and fully synthetic rows | 3.0 k social-media | 4.3 k, ~30 generators |
+
+Phase 3 ran with two of the original six `core/train` shards in the `openfake`
+store; the other four had been deleted to free disk between phases. The
+`train-images` plan fetches all six.
+
+### Phases 4 and 5 (7,000 + 4,000 steps; plans `phase4`, `phase5`) – the released video weights
+
+Video gets its own checkpoint, continued from the phase-3 weights on every
+video store above, the three phase-2/3 image stores still on disk
+(`openfake-test-reals`, `sofake-set`, `frontier-heldout`), and:
+
+| Plan | Store | Source | Real | AI |
+|---|---|---|---|---|
+| `phase4` | `aigvd3` | AIGVDBench | – | 1.1 k Sora, 0.9 k Gen-2, 0.9 k Jimeng, 0.8 k VideoCrafter, 0.6 k LTX-Video, 0.6 k EasyAnimate |
+| | `k400c` | Kinetics-400 `train/part_0–1`, first 1,000 clips each | 2.0 k | – |
+| | `ucf101` | [UCF101](https://huggingface.co/datasets/quchenyuan/UCF101-ZIP), evenly spaced | 1.5 k (320×240) | – |
+| `phase5` | `rapidata` | Rapidata text-to-video preference sets ([Marey](https://huggingface.co/datasets/Rapidata/text-2-video-human-preferences-moonvalley-marey), [Veo 3.1](https://huggingface.co/datasets/Rapidata/text-2-video-human-preferences-veo3.1)) | – | 1.5 k: Sora, Veo 2 / 3 / 3.1, Gen-3 Alpha, Kling 2.1, Seedance 1 Pro, Luma Ray 2, Pika, Pika 2.2, Mochi 1, Marey, HunyuanVideo, Wan |
+| | `aigvd4` | AIGVDBench | – | 0.95 k Gen-3, 0.8 k RepVideo |
+| | `animation` | [Sakugabooru 2025](https://huggingface.co/datasets/trojblue/sakugabooru2025), shards 4, 10, 102, 103 | 1.05 k hand-drawn animation clips | – |
+| | `cartoons` | [Human-Animal-Cartoon](https://huggingface.co/datasets/hdong51/Human-Animal-Cartoon), cartoon videos | 1.1 k | – |
+| | `gameplay` | [Sunain gameplay](https://huggingface.co/datasets/Sunain-Labs/sunain-gameplay), 20 clips of each of 12 games | 240 | – |
+
+The AIGVDBench clips that earlier confirmation batches were scored on are
+removed from these selections (247 and 54 files). Animation, cartoons and
+gameplay are there because real footage that did not come from a camera was
+what the phase-3 model most often mistook for generated video.
+
+Sampling: both classes equally often; within a class a source is drawn with
+weight `count^0.5`. Three percent of every store, chosen by path hash, is held
+out for validation and calibration.
+
+## How the evaluation was staged
+
+Each stage's sets were scored only after the decisions listed before it were
+frozen.
+
+1. **Phase-1 model** → scored on the *benchmark* sets (plan `benchmarks`).
+   Findings: threshold too strict, weak on social-media copies, video false
+   positives on flat scenes.
+2. Decisions: phase-2 training, texture-ranked crops, source-balanced
+   calibration. → **Phase-2 model** scored on *confirmation batch 1*
+   (`confirm1`) at a 1% photo target. Finding: image precision level with
+   Community Forensics.
+3. Decision: photo target 0.5%. → same model scored on *confirmation batch 2*
+   (`confirm2`).
+4. Decisions: phase-3 training (stop holding out the six generators, add
+   So-Fake-Set), in-process video decoding, a third "sensitive" operating
+   point, and a threshold rule written down in advance (reproduced in the
+   benchmark report). → **Phase-3 model** scored once on *confirmation
+   batch 3* (`confirm3`). These are the numbers to trust for the released
+   weights.
+
+5. Findings on video: the phase-3 weights were level with WaveRep rather
+   than ahead (higher recall, lower precision), and the real clips they
+   flagged were mostly cartoons, 3D animation and motion graphics. Decisions:
+   a dedicated video checkpoint (phases 4 and 5), the video target lowered to
+   0.5%, an optional second-opinion stage, and a second written protocol.
+   → **Video checkpoint** scored once on *confirmation batch 4* (`confirm4`).
+   These are the numbers to trust for the released video weights.
+
+For the phase-3 model every set before batch 3 is development data: it was
+seen while deciding, and its real items are in the calibration set. For the
+video checkpoint the same holds for every video set before batch 4, batch 3
+included.
+
+## Evaluation sets
+
+### Plan `dev`
+
+| Set | Use |
+|---|---|
+| OpenFake `core/test` shard 0, minus the held-out generators | Sanity checks, calibration |
+| 400 Kinetics-400 `test/part_0` clips + 400 SEINE clips (AIGVDBench) | Video sanity checks, calibration |
+
+### Plan `benchmarks`
+
+| Set | Source | Real | AI |
+|---|---|---|---|
+| So-Fake-OOD | [saberzl/So-Fake-OOD](https://huggingface.co/datasets/saberzl/So-Fake-OOD) shards 0, 12, 24, 36; `REAL` and `FULL_SYNTHETIC` rows | 2,075 Reddit / Tumblr / Bluesky | 2,912, 15 commercial generators |
+| Synthbuster+ | [synthbuster-plus](https://huggingface.co/datasets/marco-willi/synthbuster-plus) test + validation; reals are the full [RAISE-1k](https://www.grip.unina.it/download/prog/B-Free/extended_synthbuster/) | 1,000 | 4,679, 13 generators |
+| AIGIBench CommunityAI | [AIGIBench](https://huggingface.co/datasets/HorizonTEL/AIGIBench) `test/CommunityAI.zip` | 6,000 | 6,000 |
+| Frontier 2026-10 images | [WasItAIGenerated benchmark](https://huggingface.co/datasets/wasitaigeneratedcom/frontier-image-video-bench-2026-10), public split | 484 | 261, 19 generators; plus WhatsApp / Instagram / re-shared copies |
+| Frontier 2026-10 video | same | 100 | 101, 12 video models |
+| ComGenVid | [OmerXYZ/comgenvid](https://huggingface.co/datasets/OmerXYZ/comgenvid), files 1–150 per class | 150 MSVD | 150 Sora, 150 Veo 3 |
+| GenVideo-Val | [GenVideo](https://modelscope.cn/datasets/cccnju/Gen-Video), evenly spaced subset | 300 MSR-VTT | 485, 10 generators |
+
+### Plan `confirm1`
+
+| Set | Source | Real | AI |
+|---|---|---|---|
+| So-Fake-OOD, batch 1 | shards 6, 18 | 953 | 1,507 |
+| AIGIBench SocialRF | `test/SocialRF.zip` | 3,000 | 3,000 |
+| Synthbuster+, new images | `train` shards 0–4 (no real images in them) | – | 1,725: DALL·E 2, DALL·E 3, Firefly |
+| AIGVDBench commercial | 150 evenly spaced clips each of Gen-2, Sora, Jimeng; Kinetics-400 `test/part_1` | 200 | 450 |
+| ComGenVid, batch 1 | files 151–250 (AI), 151–350 (real) | 200 | 100 Sora, 100 Veo 3 |
+| Frontier video, messenger copies | `videos_social/messenger` | 100 | 101 |
+| GenVideo-Val, batch 1 | evenly spaced clips not used before | 300 | 456 |
+
+### Plan `confirm2`
+
+| Set | Source | Real | AI |
+|---|---|---|---|
+| So-Fake-OOD, batch 2 | shards 9, 27 | 980 | 1,531 |
+| AIGIBench Midjourney, FLUX.1-dev | 1,500 evenly spaced files per class from each archive | 1,500 each | 1,500 each |
+
+### Plan `confirm3`
+
+| Set | Source | Real | AI |
+|---|---|---|---|
+| So-Fake-OOD, batch 3 | shards 3, 21, 39 | 1,542 | 2,172 |
+| AIGIBench DALL·E 3, SD3, SDXL, Imagen 3 | 1,000 evenly spaced files per class from each archive | 1,000 each | 1,000 each |
+| AIGVDBench, batch 2 | 100 evenly spaced clips each of Gen-3, CausVid, RepVideo, IPOC; Kinetics-400 `test/part_2` | 200 | 400 |
+| ComGenVid, batch 2 | files 351–450 (AI), 351–550 (real) | 200 | 100 Sora, 100 Veo 3 |
+| GenVideo-Val, batch 2 | evenly spaced clips not used before (no Sora clips were left) | 200 | 270, 9 generators |
+
+AIGIBench pairs SD3 and SDXL with the same 1,000 real photos; pooled tables
+count them once.
+
+### Plan `confirm4` (video only)
+
+| Set | Source | Real | AI |
+|---|---|---|---|
+| AIGVDBench, batch 3 | 150 evenly spaced AccVideo clips; 100 each of Gen-3, CausVid, RepVideo, IPOC, half a step away from batch 2's; Kinetics-400 `test/part_3` | 300 | 496 after removing 54 clips that are in the training selection (50 Gen-3, 4 RepVideo) |
+| ComGenVid, batch 3 | files 451–600 (AI), 551–850 (real) | 300 | 150 Sora, 150 Veo 3 |
+| GenVideo-Val, batch 3 | evenly spaced clips not used before | 300 | 360, 9 generators |
+
+## Overlap checks
+
+`veracity overlap` compares files byte for byte.
+
+- No file in any benchmark or confirmation set is identical to a training
+  file. Where a plan found a duplicate it dropped the file from the later set
+  (So-Fake-OOD repeats a few files across shards) or from training (one
+  So-Fake-Set photo that is also an AIGIBench real).
+- Batch 3 was fetched after several training stores had been deleted. Its
+  images were checked against a saved list of those stores' file hashes: no
+  matches among 11,730 files.
+
+## Known caveats
+
+- AIGIBench CommunityAI stores every real image as JPEG and every AI image as
+  PNG. A detector could exploit that; all systems face the same files.
+- Generator *families* overlap between training and evaluation. The released
+  weights have seen most image generators that appear in the evaluation sets,
+  in the form of other images from other collections. The phase-3 weights had
+  seen none of the video generators in batches 1–3 (Gen-2, Gen-3, Sora,
+  Jimeng, Veo 3, CausVid, RepVideo, IPOC, the GenVideo-Val generators). The
+  video checkpoint has seen Sora, Veo 3, Gen-2, Gen-3, Jimeng, RepVideo and
+  VideoCrafter through other clips; AccVideo, CausVid, IPOC and most
+  GenVideo-Val generators remain unseen. The baselines predate many of these
+  generators: the comparison measures the systems as they exist today, not
+  architectures on equal data.
+- The video checkpoint's calibration and the second-opinion band were fitted
+  on real clips from MSR-VTT, MSVD and Kinetics-400, the same sources batch 4
+  draws its (different) real clips from.
+- So-Fake-Set (training, phase 3) and So-Fake-OOD (evaluation) come from the
+  same project. The authors designed OOD as the held-out test for models
+  trained on Set, with disjoint generators; the social-media photos share
+  platforms.
+- Licences: OpenFake, Community Forensics (Small), So-Fake and GenVideo are
+  non-commercial; see [models/LICENSE.md](../models/LICENSE.md). Sakugabooru,
+  Human-Animal-Cartoon, Kinetics, UCF101 and the gameplay set are clips of
+  third-party footage gathered by their curators; they are used here only as
+  examples of real video and are not redistributed.

@@ -1,0 +1,11 @@
+/target
+/target2
+/data
+/runs
+/logs
+/baselines
+*.ckpt
+*.safetensors
+!/models/veracity.safetensors
+!/models/veracity-video.safetensors
+.DS_Store

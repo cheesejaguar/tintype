@@ -1,0 +1,37 @@
+### photo veracity default gpu
+scored 1000 images (0 unreadable) in 5.6s: 178.4 img/s end-to-end, 181.6 img/s model-only
+### photo veracity default gpu (repeat)
+scored 1000 images (0 unreadable) in 5.6s: 177.6 img/s end-to-end, 182.1 img/s model-only
+### photo veracity fast gpu
+scored 1000 images (0 unreadable) in 2.2s: 454.2 img/s end-to-end, 471.9 img/s model-only
+### photo commfor port gpu-f32
+scored 1000 images (0 unreadable) in 10.1s: 99.5 img/s end-to-end, 106.1 img/s model-only
+### photo commfor port gpu f16
+scored 1000 images (0 unreadable) in 3.9s: 255.2 img/s end-to-end, 303.3 img/s model-only
+### photo swinv2 port gpu-f32
+scored 1000 images (0 unreadable) in 33.2s: 30.1 img/s end-to-end, 30.2 img/s model-only
+### photo veracity default cpu
+scored 1000 images (0 unreadable) in 50.0s: 20.0 img/s end-to-end, 20.1 img/s model-only
+### photo veracity fast cpu
+scored 1000 images (0 unreadable) in 18.7s: 53.6 img/s end-to-end, 53.8 img/s model-only
+### photo commfor port cpu
+scored 1000 images (0 unreadable) in 27.7s: 36.1 img/s end-to-end, 37.0 img/s model-only
+### latency veracity default gpu
+single-image latency over 200 images: median 10.7 ms, p90 17.7 ms, mean 12.6 ms
+### latency veracity fast gpu
+single-image latency over 200 images: median 8.3 ms, p90 15.9 ms, mean 10.5 ms
+### latency commfor port gpu-f32
+single-image latency over 200 images: median 18.2 ms, p90 26.5 ms, mean 20.7 ms
+### latency swinv2 port gpu-f32
+single-image latency over 200 images: median 39.4 ms, p90 48.6 ms, mean 42.6 ms
+### video veracity gpu
+scored 147 clips (0 unreadable) in 13.4s: 10.99 clips/s end-to-end (91.0 ms/clip), model time 13.0s
+### video veracity gpu + second opinion
+scored 147 clips (0 unreadable, 16 given a second opinion) in 32.5s: 4.53 clips/s end-to-end (220.9 ms/clip), model time 32.0s
+### video waverep port gpu f16
+scored 147 clips (0 unreadable) in 155.5s: 0.95 clips/s end-to-end (1057.5 ms/clip), model time 154.8s
+### video waverep port gpu-f32
+scored 147 clips (0 unreadable) in 547.4s: 0.27 clips/s end-to-end (3723.7 ms/clip), model time 546.4s
+### video veracity cpu
+scored 147 clips (0 unreadable) in 113.6s: 1.29 clips/s end-to-end (772.7 ms/clip), model time 113.2s
+### done
