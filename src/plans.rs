@@ -606,6 +606,16 @@ impl Run {
             self.ingest(&got, "data/store/celeba-hq", "celeba-hq", ParquetSpec { image_col: "image".into(), const_label: Some(0), max_per_file: Some(2500), ..Default::default() })?;
             self.rm("celeba-hq");
         }
+
+        // These collections share source photos (ImageNet, COCO) with the
+        // evaluation sets: drop every file that is identical to one of theirs.
+        let mut scored: Vec<String> = EVAL_IMAGE_MANIFESTS.iter().chain(CONFIRM3_IMAGE_MANIFESTS.iter()).map(|m| m.to_string()).collect();
+        scored.push("data/vstore/wasitai/images_social.tsv".into());
+        scored.push("data/fresh6/sofake-ood/manifest.tsv".into());
+        scored.extend(CONFIRM5_AIGIBENCH.iter().map(|(name, _)| format!("data/fresh6/aigibench-{name}/manifest.tsv")));
+        for m in PHASE6_IMAGE_MANIFESTS {
+            self.drop_duplicates(m, &scored.iter().map(String::as_str).collect::<Vec<_>>())?;
+        }
         Ok(())
     }
 
