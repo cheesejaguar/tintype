@@ -162,6 +162,17 @@ pub fn fpr_threshold(real: &[f32], target_fpr: f64) -> f32 {
     r[k]
 }
 
+/// Operate a system at another system's false-positive count: the threshold
+/// is the strictest one that lets at most `allowed` real items through.
+/// Returns (real items flagged, AI items flagged).
+pub fn at_false_positive_count(real: &[f32], fake: &[f32], allowed: usize) -> (usize, usize) {
+    let mut r = real.to_vec();
+    r.sort_by(|a, b| b.total_cmp(a));
+    // Everything above the (allowed+1)-th highest real score is flagged.
+    let thr = r.get(allowed).copied().unwrap_or(f32::NEG_INFINITY);
+    (real.iter().filter(|&&x| x > thr).count(), fake.iter().filter(|&&x| x > thr).count())
+}
+
 /// As [`calibrate`], with the logit threshold given.
 pub fn calibrate_at(real: &[f32], fake: &[f32], thr: f32) -> (f32, f32, f32) {
     // One-parameter logistic fit of the slope, classes weighted equally.
@@ -224,5 +235,19 @@ mod tests {
         assert!((average_precision(&s, &l) - 0.833333333).abs() < 1e-6);
         let m = compute(&s, &l, 0.5);
         assert_eq!((m.precision, m.recall, m.fpr), (1.0, 0.5, 0.0));
+    }
+
+    #[test]
+    fn matched_false_positive_count() {
+        let real = [0.1, 0.2, 0.9, 0.8, 0.3];
+        let fake = [0.95, 0.85, 0.5, 0.25];
+        // No real item allowed through: only AI items above the top real score count.
+        assert_eq!(at_false_positive_count(&real, &fake, 0), (0, 1));
+        // One allowed: threshold drops to the second-highest real score.
+        assert_eq!(at_false_positive_count(&real, &fake, 1), (1, 2));
+        // Ties never let more real items through than allowed.
+        assert_eq!(at_false_positive_count(&[0.5, 0.5, 0.1], &[0.6, 0.5], 1).0, 0);
+        // Allowing every real item flags everything.
+        assert_eq!(at_false_positive_count(&real, &fake, 5), (5, 4));
     }
 }

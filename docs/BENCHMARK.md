@@ -27,11 +27,13 @@ Where Veracity is not ahead, or the comparison needs a qualifier:
   precise on all five photo sets but finds fewer AI images on three of them
   (pooled recall 0.865 against 0.918). The sensitive profile is the
   like-for-like comparison: it is ahead on both measures on all five sets
-  while flagging 6% of real photos.
+  while flagging 6% of real photos. At the SwinV2 detector's own
+  false-positive rate Veracity's recall is higher on every set.
 - **Video, one set.** On AIGVDBench the video checkpoint alone has higher
   precision than WaveRep (0.998 against 0.982) and marginally lower recall
-  (0.966 against 0.970). With the second opinion it is ahead on both on all
-  three sets.
+  (0.966 against 0.970), while flagging 1 real clip to WaveRep's 9. Given
+  WaveRep's false-positive rate it finds 0.988. With the second opinion it is
+  ahead on both at shipped thresholds on all three sets.
 - **The second opinion is WaveRep's own network.** That mode shows the two
   models are complementary and that a cascade is both more accurate and
   faster than WaveRep alone; it is not a win by Veracity's weights alone. The
@@ -212,6 +214,35 @@ threshold:
 
 The second table is the share of real photos flagged.
 
+### Blind batch, at each reference detector's own false-positive rate
+
+Shipped thresholds differ, so a detector can lead on recall simply by flagging
+more of everything. Here the reference detector keeps its shipped threshold
+and Veracity is given the strictest threshold that flags no more real photos
+than the reference did on that set (`veracity report --at-rate-of`). The
+threshold is set on the set's own real photos, so this compares the models
+rather than their operating points.
+
+| Set | SwinV2 detector: real photos flagged | SwinV2 detector: precision / recall | Veracity at that rate: precision / recall |
+|---|---|---|---|
+| AIGIBench DALL·E 3 | 184 of 1000 (18.40%) | 0.844 / 0.992 | 0.844 / 0.997 |
+| AIGIBench Imagen 3 | 185 of 999 (18.52%) | 0.829 / 0.897 | 0.844 / 0.995 |
+| AIGIBench SD3 | 182 of 1000 (18.20%) | 0.844 / 0.981 | 0.846 / 1.000 |
+| AIGIBench SDXL | 182 of 1000 (18.20%) | 0.846 / 0.998 | 0.846 / 1.000 |
+| So-Fake-OOD, batch 3 | 104 of 1542 (6.74%) | 0.945 / 0.827 | 0.952 / 0.950 |
+
+| Set | Community Forensics: real photos flagged | Community Forensics: precision / recall | Veracity at that rate: precision / recall | Veracity (fast) at that rate: precision / recall |
+|---|---|---|---|---|
+| AIGIBench DALL·E 3 | 37 of 1000 (3.70%) | 0.958 / 0.839 | 0.964 / 0.991 | 0.964 / 0.993 |
+| AIGIBench Imagen 3 | 40 of 999 (4.00%) | 0.903 / 0.373 | 0.960 / 0.963 | 0.958 / 0.920 |
+| AIGIBench SD3 | 26 of 1000 (2.60%) | 0.967 / 0.771 | 0.975 / 1.000 | 0.975 / 0.994 |
+| AIGIBench SDXL | 26 of 1000 (2.60%) | 0.975 / 0.995 | 0.975 / 1.000 | 0.975 / 1.000 |
+| So-Fake-OOD, batch 3 | 17 of 1542 (1.10%) | 0.982 / 0.438 | 0.991 / 0.829 | 0.989 / 0.692 |
+
+At either reference detector's false-positive rate Veracity finds more AI
+images on every set. The three sets where the SwinV2 detector leads the
+default profile on recall are a difference of threshold, not of model.
+
 ### Development sets
 
 Pooled results on the three earlier suites, with the released weights. The
@@ -314,6 +345,20 @@ and flags 3 of the 900 real clips where WaveRep flags 18. By set it is ahead
 on both measures on ComGenVid and GenVideo-Val; on AIGVDBench its precision is
 higher and its recall 0.004 lower. With the second opinion it is ahead on both
 measures on all three sets.
+
+The same comparison at WaveRep's own false-positive rate on each set (the
+video checkpoint alone, threshold set on the set's real clips):
+
+| Set | WaveRep: real clips flagged | WaveRep: precision / recall | Veracity at that rate: precision / recall |
+|---|---|---|---|
+| AIGVDBench, batch 3 | 9 of 300 (3.00%) | 0.982 / 0.970 | 0.982 / 0.988 |
+| ComGenVid, batch 3 | 6 of 300 (2.00%) | 0.976 / 0.817 | 0.980 / 0.970 |
+| GenVideo-Val, batch 3 | 3 of 300 (1.00%) | 0.991 / 0.911 | 0.991 / 0.953 |
+| Pooled | 18 of 900 (2.00%) | 0.983 / 0.912 | 0.984 / 0.964 |
+
+So the 0.004 of recall WaveRep has on AIGVDBench at shipped thresholds comes
+with nine times the false alarms (9 real clips flagged against 1); allowed
+the same nine, the video checkpoint finds 0.988.
 
 Share detected by generator, and share of real clips flagged by source:
 

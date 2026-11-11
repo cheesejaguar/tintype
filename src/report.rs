@@ -76,6 +76,52 @@ fn probs_labels(rows: &[&Scored]) -> (Vec<f32>, Vec<u8>) {
     (rows.iter().map(|r| r.prob).collect(), rows.iter().map(|r| r.label).collect())
 }
 
+/// Markdown table of every other system operated at the baseline's own
+/// false-positive count on each dataset (and pooled): the baseline keeps its
+/// shipped threshold, the others get the strictest threshold that flags no
+/// more real items than the baseline did. Datasets without real items are
+/// skipped.
+pub fn matched_markdown(systems: &[(String, BTreeMap<String, Scored>, f32)], baseline: &str, pooled_name: Option<&str>) -> Result<()> {
+    let b = systems.iter().position(|s| s.0 == baseline).with_context(|| format!("no system named `{baseline}`"))?;
+    let common: Vec<&String> = systems[0].1.keys().filter(|k| systems.iter().all(|s| s.1.contains_key(*k))).collect();
+    let mut datasets: Vec<&str> = common.iter().map(|k| systems[0].1[*k].dataset.as_str()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let pooled = pooled_name.filter(|_| datasets.len() > 1);
+    if let Some(p) = pooled {
+        datasets.push(p);
+    }
+    let others: Vec<usize> = (0..systems.len()).filter(|&i| i != b).collect();
+    let mut head = format!("| Set | {baseline}: real items flagged | {baseline}: precision / recall |");
+    for &i in &others {
+        head.push_str(&format!(" {} at that rate: precision / recall |", systems[i].0));
+    }
+    println!("{head}");
+    println!("|---|---|---|{}", "---|".repeat(others.len()));
+    for d in datasets {
+        let split = |scores: &BTreeMap<String, Scored>| -> (Vec<f32>, Vec<f32>) {
+            let (mut real, mut fake) = (Vec::new(), Vec::new());
+            for r in common.iter().map(|k| &scores[*k]).filter(|r| Some(d) == pooled || r.dataset == d) {
+                if r.label == 1 { fake.push(r.prob) } else { real.push(r.prob) }
+            }
+            (real, fake)
+        };
+        let (real, fake) = split(&systems[b].1);
+        if real.is_empty() || fake.is_empty() {
+            continue;
+        }
+        let thr = systems[b].2;
+        let (fp, tp) = (real.iter().filter(|&&x| x > thr).count(), fake.iter().filter(|&&x| x > thr).count());
+        let pr = |fp: usize, tp: usize, n: usize| format!("{:.3} / {:.3}", tp as f64 / (tp + fp).max(1) as f64, tp as f64 / n as f64);
+        let mut row = format!("| {d} | {fp} of {} ({:.2}%) | {} |", real.len(), 100.0 * fp as f64 / real.len() as f64, pr(fp, tp, fake.len()));
+        for &i in &others {
+            let (r, f) = split(&systems[i].1);
+            let (fp2, tp2) = metrics::at_false_positive_count(&r, &f, fp);
+            row.push_str(&format!(" {} |", pr(fp2, tp2, f.len())));
+        }
+        println!("{row}");
+    }
+    Ok(())
+}
+
 /// Markdown comparison: one table per dataset (plus the pooled set), one row
 /// per system, with 95% bootstrap intervals for precision and recall.
 pub fn compare_markdown(systems: &[(String, BTreeMap<String, Scored>, f32)], pooled_name: Option<&str>) {

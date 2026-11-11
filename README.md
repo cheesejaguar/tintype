@@ -192,7 +192,7 @@ veracity evaluate confirm4 --baselines
 | `finalize`, `finalize-video`, `calibrate` | Freeze a checkpoint and fit its operating points |
 | `evaluate` | Score a whole suite with Veracity and the reference detectors, print tables |
 | `score`, `score-video` | Score one manifest (`--reference commfor|swinv2|waverep` runs a reference detector) |
-| `report` | Precision, recall, F1, FPR, AUROC, recall at 1% FPR, bootstrap intervals |
+| `report` | Precision, recall, F1, FPR, AUROC, recall at 1% FPR, bootstrap intervals; `--at-rate-of` compares systems at one system's false-positive rate |
 | `latency` | Single-image latency, decode to verdict |
 | `ingest`, `index-folder`, `overlap`, `check-videos`, `parquet-info` | Dataset tooling |
 

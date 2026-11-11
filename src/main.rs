@@ -106,6 +106,9 @@ enum Cmd {
         /// With --markdown: also print a pooled table under this name.
         #[arg(long)]
         pooled: Option<String>,
+        /// Name of one of the systems: print the others operated at its false-positive count on each set.
+        #[arg(long)]
+        at_rate_of: Option<String>,
     },
     /// Score a whole evaluation suite and print the comparison tables.
     Evaluate {
@@ -422,7 +425,7 @@ fn main() -> Result<()> {
         Cmd::ScoreVideo { weights, reference, manifest, out, frames, views, second_opinion, batch, device } => {
             veracity::eval::score_videos(&weights, &system(&reference, false, false)?, &manifest, &out, parse_device(&device)?, batch, frames, views.as_deref(), second_opinion.as_deref()).map(|_| ())
         }
-        Cmd::Report { systems, per_generator, markdown, pooled } => {
+        Cmd::Report { systems, per_generator, markdown, pooled, at_rate_of } => {
             let mut loaded = Vec::new();
             for s in &systems {
                 let (name, rest) = s.split_once('=').ok_or_else(|| anyhow::anyhow!("use name=scores.tsv[@threshold]"))?;
@@ -432,7 +435,9 @@ fn main() -> Result<()> {
                 };
                 loaded.push((name.to_string(), veracity::report::read_scores(std::path::Path::new(path))?, thr));
             }
-            if markdown {
+            if let Some(baseline) = at_rate_of {
+                veracity::report::matched_markdown(&loaded, &baseline, pooled.as_deref())?;
+            } else if markdown {
                 veracity::report::compare_markdown(&loaded, pooled.as_deref());
             } else {
                 veracity::report::compare(&loaded, per_generator);
