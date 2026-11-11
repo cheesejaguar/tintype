@@ -19,3 +19,4 @@ of the speed runs. [../BENCHMARK.md](../BENCHMARK.md) presents them.
 | `*_phase6_weights.md` | The earlier suites re-scored with the phase-6 photo weights (seen data) |
 | `speed_interleaved.log` | Phase-6 and phase-3 photo weights and Community Forensics, alternated on the same files with the machine under load |
 | `linux.log` | Photo and video detection built, tested and run in an aarch64 Linux virtual machine: a sample first, then both whole blind batches next to Community Forensics as released – agreement with macOS, precision, recall and timings |
+| `photo_operating_points.log` | Third blind photo batch, computed after scoring: per-set AUC against Community Forensics, Veracity's recall when it may flag no more real photos than Community Forensics does on each set, and precision and recall as one threshold is moved – the per-set recall gap is mostly the shipped threshold, and no single threshold wins on every set |
