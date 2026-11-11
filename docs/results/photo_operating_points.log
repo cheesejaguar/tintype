@@ -1,0 +1,47 @@
+Third blind photo batch (16,324 photos, 19 sets): where the per-set recall gap to Community Forensics comes from.
+Computed after the batch was scored, from the stored scores (macOS GPU); a description, not a tuned setting.
+Community Forensics at its shipped threshold; Veracity scored on all six views (no early exit) so that the
+threshold can be moved.
+
+### by set: ranking quality (AUC), and recall when Veracity may flag no more real photos than Community Forensics does
+set                       AUC CF   AUC Ver   CF: real flagged, recall   Veracity default recall Veracity recall at CF's false positives
+aigibench-BLIP            1.0000    1.0000    18 of  400, 1.000          1.000                   1.000
+aigibench-GLIDE           0.9988    0.9988    23 of  387, 0.997          0.970                   0.995
+aigibench-IP-Adapter      0.9772    0.9949    16 of  368, 0.885          0.873                   0.985
+aigibench-Infinite-ID     0.9910    0.9999     8 of  372, 0.915          1.000                   1.000
+aigibench-InstantID       0.9447    0.9983    19 of  368, 0.667          0.985                   1.000
+aigibench-PhotoMaker      0.9609    0.9948    11 of  374, 0.713          0.608                   0.965
+aigibench-ProGAN          1.0000    0.9986    35 of  400, 1.000          0.998                   0.998
+aigibench-R3GAN           1.0000    0.9992    14 of  366, 1.000          0.968                   0.998
+aigibench-StyleGAN-XL     0.9996    0.9972    15 of  375, 1.000          0.892                   0.993
+aigibench-StyleGAN3       0.9992    0.9986     4 of  373, 0.985          0.845                   0.983
+aigibench-StyleSwim       0.9989    0.9968    20 of  372, 1.000          0.815                   0.993
+aigibench-WFIR            1.0000    1.0000     0 of  400, 1.000          0.920                   1.000
+classic-biggan            1.0000    0.9998     5 of  299, 1.000          0.997                   0.997
+classic-cyclegan          0.9997    0.9978     8 of  298, 0.997          0.963                   0.977
+classic-gaugan            1.0000    0.9999     6 of  299, 1.000          0.997                   1.000
+classic-stargan           1.0000    1.0000     0 of  299, 1.000          1.000                   1.000
+classic-stylegan          0.9946    0.9861    11 of  299, 0.963          0.923                   0.940
+classic-stylegan2         0.9969    0.9898    18 of  286, 0.990          0.836                   0.970
+sofake-ood                0.9025    0.9804    20 of 1361, 0.401          0.855                   0.813
+
+at Community Forensics' own false-positive count on each set, Veracity's recall is higher on 5 sets, equal on 4, lower on 10
+(lower by at most 0.023; Community Forensics is at 1.000 recall on 9 sets, where it can be equalled but not beaten)
+
+### one threshold for every set, moved down from the shipped one (logit 0)
+Community Forensics pooled: precision 0.966, recall 0.818, 251 real photos flagged
+threshold  precision  recall  real flagged   sets with recall above CF / equal / precision at least CF's / both at least CF's
+    0.00   0.986      0.905     112           3 /  2 / 19 /  5
+   -0.25   0.984      0.922     126           4 /  2 / 19 /  6
+   -0.50   0.982      0.933     148           5 /  2 / 15 /  6
+   -0.75   0.979      0.945     172           5 /  2 / 13 /  4
+   -1.00   0.976      0.955     202           5 /  5 / 12 /  5
+   -1.25   0.970      0.963     256           5 /  5 / 11 /  4
+   -1.50   0.963      0.972     323           5 /  5 / 11 /  4
+   -1.75   0.957      0.977     381           6 /  5 / 10 /  4
+   -2.00   0.950      0.981     446           6 /  5 /  8 /  4
+   -2.50   0.932      0.987     618           8 /  7 /  3 /  2
+   -3.00   0.906      0.992     884           8 /  8 /  0 /  0
+
+No single threshold puts Veracity at or above Community Forensics on both precision and recall on more than 6 of the 19 sets.
+At the threshold where Veracity flags about as many real photos as Community Forensics (-1.25), it finds 0.963 of the AI photos to 0.818.
