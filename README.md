@@ -145,12 +145,14 @@ set share of real items, averaged over real sources, scores above 50%:
 |---|---|---|
 | `gpu` (default on macOS) | Apple GPU, 16-bit | The whole network is compiled into one MPSGraph, driven from Rust through `objc2`. Training uses the same graph builder, with autodiff and AdamW inside the graph. |
 | `gpu-f32` | Apple GPU, 32-bit | Matches PyTorch output to five decimals. |
-| `cpu` | macOS: Accelerate-backed engine written for this network. Elsewhere: [candle](https://github.com/huggingface/candle). | |
+| `cpu` | Anywhere | An engine written for this network. The matrix products go to Accelerate on macOS and to pure-Rust kernels (NEON, AVX2 or AVX-512, chosen at run time) on Linux. |
 
 Images are decoded and resized in Rust (`image`, `zune-jpeg`,
 `fast_image_resize`) on all cores and fed to the engine through a bounded
-queue. Video is decoded in-process through AVFoundation, with the YCbCr→RGB
-conversion done in Rust; no external tool is called anywhere.
+queue. Video is decoded in-process: by AVFoundation on macOS and by a
+pure-Rust reader elsewhere (an MP4/MOV parser written for this project
+feeding the `rust_h264` and `rust_h265` decoders). The YCbCr→RGB conversion
+is done in Rust either way, and no external tool is called anywhere.
 
 ## Install
 
@@ -160,10 +162,17 @@ cargo build --release
 
 Needs a Rust toolchain. The trained weights are `models/veracity.safetensors`
 for photos and `models/veracity-video.safetensors` for video (87 MB each),
-each with its run spec in a `.json` beside it. Video, training and the
-evaluation commands need macOS on Apple Silicon. `detect --device cpu` on
-photos is written to build anywhere: the crate type-checks for x86-64 Linux,
-but it has only been built and run on macOS.
+each with its run spec in a `.json` beside it. The
+GPU engine, training and the evaluation commands need macOS on Apple Silicon.
+`detect` also runs on Linux, on the CPU engine, for photos and for video:
+built and run on aarch64 Ubuntu (and, for photos, as an x86-64 binary under
+translation). There it scored the third blind photo batch with the verdict
+the macOS CPU engine gives on every one of 16,324 photos, at 25 photos/s on
+eight virtual cores against 15 for Community Forensics' released pipeline
+on the same machine, and the blind video batch at 1.4 s per clip with the
+same precision and recall as on macOS – on the 1,756 of 2,056 clips its
+video reader can open
+([docs/results/linux.log](docs/results/linux.log)).
 
 ## Use
 
@@ -253,9 +262,13 @@ veracity evaluate confirm4 --baselines
 - Older generators are a relative weak spot: on StyleGAN3 and
   thispersondoesnotexist-style faces the default profile finds 73–79%, where
   a detector trained on thousands of such generators finds nearly all.
-- The GPU engine, training, all video decoding and the second-opinion stage
-  are Apple-only. Video is read by the system decoder: MP4 and MOV with H.264
-  or HEVC work, AVI and WebM do not.
+- The GPU engine, training and the second-opinion stage are Apple-only.
+- Video containers and codecs: on macOS the system decoder reads MP4 and MOV
+  with H.264, HEVC or MPEG-4 Part 2; AVI and WebM do not work. On Linux the
+  pure-Rust reader takes MP4 and MOV with H.264 or HEVC in 4:2:0 only – not
+  lossless H.264, MPEG-4 Part 2 or fragmented files – and such clips are
+  reported as unreadable. `VERACITY_DECODER=rust` selects that reader on
+  macOS too.
 
 ## Licence
 

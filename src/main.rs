@@ -361,6 +361,9 @@ enum Cmd {
         /// Also draw a re-encoded training frame from every clip (the H.264 augmentation).
         #[arg(long)]
         recompress: bool,
+        /// Instead: decode this many frames of every clip with both the system decoder and the pure-Rust reader, and report how they differ (macOS)
+        #[arg(long)]
+        compare_decoders: Option<usize>,
     },
     /// List test files that are byte-identical to a training file.
     Overlap {
@@ -483,6 +486,12 @@ fn main() -> Result<()> {
                 rows.extend(vids.iter().enumerate().map(|(i, p)| (p.clone(), "video", probs[i], clips[i].map_or(0, |(_, n)| n))));
             }
             for (path, kind, prob, n) in rows {
+                // Say why a clip could not be read (on stderr, so the output stays parseable).
+                if prob.is_none() && kind == "video" {
+                    if let Err(e) = veracity::video::frame_at(&path, 0.0) {
+                        eprintln!("{e:#}");
+                    }
+                }
                 match (prob, json) {
                     (Some(p), true) => println!("{}", serde_json::json!({"path": path, "kind": kind, "ai_probability": p, "verdict": if p > 0.5 { "ai-generated" } else { "likely-real" }, "frames": n})),
                     (Some(p), false) => println!("{:<14} {:>5.1}%  {}", if p > 0.5 { "AI-GENERATED" } else { "likely real" }, 100.0 * p, path.display()),
@@ -688,8 +697,49 @@ fn main() -> Result<()> {
             println!("{dataset}: indexed {n} files under {}", root.display());
             Ok(())
         }
-        Cmd::CheckVideos { manifest, prune, recompress } => {
+        Cmd::CheckVideos { manifest, prune, recompress, compare_decoders } => {
             use rayon::prelude::*;
+            #[cfg(target_os = "macos")]
+            if let Some(limit) = compare_decoders {
+                for m in &manifest {
+                    let items = ingest::read_manifest(m)?;
+                    let rows: Vec<(PathBuf, Result<veracity::avf::Comparison>, Option<String>)> = items
+                        .par_iter()
+                        .map(|it| {
+                            let c = veracity::avf::compare_with_pure_rust(&it.path, limit);
+                            // When the comparison fails, say which reader could not open the clip.
+                            let rust_only = c.is_err().then(|| veracity::swdec::open(&it.path, None).err().map(|e| e.to_string())).flatten();
+                            (it.path.clone(), c, rust_only)
+                        })
+                        .collect();
+                    let (mut clips, mut exact, mut frames, mut same, mut failed) = (0usize, 0usize, 0usize, 0usize, 0usize);
+                    for (p, c, rust_error) in &rows {
+                        match c {
+                            Ok(c) => {
+                                clips += 1;
+                                frames += c.frames;
+                                same += c.identical;
+                                let ok = c.identical == c.frames && c.produced.0 == c.produced.1 && c.max_time_difference < 1e-3 && (c.durations.0 - c.durations.1).abs() < 1e-3;
+                                exact += ok as usize;
+                                if !ok {
+                                    println!(
+                                        "{}\tframes {} (system {}, rust {})\tidentical {}\ttag mismatches {}\tmax sample difference {}\tmax time difference {:.4}s\tdurations {:.3} / {:.3}\ttags (bt709, full range) {:?}\tdeclared {:?}\tsize {:?}",
+                                        p.display(), c.frames, c.produced.0, c.produced.1, c.identical, c.tag_mismatches, c.max_sample_difference, c.max_time_difference, c.durations.0, c.durations.1, c.tags, c.declared, c.size
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                failed += 1;
+                                println!("{}\tnot compared: {}", p.display(), rust_error.as_ref().map_or_else(|| format!("system decoder: {e}"), |r| format!("pure-Rust reader: {r}")));
+                            }
+                        }
+                    }
+                    println!("{}: {clips} clips compared, {exact} identical in every frame, time and duration; {same} of {frames} frames identical; {failed} not compared", m.display());
+                }
+                return Ok(());
+            }
+            #[cfg(not(target_os = "macos"))]
+            anyhow::ensure!(compare_decoders.is_none(), "--compare-decoders needs the macOS system decoder to compare against");
             for m in &manifest {
                 let items = ingest::read_manifest(m)?;
                 let bad: Vec<(PathBuf, String)> = items

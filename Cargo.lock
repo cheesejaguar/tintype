@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "accelerate-src"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "415ed64958754dbe991900f3940677e6a7eefb4d7367afd70d642677b0c7d19d"
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -274,7 +268,6 @@ version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d11c8be87cfbaef9ebb62fb3f850d1fc8e00cc1d11d393fdbe55a4d5c2cdb325"
 dependencies = [
- "accelerate-src",
  "byteorder",
  "float8",
  "gemm",
@@ -294,23 +287,6 @@ dependencies = [
  "yoke",
  "zerocopy",
  "zip",
-]
-
-[[package]]
-name = "candle-nn"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "437fabe77547c2447c7bdf3cc946e19db29a2832440176b419f77c80b0a9a05e"
-dependencies = [
- "accelerate-src",
- "candle-core",
- "half",
- "libc",
- "num-traits",
- "rayon",
- "safetensors",
- "serde",
- "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2033,6 +2009,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust_h264"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49a852e1544c48fba7d072620420c602f195092e3774655584ef5e4e6fd056a9"
+
+[[package]]
+name = "rust_h265"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673f6ab280648836c8a4b2bdaf4877532b2715e3fdcf6e37a2f46ebed41c8cfd"
+
+[[package]]
 name = "rustix"
 version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2542,11 +2530,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "candle-core",
- "candle-nn",
  "clap",
  "crossbeam-channel",
  "fast_image_resize",
  "flate2",
+ "gemm",
  "half",
  "image",
  "objc2",
@@ -2560,6 +2548,8 @@ dependencies = [
  "objc2-metal-performance-shaders-graph",
  "parquet",
  "rayon",
+ "rust_h264",
+ "rust_h265",
  "serde",
  "serde_json",
  "tar",

@@ -8,14 +8,16 @@ description = "Fast AI-generated image and video detection in pure Rust"
 [dependencies]
 anyhow = "1"
 candle-core = "0.11"
-candle-nn = "0.11"
 clap = { version = "4.6.7", features = ["derive"] }
 crossbeam-channel = "0.5.17"
 fast_image_resize = "6.1.0"
 flate2 = "1.1.11"
+gemm = "0.19"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 parquet = { version = "60.1.0", default-features = false, features = ["snap", "zstd", "lz4", "flate2", "brotli", "flate2-rust_backend"] }
 rayon = "1.12.0"
+rust_h264 = "0.6.1"
+rust_h265 = "0.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tar = "0.4.46"
@@ -23,10 +25,8 @@ ureq = "3.5.1"
 walkdir = "2.5.0"
 zip = "9.5.0"
 
-# Apple GPU engine (MPSGraph) and Accelerate BLAS for the CPU engine.
+# Apple GPU engine (MPSGraph) and system video decoding.
 [target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { version = "0.11", features = ["accelerate"] }
-candle-nn = { version = "0.11", features = ["accelerate"] }
 half = "2.7.1"
 objc2 = "0.6.5"
 objc2-foundation = "0.3.2"
@@ -37,6 +37,10 @@ objc2-core-foundation = "0.3.2"
 objc2-metal = "0.3.2"
 objc2-metal-performance-shaders = "0.3.2"
 objc2-metal-performance-shaders-graph = "0.3.2"
+
+[features]
+# Use the pure-Rust CPU kernels on macOS too (they are the only ones elsewhere).
+portable-cpu = []
 
 [profile.release]
 opt-level = 3

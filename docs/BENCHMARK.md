@@ -809,6 +809,92 @@ The GPU now spends its time in the twelve blocks themselves (about 4 ms each
 for a batch of 64), so a further large gain on photos would need fewer tokens
 or fewer blocks, which means retraining with that in mind.
 
+**On Linux** – everything above was measured on macOS. On Linux `detect`
+runs on the CPU engine, with pure-Rust matrix kernels in place of Accelerate
+and a pure-Rust video reader in place of the system decoder. Both whole
+blind batches of the current comparison – the third blind photo batch and
+the blind video batch – were scored in an aarch64 Ubuntu virtual machine on
+the same Mac (8 of its 12 cores), next to Community Forensics as its authors
+ship it (PyTorch 2.15) and its network through this engine
+([results/linux.log](results/linux.log)):
+
+| On Linux | 16,324 photos | 2,056 clips |
+|---|---|---|
+| **Veracity**, precision / recall | **0.986 / 0.904** | **0.997 / 0.942** on the 1,756 clips it could read |
+| The same files on macOS (GPU engine) | 0.986 / 0.904 | 0.997 / 0.941 |
+| Verdicts that differ from the macOS CPU engine | 0 (largest difference in probability 0.00003) | – |
+| Verdicts that differ from the macOS GPU scores used above | 7 | 1 |
+| Files Linux could not read | 0 | 300 (lossless H.264: the real clips of ComGenVid) |
+| Community Forensics as released, precision / recall | 0.965 / 0.819 | – |
+| Community Forensics network, Rust port | 0.966 / 0.818 (no verdict differs from macOS) | – |
+
+| On Linux, CPU, decode to verdict | Photos/s, all 16,324 | By set (19) |
+|---|---|---|
+| **Veracity**, default | **24.9** | 18.9–40.1 |
+| Community Forensics, as released | 14.8 (16.1 by its own timer, which starts once the model is loaded) | 14.4–15.3 |
+| Community Forensics network, Rust port | 16.3 | 15.2–17.7 |
+| Veracity, video | 1.4 s per clip (2,915 s for the batch) | |
+
+| On Linux, video | Precision / recall | Real clips flagged | Seconds per clip, CPU |
+|---|---|---|---|
+| **Veracity**, the 1,756 clips it could read | **0.997 / 0.942** | 3 of 600 | 1.4 |
+| WaveRep network (Rust port, macOS scores), same 1,756 | 0.989 / 0.912 | 12 of 600 | – |
+| **Veracity**, 130-clip sample (127 read) | **1.000 / 0.948** | 0 of 50 | 1.6–2.0 |
+| WaveRep as released, run on Linux, same 127 | 0.986 / 0.909 | 1 of 50 | 26.4 |
+
+The three photo detectors were run one after another on each set, and
+Veracity was the fastest on all 19: 1.3–2.8× the released pipeline and
+1.2–2.6× the port. Precision and recall are what they are on macOS,
+including the per-set picture: the default profile is behind Community
+Forensics on recall on the same 14 of 19 sets. Six of the seven photo
+verdicts that differ from the GPU scores are within 0.005 of the threshold;
+the seventh is an image on which the 16-bit and 32-bit engines stop at
+different views. On Linux the engine runs one view per thread; splitting
+each matrix product across the threads instead gave 17.4 photos/s on this
+batch with the same output to the last bit. An x86-64 Linux binary, run
+under translation, gave the macOS verdict on each of 738 photos (checked
+before that threading change, and not a speed measurement).
+
+For video, WaveRep as its authors ship it (PyTorch on the CPU, 504 px crops
+of the first 64 frames) was run in the same virtual machine on a 130-clip
+sample of the blind batch, between two Veracity passes over the same clips:
+26.4 s per clip against 1.6–2.0, so Veracity is 13–16× faster there, and on
+the 127 clips it could read it found 73 of the 77 AI clips to WaveRep's 70
+and flagged no real clip to WaveRep's one. The released pipeline agreed with
+this report's Rust port of WaveRep on 129 of the 130 verdicts. Over the
+1,756 readable clips of the whole batch, Veracity's Linux verdicts are ahead
+of the port's on precision and recall pooled and on GenVideo-val, ahead on
+recall on ComGenVid's AI clips (0.907 against 0.817), and behind on recall
+on AIGVDBench by the same 0.004 as on macOS. Two limits: WaveRep
+as released was not run over the whole batch on Linux (about 15 hours at
+that rate), and the 300 clips the pure-Rust reader cannot open are every
+real clip of one of the three video sets – clips WaveRep's reader opens –
+so the Linux video figures rest on the other two sets for real clips.
+
+**The pure-Rust video reader against the system decoder**, on macOS, where
+both can be run on the same files (`check-videos --compare-decoders`). Over
+the whole blind video batch, 2,056 clips:
+
+| | |
+|---|---|
+| Clips both read | 1,751 (5 more timed out in the system decoder under load) |
+| Frames compared, every frame of every clip | 215,090 |
+| Frames identical, sample for sample and in colour tags and time | 214,848 |
+| Frames that differ | 242, all in two 10-bit HEVC clips, by at most 20 levels |
+| Clips whose reported duration differs | 20, by at most 0.47 s |
+| Clips the pure-Rust reader cannot decode | 300: the real clips of one set, which are lossless H.264 |
+
+On the 10-bit clips the pure-Rust decoder's output equals FFmpeg's sample
+for sample (checked on one of them, FFmpeg used only as a referee); the
+system decoder is the one that deviates. Scoring the batch through the
+pure-Rust reader on the GPU engine gave the same verdict as the system
+decoder on all 1,756 clips it read, and the same precision and recall on
+each of the three sets (0.998 / 0.966, 1.000 / 0.903 with that set's real
+clips missing, 0.994 / 0.939). Two more differences showed up on other
+material: where a file begins with an empty edit the system decoder emits a
+blank first frame that the pure-Rust reader does not, and MPEG-4 Part 2
+clips are read by the system decoder only.
+
 ## Reproduce
 
 ```bash

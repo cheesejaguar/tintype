@@ -5,6 +5,7 @@
 
 use crate::image_io::Rgb;
 use crate::video::VideoInfo;
+use crate::yuv::{self, Source, Yuv};
 use anyhow::{anyhow, bail, Result};
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::AnyObject;
@@ -22,83 +23,6 @@ use objc2_core_video::{
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 use std::path::Path;
-
-/// One decoded frame: full-resolution luma and interleaved half-resolution CbCr.
-pub struct Yuv {
-    pub w: usize,
-    pub h: usize,
-    y: Vec<u8>,
-    uv: Vec<u8>,
-    bt709: bool,
-    full_range: bool,
-}
-
-/// C-style division that truncates toward zero.
-fn tdiv(a: i64, b: i64) -> i64 {
-    a / b
-}
-
-impl Yuv {
-    /// YCbCr to RGB. Chroma is replicated over its 2x2 block and the matrix
-    /// follows the stream's tag (BT.601 when untagged), matching the
-    /// conversion the training frames went through.
-    pub fn to_rgb(&self) -> Rgb {
-        // 16.16 fixed point: (luma gain, Cr->R, Cb->G, Cr->G, Cb->B, luma offset).
-        let (ky, rv, gu, gv, bu, y0): (i32, i32, i32, i32, i32, i32) = match (self.full_range, self.bt709) {
-            (false, false) => (76309, 104597, 25675, 53279, 132201, 16),
-            (false, true) => (76309, 117489, 13975, 34925, 138438, 16),
-            (true, false) => (65536, 91881, 22554, 46802, 116130, 0),
-            (true, true) => (65536, 103206, 12276, 30679, 121609, 0),
-        };
-        self.convert(|y, u, v| {
-            let l = ky * (y - y0) + 32768;
-            [(l + rv * v) >> 16, (l - gu * u - gv * v) >> 16, (l + bu * u) >> 16]
-        })
-    }
-
-    /// The conversion OpenCV's FFmpeg backend applies (swscale's table path:
-    /// BT.601 whatever the tag, chroma contribution quantised to whole luma
-    /// steps). Reproduced exactly so that reference pipelines built on
-    /// `cv2.VideoCapture` see the pixels they were developed with.
-    pub fn to_rgb_opencv(&self) -> Rgb {
-        let cy: i64 = if self.full_range { 65536 } else { 76309 };
-        let scale = |c: i64| if self.full_range { c * 224 / 255 } else { c };
-        let inc = |c: i64, sign: i64| tdiv(((sign * scale(c)) << 16) + 0x8000, cy);
-        let (crv, cbu, cgu, cgv) = (inc(104597, 1), inc(132201, 1), inc(25675, -1), inc(53279, -1));
-        // Per-chroma-value luma shifts.
-        let tab = |k: i64| -> Vec<i32> { (0..256).map(|c| (((c * k) >> 16) - (k >> 9)) as i32).collect() };
-        let (t_rv, t_bu, t_gu, t_gv) = (tab(crv), tab(cbu), tab(cgu), tab(cgv));
-        // Luma index -> output level.
-        let luma: Vec<u8> = (-512i64..768)
-            .map(|l| if self.full_range { l.clamp(0, 255) as u8 } else { ((cy * (l - 16) - 83936) >> 16).clamp(0, 255) as u8 })
-            .collect();
-        let lut = |l: i32| luma[(l + 512).clamp(0, 1279) as usize] as i32;
-        self.convert_raw(|y, u, v| [lut(y + t_rv[v as usize]), lut(y + t_gu[u as usize] + t_gv[v as usize]), lut(y + t_bu[u as usize])])
-    }
-
-    /// `f(y, cb - 128, cr - 128)` per pixel.
-    fn convert(&self, f: impl Fn(i32, i32, i32) -> [i32; 3]) -> Rgb {
-        self.convert_raw(|y, u, v| f(y, u - 128, v - 128))
-    }
-
-    /// `f(y, cb, cr)` per pixel with raw sample values.
-    fn convert_raw(&self, f: impl Fn(i32, i32, i32) -> [i32; 3]) -> Rgb {
-        let cw = self.w.div_ceil(2);
-        let mut data = vec![0u8; self.w * self.h * 3];
-        for yy in 0..self.h {
-            let yrow = &self.y[yy * self.w..][..self.w];
-            let crow = &self.uv[(yy / 2) * cw * 2..][..cw * 2];
-            let out = &mut data[yy * self.w * 3..][..self.w * 3];
-            for x in 0..self.w {
-                let c = f(yrow[x] as i32, crow[(x / 2) * 2] as i32, crow[(x / 2) * 2 + 1] as i32);
-                out[x * 3] = c[0].clamp(0, 255) as u8;
-                out[x * 3 + 1] = c[1].clamp(0, 255) as u8;
-                out[x * 3 + 2] = c[2].clamp(0, 255) as u8;
-            }
-        }
-        Rgb { w: self.w as u32, h: self.h as u32, data }
-    }
-}
 
 struct Reader {
     reader: Retained<AVAssetReader>,
@@ -238,8 +162,11 @@ fn open_file(path: &Path, start: Option<f64>) -> Result<Reader> {
     }
 }
 
-impl Reader {
-    /// Next frame in presentation order with its timestamp in seconds.
+impl Source for Reader {
+    fn duration(&self) -> f64 {
+        self.info.duration
+    }
+
     fn next(&mut self) -> Option<(f64, Yuv)> {
         autoreleasepool(|_| unsafe {
             loop {
@@ -270,7 +197,7 @@ impl Reader {
                 let bt709 = matrix.and_then(|m| m.downcast_ref::<CFString>().map(|s| s.to_string().contains("709"))).unwrap_or(false);
                 CVPixelBufferUnlockBaseAddress(&pb, CVPixelBufferLockFlags::ReadOnly);
                 if ok {
-                    return Some((pts, Yuv { w, h, y, uv, bt709, full_range: self.full_range }));
+                    return Some((pts, Yuv::new(w, h, y, uv, bt709, self.full_range)));
                 }
             }
         })
@@ -319,44 +246,7 @@ pub fn frames_uniform(path: &Path, n: usize, max_seconds: f64) -> Result<Vec<Rgb
 /// frames, but decoding stops once the last one wanted has been reached, and
 /// frames before `from` are decoded without being converted.
 pub fn frames_uniform_range(path: &Path, n: usize, max_seconds: f64, from: usize, to: usize) -> Result<Vec<Rgb>> {
-    with_deadline(path, move |p| frames_uniform_inner(p, n, max_seconds, from, to.min(n)))
-}
-
-fn frames_uniform_inner(path: &Path, n: usize, max_seconds: f64, from: usize, to: usize) -> Result<Vec<Rgb>> {
-    let mut r = open(path, None)?;
-    let span = if r.info.duration > 0.0 { r.info.duration.min(max_seconds) } else { max_seconds };
-    let mut out: Vec<Rgb> = Vec::with_capacity(to.saturating_sub(from));
-    // Index of the next of the `n` targets.
-    let mut k = 0;
-    let mut prev: Option<(f64, Yuv)> = None;
-    let mut t0 = None;
-    while k < to {
-        let Some((pts, f)) = r.next() else { break };
-        let start = *t0.get_or_insert(pts);
-        while k < to {
-            let target = start + k as f64 * span / n as f64;
-            if pts < target {
-                break;
-            }
-            if k >= from {
-                // The target lies between the previous frame and this one.
-                let use_prev = prev.as_ref().is_some_and(|(pp, _)| target - pp < pts - target);
-                out.push(if use_prev { prev.as_ref().unwrap().1.to_rgb() } else { f.to_rgb() });
-            }
-            k += 1;
-        }
-        prev = Some((pts, f));
-    }
-    // A clip too short to reach any target still yields its last frame.
-    if let Some((_, last)) = &prev {
-        if k == 0 && from == 0 {
-            out.push(last.to_rgb());
-        }
-    }
-    if out.is_empty() && from == 0 {
-        bail!("no frames decoded from {}", path.display());
-    }
-    Ok(out)
+    with_deadline(path, move |p| yuv::uniform_range(&mut open(p, None)?, n, max_seconds, from, to, p))
 }
 
 /// The first `n` frames in presentation order, with the colour conversion
@@ -366,33 +256,13 @@ pub fn frames_first(path: &Path, n: usize) -> Result<Vec<Rgb>> {
 }
 
 fn frames_first_inner(path: &Path, n: usize) -> Result<Vec<Rgb>> {
-    let mut r = open(path, None)?;
-    let mut out = Vec::with_capacity(n);
-    while out.len() < n {
-        let Some((_, f)) = r.next() else { break };
-        out.push(f.to_rgb_opencv());
-    }
-    if out.is_empty() {
-        bail!("no frames decoded from {}", path.display());
-    }
-    Ok(out)
+    yuv::first(&mut open(path, None)?, n, true, path)
 }
 
 /// The first `n` frames in presentation order, with the standard colour
 /// conversion (the one training and scoring use).
 pub fn frames_first_plain(path: &Path, n: usize) -> Result<Vec<Rgb>> {
-    with_deadline(path, move |p| {
-        let mut r = open(p, None)?;
-        let mut out = Vec::with_capacity(n);
-        while out.len() < n {
-            let Some((_, f)) = r.next() else { break };
-            out.push(f.to_rgb());
-        }
-        if out.is_empty() {
-            bail!("no frames decoded from {}", p.display());
-        }
-        Ok(out)
-    })
+    with_deadline(path, move |p| yuv::first(&mut open(p, None)?, n, false, p))
 }
 
 /// Re-encode up to `frames` frames starting at `start` seconds as H.264 into
@@ -486,40 +356,56 @@ pub fn frame_at(path: &Path, t: f64) -> Result<Rgb> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// How the pure-Rust reader's frames compare with the system decoder's.
+#[derive(Debug, Default, Clone)]
+pub struct Comparison {
+    /// Frames compared (the shorter of the two streams, up to the limit).
+    pub frames: usize,
+    /// Frames each reader produced within the limit: (system, pure Rust).
+    pub produced: (usize, usize),
+    /// Frames whose samples and colour tags are identical.
+    pub identical: usize,
+    /// Frames whose colour tags differ.
+    pub tag_mismatches: usize,
+    /// Largest difference between samples, over frames of equal size.
+    pub max_sample_difference: u8,
+    /// Largest difference between presentation times, seconds.
+    pub max_time_difference: f64,
+    /// (duration, system) and (duration, pure Rust).
+    pub durations: (f64, f64),
+    /// `(bt709, full_range)` of the first frame from each: (system, pure Rust).
+    pub tags: Option<((bool, bool), (bool, bool))>,
+    /// Matrix coefficients and range the file states, and the frame size.
+    pub declared: (Option<u16>, Option<bool>),
+    pub size: (usize, usize),
+}
 
-    fn flat(y: u8, u: u8, v: u8, full_range: bool, bt709: bool) -> Yuv {
-        Yuv { w: 4, h: 2, y: vec![y; 8], uv: [u, v].repeat(2), bt709, full_range }
-    }
-
-    #[test]
-    fn grey_levels_convert_exactly() {
-        // Video range: 16 is black, 235 is white, neutral chroma stays grey.
-        assert_eq!(&flat(16, 128, 128, false, false).to_rgb().data[..3], &[0, 0, 0]);
-        assert_eq!(&flat(235, 128, 128, false, false).to_rgb().data[..3], &[255, 255, 255]);
-        assert_eq!(&flat(126, 128, 128, false, true).to_rgb().data[..3], &[128, 128, 128]);
-        // Full range passes luma through.
-        assert_eq!(&flat(77, 128, 128, true, false).to_rgb().data[..3], &[77, 77, 77]);
-    }
-
-    #[test]
-    fn primaries_have_the_right_sign() {
-        // High Cr pushes red up and green down; high Cb pushes blue up.
-        let r = flat(120, 128, 200, false, false).to_rgb();
-        assert!(r.data[0] > 200 && r.data[1] < 80, "{:?}", &r.data[..3]);
-        let b = flat(120, 200, 128, false, false).to_rgb();
-        assert!(b.data[2] > 240 && b.data[0] == b.data[0].min(130), "{:?}", &b.data[..3]);
-    }
-
-    #[test]
-    fn opencv_conversion_matches_recorded_values() {
-        // Values read from frames decoded by cv2.VideoCapture.
-        for (y, expect) in [(16u8, 0u8), (17, 0), (100, 96), (101, 97), (200, 212)] {
-            assert_eq!(flat(y, 128, 128, false, false).to_rgb_opencv().data[0], expect, "Y={y}");
+/// Decode up to `limit` frames with both readers and compare them.
+pub fn compare_with_pure_rust(path: &Path, limit: usize) -> Result<Comparison> {
+    with_deadline(path, move |p| {
+        let mut a = open(p, None)?;
+        let mut b = crate::swdec::open(p, None)?;
+        let mut c = Comparison { durations: (a.duration(), b.duration()), declared: b.declared(), ..Default::default() };
+        loop {
+            if c.frames >= limit {
+                break;
+            }
+            let (fa, fb) = (a.next(), Source::next(&mut b));
+            c.produced.0 += fa.is_some() as usize;
+            c.produced.1 += fb.is_some() as usize;
+            let (Some((ta, fa)), Some((tb, fb))) = (fa, fb) else { break };
+            c.frames += 1;
+            c.max_time_difference = c.max_time_difference.max((ta - tb).abs());
+            if fa.same_as(&fb) {
+                c.identical += 1;
+            }
+            c.tags.get_or_insert((fa.tags(), fb.tags()));
+            c.size = (fa.w, fa.h);
+            if fa.tags() != fb.tags() {
+                c.tag_mismatches += 1;
+            }
+            c.max_sample_difference = c.max_sample_difference.max(fa.max_difference(&fb).unwrap_or(255));
         }
-        // Full range: luma plus a whole-step chroma shift.
-        assert_eq!(&flat(90, 128, 128, true, false).to_rgb_opencv().data[..3], &[90, 90, 90]);
-    }
+        Ok(c)
+    })
 }

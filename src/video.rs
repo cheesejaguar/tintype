@@ -1,7 +1,9 @@
 //! Video support: frame sampling and clip-level aggregation.
 //!
-//! Frames are decoded in-process by the system decoder ([`crate::avf`]), so
-//! video needs macOS; no external tool is called.
+//! Frames are decoded in-process: by the system decoder on macOS
+//! ([`crate::avf`]) and by a pure-Rust reader elsewhere ([`crate::swdec`],
+//! MP4 and MOV with H.264 or HEVC). `VERACITY_DECODER=rust` selects the
+//! pure-Rust reader on macOS too. No external tool is called.
 use crate::image_io::Rgb;
 use anyhow::Result;
 use std::path::Path;
@@ -16,7 +18,13 @@ pub struct VideoInfo {
 
 #[cfg(not(target_os = "macos"))]
 fn unsupported<T>(path: &Path) -> Result<T> {
-    anyhow::bail!("video is decoded by the macOS system decoder; {} cannot be read on this platform", path.display())
+    anyhow::bail!("re-encoding needs the macOS system encoder; {} cannot be re-encoded on this platform", path.display())
+}
+
+/// Whether the pure-Rust reader was asked for in place of the system decoder.
+#[cfg(target_os = "macos")]
+fn pure_rust() -> bool {
+    std::env::var("VERACITY_DECODER").is_ok_and(|v| v == "rust")
 }
 
 /// Run a decode, and once more if the system decoder stalled: stalls are
@@ -34,9 +42,10 @@ fn decode<T>(f: impl Fn() -> Result<T>) -> Result<T> {
 
 pub fn probe(path: &Path) -> Result<VideoInfo> {
     #[cfg(target_os = "macos")]
-    return decode(|| crate::avf::probe(path));
-    #[cfg(not(target_os = "macos"))]
-    unsupported(path)
+    if !pure_rust() {
+        return decode(|| crate::avf::probe(path));
+    }
+    crate::swdec::probe(path)
 }
 
 /// How frames are picked from a clip.
@@ -61,11 +70,13 @@ impl Default for Sampling {
 /// clip, or the first ones in order when `s.consecutive` is set.
 pub fn sample_frames(path: &Path, s: Sampling) -> Result<Vec<Rgb>> {
     #[cfg(target_os = "macos")]
-    return decode(|| if s.consecutive { crate::avf::frames_first(path, s.frames) } else { crate::avf::frames_uniform(path, s.frames, s.max_seconds) });
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = s;
-        unsupported(path)
+    if !pure_rust() {
+        return decode(|| if s.consecutive { crate::avf::frames_first(path, s.frames) } else { crate::avf::frames_uniform(path, s.frames, s.max_seconds) });
+    }
+    if s.consecutive {
+        crate::swdec::frames_first(path, s.frames)
+    } else {
+        crate::swdec::frames_uniform(path, s.frames, s.max_seconds)
     }
 }
 
@@ -73,12 +84,10 @@ pub fn sample_frames(path: &Path, s: Sampling) -> Result<Vec<Rgb>> {
 /// sampling only), without decoding past the last one wanted.
 pub fn sample_frames_range(path: &Path, s: Sampling, from: usize, to: usize) -> Result<Vec<Rgb>> {
     #[cfg(target_os = "macos")]
-    return decode(|| crate::avf::frames_uniform_range(path, s.frames, s.max_seconds, from, to));
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (s, from, to);
-        unsupported(path)
+    if !pure_rust() {
+        return decode(|| crate::avf::frames_uniform_range(path, s.frames, s.max_seconds, from, to));
     }
+    crate::swdec::frames_uniform_range(path, s.frames, s.max_seconds, from, to)
 }
 
 /// Combine per-frame logits into one clip logit. The mean is the
@@ -91,12 +100,10 @@ pub fn aggregate(frame_logits: &[f32]) -> f32 {
 /// Decode the first frame at or after time `t` (seconds).
 pub fn frame_at(path: &Path, t: f64) -> Result<Rgb> {
     #[cfg(target_os = "macos")]
-    return decode(|| crate::avf::frame_at(path, t));
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = t;
-        unsupported(path)
+    if !pure_rust() {
+        return decode(|| crate::avf::frame_at(path, t));
     }
+    crate::swdec::frame_at(path, t)
 }
 
 /// A random training frame. With probability `recompress_p` a short segment

@@ -44,22 +44,6 @@ pub fn norm_consts() -> ([f32; 3], [f32; 3]) {
     (std::array::from_fn(|c| 1.0 / (255.0 * STD[c])), std::array::from_fn(|c| MEAN[c] / STD[c]))
 }
 
-/// Interleaved 8-bit RGB views (`size * size * 3` bytes each) as planar,
-/// normalised `f32`, one after another.
-pub fn hwc_u8_to_chw_f32(x: &[u8], size: usize) -> Vec<f32> {
-    let (k, o) = norm_consts();
-    let n = size * size;
-    let mut out = vec![0f32; x.len()];
-    for (src, dst) in x.chunks_exact(3 * n).zip(out.chunks_exact_mut(3 * n)) {
-        for (i, px) in src.chunks_exact(3).enumerate() {
-            for c in 0..3 {
-                dst[c * n + i] = px[c] as f32 * k[c] - o[c];
-            }
-        }
-    }
-    out
-}
-
 pub fn decode(bytes: &[u8]) -> Result<Rgb> {
     let img = image::load_from_memory(bytes).context("decoding image")?.into_rgb8();
     Ok(Rgb { w: img.width(), h: img.height(), data: img.into_raw() })
