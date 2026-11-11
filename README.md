@@ -18,38 +18,42 @@ Two 22 M-parameter checkpoints, one for photos and one for video.
 ## Results
 
 Against the strongest open detectors that ship weights, on data downloaded
-only after the model, its thresholds and the test protocol were fixed, and
+only after the configuration under test and the protocol were fixed, and
 scored once. Each system is at its shipped threshold.
 
 | | Precision | Recall | Speed |
 |---|---|---|---|
-| **Photos** (6,172 AI, 4,541 real) | | | images/s, GPU |
-| Veracity | 0.997 | 0.865 | 178 |
-| Veracity `--fast` | 0.997 | 0.789 | 460 |
-| Community Forensics | 0.970 | 0.637 | 61–67 (100 through this engine) |
-| Veracity `--sensitive` | 0.955 | 0.972 | 178 |
-| SwinV2 detector | 0.896 | 0.918 | 8.6 (30 through this engine) |
+| **Photos** (7,079 AI, 6,278 real) | | | images/s, GPU / CPU |
+| Veracity | 0.980 | 0.875 | 263 / 38.8 |
+| Community Forensics | 0.963 | 0.762 | 61–67 / 25.4 (100 / 35.0 through this engine) |
+| SwinV2 detector | 0.838 | 0.677 | 8.6 (30 through this engine) |
+| Veracity `--strict` | 0.995 | 0.713 | 292 / 39.0 |
+| Veracity `--sensitive` | 0.940 | 0.957 | 282 |
+| Veracity `--fast` | 0.995 | 0.658 | 455 / 52.6 |
 | **Video** (1,156 AI, 900 real) | | | seconds per clip |
 | Veracity | 0.997 | 0.941 | 0.09 |
-| Veracity `--second-opinion` | 0.997 | 0.960 | 0.22 |
-| WaveRep | 0.983 | 0.912 | 4.05 (1.06 through this engine at 16 bits) |
+| Veracity `--second-opinion` | 0.997 | 0.960 | 0.26 |
+| WaveRep | 0.983 | 0.912 | 4.0 (1.08 through this engine at 16 bits) |
 
 What that table does not show:
 
-- The SwinV2 detector flags 14% of real photos. The default profile is far
-  more precise but finds fewer AI images (0.865 against 0.918), which is why
-  the like-for-like row is `--sensitive`.
+- The photo result is pooled. Most of that batch is older generators (GANs,
+  GLIDE, identity adapters), and on nine of its thirteen sets Community
+  Forensics finds more of the AI images than Veracity's default does, at
+  lower precision. Veracity's lead comes from current commercial generators
+  in social-media photos, where Community Forensics finds 41% and Veracity
+  86%. `--sensitive` recovers the older generators at 4–10% false positives.
+- The default threshold was loosened after an earlier blind batch, on which
+  the stricter setting (now `--strict`) scored 0.997 / 0.865 against
+  Community Forensics' 0.970 / 0.637 and the SwinV2 detector's 0.896 / 0.918.
 - `--second-opinion` leans on WaveRep's own released network for the clips
   Veracity's video model is unsure about. The plain "Veracity" video row uses
   only Veracity's weights; on one of the three video sets its recall is a
   hair below WaveRep's (0.966 against 0.970) with higher precision.
-- Speeds are on the same files, the reference detectors through their
-  authors' own pipelines. Two cases go against the six-view default: Community
-  Forensics run through this engine at half precision (not something its
-  authors ship) does 255 images/s, and on the CPU Community Forensics as
-  released does 25 images/s to the default's 21. The two-view `--fast` profile
-  is faster in both cases (460 and 61) and still ahead on precision and
-  recall.
+- The speed lead over Community Forensics is wide against its released
+  pipeline and narrow against a port of it to this engine. It depends on
+  early exit; looking at all six views of every image, Veracity is the slower
+  of the two in the same engine (180 against 253 images/s at 16 bits).
 
 [docs/BENCHMARK.md](docs/BENCHMARK.md) has every set, the speed tables, how the
 reference detectors were ported and checked, and the other places where
@@ -68,6 +72,12 @@ network on six views and averages the logits:
 - the four most *textured* 224×224 native-resolution windows. Flat regions
   such as sky or a studio backdrop carry almost no forensic signal, so the
   crops go where the detail is.
+
+**But only as many looks as it takes.** Most images are obvious. The views are
+looked at one at a time, most textured crop first, and as soon as the running
+score is far enough from the threshold the rest are skipped: about three
+views per image on average instead of six, with one verdict in 700 changed on
+the development sets. `--all-views` turns this off.
 
 **Video is frames, looked at the same way.** 16 frames are taken evenly across
 a clip, each gets the six views, and the clip score is the mean logit. Video
@@ -98,14 +108,15 @@ messenger-style round trip (long side capped at 960–1700 px, JPEG quality
 55–90). Video frames are drawn from clips re-encoded with random H.264 quality
 and resolution, so bitrate cannot stand in for the label.
 
-**Three operating points**, each calibrated on held-out real media so that a
+**Four operating points**, each calibrated on held-out real media so that a
 set share of real items, averaged over real sources, scores above 50%:
 
 | | Views | Calibrated false-positive rate | Use |
 |---|---|---|---|
-| default | 6 | 0.5% (photos and video) | A positive verdict you can act on |
-| `--fast` | 2 | 0.5% | Bulk scanning; about 2.5× the throughput |
-| `--sensitive` | 6 | 5% | Triage, where a missed fake costs more than a false alarm |
+| default | up to 6 | 1.5% (photos), 0.5% (video) | The balance: ahead of both reference photo detectors on precision and on recall |
+| `--strict` | up to 6 | 0.5% | A positive verdict that has to stand on its own |
+| `--sensitive` | up to 6 | 5% | Triage, where a missed fake costs more than a false alarm |
+| `--fast` | 2 | 0.5% | Bulk scanning at the highest throughput |
 
 ## Engines
 
@@ -118,7 +129,7 @@ set share of real items, averaged over real sources, scores above 50%:
 Images are decoded and resized in Rust (`image`, `zune-jpeg`,
 `fast_image_resize`) on all cores and fed to the engine through a bounded
 queue. Video is decoded in-process through AVFoundation, with the YCbCr→RGB
-conversion done in Rust.
+conversion done in Rust; no external tool is called anywhere.
 
 ## Install
 
@@ -128,13 +139,9 @@ cargo build --release
 
 Needs a Rust toolchain. The trained weights are `models/veracity.safetensors`
 for photos and `models/veracity-video.safetensors` for video (87 MB each),
-each with its run spec in a `.json` beside it. Training and the evaluation
-commands need macOS on Apple Silicon; `detect --device cpu` builds and runs
-anywhere.
-
-`ffmpeg` is optional. It is used, if installed, for video files the system
-decoder cannot open (HEVC tagged `hev1`, for example), for video on other
-platforms, and for the H.264 recompression augmentation during training.
+each with its run spec in a `.json` beside it. Video, training and the
+evaluation commands need macOS on Apple Silicon; `detect --device cpu` on
+photos builds and runs anywhere.
 
 ## Use
 
@@ -142,6 +149,7 @@ platforms, and for the H.264 recompression augmentation during training.
 veracity detect *.jpg *.mp4                 # human-readable verdicts
 veracity detect --json suspicious.png       # one JSON object per file
 veracity detect --sensitive inbox/*.webp    # looser threshold
+veracity detect --strict evidence.jpg       # tighter threshold
 veracity detect --fast --device cpu a.jpg   # two views, CPU engine
 
 veracity data baselines                     # fetches the WaveRep weights, once
@@ -171,8 +179,9 @@ veracity train --init runs/v3/step_007000.safetensors --manifest ... --out runs/
 veracity data dev && veracity data benchmarks && veracity data confirm1 && veracity data confirm2
 veracity finalize runs/v4/step_007000.safetensors          # spec + calibration of every profile
 
-veracity data confirm3
+veracity data confirm3 && veracity data confirm5           # the two blind photo batches
 veracity evaluate confirm3 --baselines                     # all systems, all tables
+veracity evaluate confirm5 --baselines
 
 # the video checkpoint
 veracity data phase4 && veracity data phase5
@@ -209,10 +218,14 @@ veracity evaluate confirm4 --baselines
   model is trained on fully generated images.
 - Media that has been through a messenger or social app is much harder. On
   WhatsApp and Instagram copies of 2026 images the default profile finds
-  12–17% of the AI images (with almost no false alarms); `--sensitive` finds
-  55–59% while flagging 2–3% of real ones.
-- The GPU engine, training, in-process video decoding and the second-opinion
-  stage are Apple-only.
+  27–36% of the AI images (flagging under 1% of real ones); `--sensitive`
+  finds 55–59% while flagging 2–3%.
+- Older generators are a relative weak spot: on StyleGAN3 and
+  thispersondoesnotexist-style faces the default profile finds 73–79%, where
+  a detector trained on thousands of such generators finds nearly all.
+- The GPU engine, training, all video decoding and the second-opinion stage
+  are Apple-only. Video is read by the system decoder: MP4 and MOV with H.264
+  or HEVC work, AVI and WebM do not.
 
 ## Licence
 

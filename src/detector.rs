@@ -65,6 +65,76 @@ pub struct Profile {
     pub logit_bias: f32,
 }
 
+/// One checkpoint of the early exit: after `views` views, stop if their mean
+/// logit is at least `above` over the decision threshold or at least `below`
+/// under it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExitStage {
+    pub views: usize,
+    pub below: f32,
+    pub above: f32,
+}
+
+/// Early exit for the six-view photo profiles: the views are looked at in
+/// `order`, and an image whose answer is already clear part-way through is
+/// not shown the rest. The verdict and probability then come from
+/// the views that were looked at.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EarlyExit {
+    /// Indices into the profile's view list, in the order they are looked at.
+    pub order: Vec<usize>,
+    pub stages: Vec<ExitStage>,
+}
+
+impl EarlyExit {
+    /// The schedule fitted on the development sets: most textured native crop
+    /// first, then the whole image, then the remaining crops, with a check
+    /// after every view.
+    pub fn standard() -> Self {
+        Self {
+            order: vec![2, 0, 1, 3, 4, 5],
+            stages: vec![
+                ExitStage { views: 1, below: 7.0, above: 9.0 },
+                ExitStage { views: 2, below: 5.0, above: 5.0 },
+                ExitStage { views: 3, below: 3.5, above: 3.5 },
+                ExitStage { views: 4, below: 2.5, above: 2.5 },
+                ExitStage { views: 5, below: 2.0, above: 2.0 },
+            ],
+        }
+    }
+
+    /// Whether to stop after `seen` (the logits of the views looked at so
+    /// far), given the profile's threshold on the mean logit.
+    pub fn decided(&self, seen: &[f32], threshold: f32) -> bool {
+        let Some(st) = self.stages.iter().find(|st| st.views == seen.len()) else { return false };
+        let margin = seen.iter().sum::<f32>() / seen.len() as f32 - threshold;
+        margin >= st.above || margin <= -st.below
+    }
+
+    /// View counts at which the next decision is taken: each stage, then all.
+    pub fn checkpoints(&self, total: usize) -> Vec<usize> {
+        let mut c: Vec<usize> = self.stages.iter().map(|s| s.views).filter(|&v| v < total).collect();
+        c.push(total);
+        c
+    }
+
+    /// The logits early exit would have looked at, from all of an image's
+    /// view logits (in the profile's view order): the same arithmetic as
+    /// running it.
+    pub fn looked_at(&self, all: &[f32], threshold: f32) -> Vec<f32> {
+        let mut seen = Vec::with_capacity(all.len());
+        for n in self.checkpoints(all.len()) {
+            while seen.len() < n {
+                seen.push(all[self.order[seen.len()]]);
+            }
+            if self.decided(&seen, threshold) {
+                break;
+            }
+        }
+        seen
+    }
+}
+
 /// Parse a comma-separated view list: `fit`, `native`, `quads` (four
 /// off-centre native crops). Used to try alternative view sets.
 pub fn parse_views(list: &str, size: u32, fit_resize: u32) -> Result<Vec<ViewSpec>> {
@@ -163,6 +233,14 @@ pub struct ModelSpec {
     /// triage, where a missed fake costs more than a false alarm.
     #[serde(default)]
     pub sensitive: Option<Profile>,
+    /// Same views again, calibrated to flag less: for when a positive
+    /// verdict has to stand on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<Profile>,
+    /// Early exit for the six-view photo profiles; absent means every view
+    /// of every image is looked at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub early_exit: Option<EarlyExit>,
     /// Network architecture; empty means the ViT-S/16 Veracity ships.
     #[serde(default)]
     pub arch: String,
@@ -188,6 +266,8 @@ impl ModelSpec {
             video: None,
             fast: None,
             sensitive: None,
+            strict: None,
+            early_exit: None,
             arch: "swinv2_large_w16_256".into(),
         }
     }
@@ -205,6 +285,8 @@ impl ModelSpec {
             video: None,
             fast: None,
             sensitive: None,
+            strict: None,
+            early_exit: None,
             arch: "vit_base_patch14_reg4_dinov2".into(),
         }
     }
@@ -212,7 +294,7 @@ impl ModelSpec {
     /// The Community Forensics baseline's own preprocessing.
     pub fn commfor(img: usize) -> Self {
         let resize = if img == 384 { 440 } else { 256 };
-        Self { img, views: vec![ViewSpec::FitPillow { resize, crop: img as u32 }], logit_scale: 1.0, logit_bias: 0.0, threshold: 0.5, prefix: "vit.".into(), video: None, fast: None, sensitive: None, arch: String::new() }
+        Self { img, views: vec![ViewSpec::FitPillow { resize, crop: img as u32 }], logit_scale: 1.0, logit_bias: 0.0, threshold: 0.5, prefix: "vit.".into(), video: None, fast: None, sensitive: None, strict: None, early_exit: None, arch: String::new() }
     }
 
     pub fn sidecar(weights: &Path) -> PathBuf {
@@ -251,12 +333,17 @@ pub struct Preprocessor {
 impl Preprocessor {
     /// Write all views of `img` into `out` (len `views * 3 * img * img`).
     pub fn apply(&self, img: &Rgb, out: &mut [f32]) {
+        for (crop, chunk) in self.crops(img).iter().zip(out.chunks_exact_mut(self.view_len)) {
+            crop.write_chw(chunk);
+        }
+    }
+
+    /// Every view of `img` as a cropped image, in view order.
+    pub fn crops(&self, img: &Rgb) -> Vec<Rgb> {
         // Texture ranking is computed once and shared by all "rich" views.
         let need = self.views.iter().filter_map(|v| if let View::NativeRich { crop, rank } = v { Some((*crop, *rank as usize + 1)) } else { None }).max_by_key(|x| x.1);
         let rich = need.filter(|(crop, _)| img.w.min(img.h) >= *crop).map(|(crop, k)| image_io::rich_windows(img, crop, k));
-        for (v, chunk) in self.views.iter().zip(out.chunks_exact_mut(self.view_len)) {
-            v.apply_with(img, rich.as_deref()).write_chw(chunk);
-        }
+        self.views.iter().map(|v| v.apply_with(img, rich.as_deref())).collect()
     }
 }
 
@@ -411,6 +498,156 @@ impl Detector {
         }
     }
 
+    /// Switch to the strict photo profile (same views, tighter threshold).
+    pub fn use_strict_profile(spec: &mut ModelSpec) {
+        if let Some(p) = spec.strict.clone() {
+            spec.views = p.views;
+            spec.logit_scale = p.logit_scale;
+            spec.logit_bias = p.logit_bias;
+        }
+    }
+
+    /// The active profile's decision threshold on the mean view logit.
+    pub fn threshold_logit(&self) -> f32 {
+        -self.spec.logit_bias / self.spec.logit_scale
+    }
+
+    /// Logits for the first `n` views in `x`, whatever the engine's batch size.
+    fn logits_n(&self, x: &[f32], n: usize) -> Vec<f32> {
+        let vl = self.view_len();
+        let mut out = Vec::with_capacity(n);
+        match &self.engine {
+            #[cfg(target_os = "macos")]
+            Engine::Mps { .. } => {
+                // The graph has a fixed batch: pad the last one.
+                let mut buf = vec![0f32; self.batch * vl];
+                for chunk in x[..n * vl].chunks(self.batch * vl) {
+                    let k = chunk.len() / vl;
+                    let l = if k == self.batch {
+                        self.logits(chunk)
+                    } else {
+                        buf[..chunk.len()].copy_from_slice(chunk);
+                        self.logits(&buf)
+                    };
+                    out.extend_from_slice(&l[..k]);
+                }
+            }
+            Engine::Cpu { .. } => {
+                for chunk in x[..n * vl].chunks(self.batch * vl) {
+                    out.extend(self.logits(chunk));
+                }
+            }
+        }
+        out
+    }
+
+    /// Early exit for one image whose views are already prepared (all of
+    /// them, in the profile's order): the logits of the views looked at.
+    pub fn logits_adaptive(&self, all_views: &[f32], exit: &EarlyExit) -> Vec<f32> {
+        let (nv, vl, thr) = (self.spec.views.len(), self.view_len(), self.threshold_logit());
+        let mut seen: Vec<f32> = Vec::with_capacity(nv);
+        let mut buf = Vec::new();
+        for upto in exit.checkpoints(nv) {
+            buf.clear();
+            for k in seen.len()..upto {
+                let v = exit.order[k];
+                buf.extend_from_slice(&all_views[v * vl..(v + 1) * vl]);
+            }
+            let n = upto - seen.len();
+            seen.extend(self.logits_n(&buf, n));
+            if exit.decided(&seen, thr) {
+                break;
+            }
+        }
+        seen
+    }
+
+    /// Score image files with early exit: per file, the logits of the views
+    /// that were looked at, in the order they were looked at. Each image is
+    /// decoded and cropped once; its crops wait in memory while it moves from
+    /// stage to stage, and every stage runs in full batches drawn from all
+    /// the images currently waiting at it.
+    pub fn score_files_adaptive(&self, paths: &[PathBuf], threads: usize, exit: &EarlyExit) -> (Vec<Option<Vec<f32>>>, Timing) {
+        use std::collections::{HashMap, VecDeque};
+        let (nv, vl, thr) = (self.spec.views.len(), self.view_len(), self.threshold_logit());
+        let pre = self.preprocessor();
+        let checkpoints = exit.checkpoints(nv);
+        let in_flight_cap = 4 * self.batch.max(16);
+        let start = std::time::Instant::now();
+        let mut model_s = 0f64;
+        let mut results: Vec<Option<Vec<f32>>> = vec![None; paths.len()];
+        let next = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            let (tx, rx) = crossbeam_channel::bounded::<(usize, Vec<Rgb>)>(threads.max(1) * 2);
+            for _ in 0..threads.max(1) {
+                let tx = tx.clone();
+                let (next, pre) = (&next, &pre);
+                s.spawn(move || loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= paths.len() {
+                        break;
+                    }
+                    let Ok(img) = image_io::load(&paths[i]) else { continue };
+                    if tx.send((i, pre.crops(&img))).is_err() {
+                        break;
+                    }
+                });
+            }
+            drop(tx);
+            let mut crops: HashMap<usize, Vec<Rgb>> = HashMap::new();
+            let mut seen: HashMap<usize, Vec<f32>> = HashMap::new();
+            // Images waiting for stage k (their next views are order[checkpoints[k-1]..checkpoints[k]]).
+            let mut waiting: Vec<VecDeque<usize>> = vec![VecDeque::new(); checkpoints.len()];
+            let mut buf = vec![0f32; self.batch * vl];
+            let mut open = true;
+            loop {
+                let pending = |k: usize, q: &VecDeque<usize>| q.len() * (checkpoints[k] - if k == 0 { 0 } else { checkpoints[k - 1] });
+                // The stage with the most views waiting; later stages win ties, to finish images.
+                let best = (0..waiting.len()).rev().max_by_key(|&k| pending(k, &waiting[k])).unwrap();
+                let ready = pending(best, &waiting[best]);
+                if ready < self.batch && open && crops.len() < in_flight_cap {
+                    match rx.recv() {
+                        Ok((i, c)) => {
+                            crops.insert(i, c);
+                            seen.insert(i, Vec::with_capacity(nv));
+                            waiting[0].push_back(i);
+                        }
+                        Err(_) => open = false,
+                    }
+                    continue;
+                }
+                if ready == 0 {
+                    break;
+                }
+                let from = if best == 0 { 0 } else { checkpoints[best - 1] };
+                let per = checkpoints[best] - from;
+                let take = (self.batch / per).max(1).min(waiting[best].len());
+                let ids: Vec<usize> = waiting[best].drain(..take).collect();
+                {
+                    use rayon::prelude::*;
+                    let (crops, ids) = (&crops, &ids);
+                    buf[..take * per * vl].par_chunks_mut(vl).enumerate().for_each(|(slot, out)| {
+                        crops[&ids[slot / per]][exit.order[from + slot % per]].write_chw(out);
+                    });
+                }
+                let t = std::time::Instant::now();
+                let logits = self.logits_n(&buf, take * per);
+                model_s += t.elapsed().as_secs_f64();
+                for (j, i) in ids.into_iter().enumerate() {
+                    let l = seen.get_mut(&i).unwrap();
+                    l.extend_from_slice(&logits[j * per..(j + 1) * per]);
+                    if l.len() == nv || exit.decided(l, thr) {
+                        results[i] = seen.remove(&i);
+                        crops.remove(&i);
+                    } else {
+                        waiting[best + 1].push_back(i);
+                    }
+                }
+            }
+        });
+        (results, Timing { images: paths.len(), wall_s: start.elapsed().as_secs_f64(), model_s })
+    }
+
     /// Switch this detector to its video profile (views and calibration).
     /// Returns the number of frames the profile asks for.
     pub fn use_video_profile(&mut self) -> usize {
@@ -456,7 +693,7 @@ impl Detector {
         (res.into_iter().map(|r| r.map(|mut v| v.remove(0))).collect(), t)
     }
 
-    /// Score clips: `sampling.frames` frames each, decoded by ffmpeg workers.
+    /// Score clips: `sampling.frames` frames each, decoded on worker threads.
     /// Returns per-clip, per-frame, per-view logits.
     pub fn score_videos(&self, paths: &[PathBuf], sampling: crate::video::Sampling, threads: usize) -> (Vec<Option<Vec<Vec<f32>>>>, Timing) {
         self.score_stream(paths.len(), threads, |i| crate::video::sample_frames(&paths[i], sampling).ok())
@@ -562,6 +799,29 @@ mod tests {
         let v: VideoSpec = serde_json::from_str(old).unwrap();
         assert!(v.second_opinion.is_none());
         assert!(!serde_json::to_string(&v).unwrap().contains("second_opinion"));
+    }
+
+    #[test]
+    fn early_exit_stops_only_when_clear() {
+        let e = EarlyExit::standard();
+        let thr = 2.0;
+        // Order is view 2, 0, 1, 3, 4, 5. First view far below the threshold: one look.
+        assert_eq!(e.looked_at(&[0.0, 0.0, -6.0, 0.0, 0.0, 0.0], thr), vec![-6.0]);
+        // First view far above: one look.
+        assert_eq!(e.looked_at(&[0.0, 0.0, 11.5, 0.0, 0.0, 0.0], thr).len(), 1);
+        // Undecided after one, clear after two (mean 8 is 6 over).
+        assert_eq!(e.looked_at(&[9.0, 0.0, 7.0, 0.0, 0.0, 0.0], thr), vec![7.0, 9.0]);
+        // Clear after four (mean -1 is 3 under).
+        assert_eq!(e.looked_at(&[0.0, -2.0, 0.0, -2.0, 5.0, 5.0], thr).len(), 4);
+        // Near the threshold throughout: all six, in looking order.
+        assert_eq!(e.looked_at(&[2.0, 3.0, 1.0, 2.5, 4.0, 5.0], thr), vec![1.0, 2.0, 3.0, 2.5, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn specs_without_the_new_fields_still_parse() {
+        let old = r#"{"img":224,"views":[{"native":{"crop":224}}]}"#;
+        let m: ModelSpec = serde_json::from_str(old).unwrap();
+        assert!(m.early_exit.is_none() && m.strict.is_none());
     }
 
     #[test]

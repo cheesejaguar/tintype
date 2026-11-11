@@ -136,6 +136,8 @@ pub fn run(a: TrainArgs) -> Result<()> {
         views: crate::detector::thorough_views(size, a.aug.fit_resize),
         fast: Some(crate::detector::Profile { views: crate::detector::fast_views(size, a.aug.fit_resize), logit_scale: 1.0, logit_bias: 0.0 }),
         sensitive: None,
+        strict: None,
+        early_exit: None,
         arch: String::new(),
         logit_scale: 1.0,
         logit_bias: 0.0,

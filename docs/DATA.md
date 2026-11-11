@@ -83,6 +83,17 @@ removed from these selections (247 and 54 files). Animation, cartoons and
 gameplay are there because real footage that did not come from a camera was
 what the phase-3 model most often mistook for generated video.
 
+**What the current build cannot reproduce exactly.** The released video
+weights were trained while the tool could still hand a file to `ffmpeg`.
+Since then every external call has been removed and video is read only by
+the system decoder, which opens neither AVI nor WebM. So the `phase4` plan no
+longer fetches UCF101 (1,500 AVI clips) and `phase5` takes only the MP4 clips
+of Sakugabooru (846 of the 1,053): 1,707 of the roughly 67,000 training clips.
+The H.264 re-encoding augmentation also changed encoder, from x264 to the
+system's. HEVC files tagged `hev1`, which the system decoder refuses as they
+are (all of GenBuster, some AIGVDBench clips), are read through a temporary
+copy with the tag corrected.
+
 Sampling: both classes equally often; within a class a source is drawn with
 weight `count^0.5`. Three percent of every store, chosen by path hash, is held
 out for validation and calibration.
@@ -115,6 +126,14 @@ frozen.
    0.5%, an optional second-opinion stage, and a second written protocol.
    → **Video checkpoint** scored once on *confirmation batch 4* (`confirm4`).
    These are the numbers to trust for the released video weights.
+6. Findings on photos: at the 0.5% default the model was more precise than
+   the SwinV2 detector but found fewer AI images, and on the CPU the six
+   views made it slower than Community Forensics in the same engine.
+   Decisions, with the weights unchanged: the default threshold moved to the
+   target at which Veracity is ahead of both reference detectors on the most
+   development sets (1.5%; the 0.5% point stays as `--strict`), and early
+   exit over the views. → scored once on *confirmation batch 5* (`confirm5`).
+   These are the numbers to trust for the default photo profile.
 
 For the phase-3 model every set before batch 3 is development data: it was
 seen while deciding, and its real items are in the calibration set. For the
@@ -181,6 +200,17 @@ count them once.
 | AIGVDBench, batch 3 | 150 evenly spaced AccVideo clips; 100 each of Gen-3, CausVid, RepVideo, IPOC, half a step away from batch 2's; Kinetics-400 `test/part_3` | 300 | 496 after removing 54 clips that are in the training selection (50 Gen-3, 4 RepVideo) |
 | ComGenVid, batch 3 | files 451–600 (AI), 551–850 (real) | 300 | 150 Sora, 150 Veo 3 |
 | GenVideo-Val, batch 3 | evenly spaced clips not used before | 300 | 360, 9 generators |
+
+### Plan `confirm5` (photos only)
+
+| Set | Source | Real | AI |
+|---|---|---|---|
+| So-Fake-OOD, batch 4 | shards 15, 30, 42 | 1,479 | 2,279 |
+| AIGIBench, the twelve test archives not used before, minus the five face-swap ones | 400 evenly spaced files per class from each of GLIDE, BLIP, IP-Adapter, InstantID, Infinite-ID, PhotoMaker, ProGAN, R3GAN, StyleGAN3, StyleGAN-XL, StyleSwim, WFIR | 4,799 | 4,800 |
+
+The AIGIBench files were read out of the remote archives by HTTP range
+requests, without downloading the archives. No real photo is shared between
+these twelve sets.
 
 ## Overlap checks
 

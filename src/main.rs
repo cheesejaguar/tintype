@@ -31,12 +31,18 @@ enum Cmd {
         /// Frames analysed per video (default: the model's video profile).
         #[arg(long)]
         frames: Option<usize>,
-        /// Two views per image instead of six: about 2.5x the throughput, lower recall.
+        /// Two views per image at the strict threshold: the highest throughput, lower recall.
         #[arg(long)]
         fast: bool,
         /// Looser threshold: finds more AI images, flags more real ones.
         #[arg(long, conflicts_with = "fast")]
         sensitive: bool,
+        /// Tighter threshold: a positive verdict that stands on its own, at lower recall.
+        #[arg(long, conflicts_with_all = ["fast", "sensitive"])]
+        strict: bool,
+        /// Look at all six views of every image instead of stopping early on clear ones.
+        #[arg(long)]
+        all_views: bool,
         /// Print one JSON object per file.
         #[arg(long)]
         json: bool,
@@ -68,6 +74,12 @@ enum Cmd {
         /// Use the sensitive profile.
         #[arg(long, conflicts_with = "fast")]
         sensitive: bool,
+        /// Use the strict profile.
+        #[arg(long, conflicts_with_all = ["fast", "sensitive"])]
+        strict: bool,
+        /// Look at every view of every image (no early exit).
+        #[arg(long)]
+        all_views: bool,
     },
     /// Score every clip in a manifest (frame sampling + aggregation).
     ScoreVideo {
@@ -141,8 +153,11 @@ enum Cmd {
         #[arg(long, default_value = "runs/scores")]
         scores: PathBuf,
         /// False-positive target for photos, averaged over real sources.
-        #[arg(long, default_value_t = 0.005)]
+        #[arg(long, default_value_t = 0.015)]
         photo_fpr: f64,
+        /// False-positive target for the strict and fast photo profiles.
+        #[arg(long, default_value_t = 0.005)]
+        strict_fpr: f64,
         /// False-positive target for the sensitive photo profile.
         #[arg(long, default_value_t = 0.05)]
         sensitive_fpr: f64,
@@ -178,9 +193,12 @@ enum Cmd {
         /// False-positive rate on real items that probability 0.5 should correspond to.
         #[arg(long, default_value_t = 0.005)]
         target_fpr: f64,
-        /// photo (default), fast, sensitive or video.
+        /// photo (default), strict, fast, sensitive or video.
         #[arg(long, default_value = "photo")]
         profile: String,
+        /// Also store the standard early-exit schedule in the checkpoint's spec.
+        #[arg(long)]
+        early_exit: bool,
         /// Threshold rule: pooled, strictest or balanced (over real sources).
         #[arg(long, default_value = "balanced")]
         rule: String,
@@ -204,6 +222,9 @@ enum Cmd {
         device: String,
         #[arg(long)]
         fast: bool,
+        /// Look at every view of every image (no early exit).
+        #[arg(long)]
+        all_views: bool,
     },
     /// Fine-tune the detector (Apple GPU).
     Train {
@@ -309,6 +330,9 @@ enum Cmd {
         /// Rewrite each manifest without the listed clips.
         #[arg(long)]
         prune: bool,
+        /// Also draw a re-encoded training frame from every clip (the H.264 augmentation).
+        #[arg(long)]
+        recompress: bool,
     },
     /// List test files that are byte-identical to a training file.
     Overlap {
@@ -336,10 +360,10 @@ fn parse_device(s: &str) -> Result<Device> {
 }
 
 #[cfg(target_os = "macos")]
-fn system(reference: &Option<String>, fast: bool, sensitive: bool) -> Result<veracity::eval::System> {
+fn system(reference: &Option<String>, fast: bool, sensitive: bool, strict: bool) -> Result<veracity::eval::System> {
     use veracity::eval::{Photo, System};
     Ok(match reference.as_deref() {
-        None => System::Veracity { profile: if fast { Photo::Fast } else if sensitive { Photo::Sensitive } else { Photo::Default } },
+        None => System::Veracity { profile: if fast { Photo::Fast } else if sensitive { Photo::Sensitive } else if strict { Photo::Strict } else { Photo::Default } },
         Some("commfor") => System::CommunityForensics,
         Some("swinv2") => System::SwinV2,
         Some("waverep") => System::WaveRep,
@@ -357,7 +381,7 @@ fn load_manifests(ms: &[PathBuf]) -> Result<Vec<ingest::Item>> {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Detect { paths, weights, video_weights, second_opinion, frames, fast, sensitive, json, device } => {
+        Cmd::Detect { paths, weights, video_weights, second_opinion, frames, fast, sensitive, strict, all_views, json, device } => {
             let device = parse_device(&device)?;
             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
             let (vids, imgs): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| ingest::is_video(p));
@@ -370,9 +394,24 @@ fn main() -> Result<()> {
                 if sensitive {
                     Detector::use_sensitive_profile(&mut spec);
                 }
+                if strict {
+                    Detector::use_strict_profile(&mut spec);
+                }
+                let exit = spec.early_exit.clone().filter(|_| !fast && !all_views);
                 let batch = 64.min(imgs.len() * spec.views.len());
+                // On the GPU one batch costs about the same whatever is in it: when every
+                // view of every image fits in one, run them all and apply the stopping
+                // rule afterwards (the same verdicts as stopping early).
+                let one_batch = !matches!(device, Device::Cpu) && imgs.len() * spec.views.len() <= 64;
                 let det = Detector::load(&weights, Some(spec), batch, device)?;
-                let (res, _) = det.score_files(&imgs, threads);
+                let (res, _) = match &exit {
+                    Some(e) if one_batch => {
+                        let (all, t) = det.score_files(&imgs, threads);
+                        (all.into_iter().map(|r| r.map(|l| e.looked_at(&l, det.threshold_logit()))).collect(), t)
+                    }
+                    Some(e) => det.score_files_adaptive(&imgs, threads, e),
+                    None => det.score_files(&imgs, threads),
+                };
                 rows.extend(imgs.iter().zip(res).map(|(p, r)| (p.clone(), "image", r.map(|l| det.probability(&l)), 1)));
             }
             if !vids.is_empty() {
@@ -418,12 +457,12 @@ fn main() -> Result<()> {
             Ok(())
         }
         #[cfg(target_os = "macos")]
-        Cmd::Score { weights, reference, manifest, out, batch, device, views, fast, sensitive } => {
-            veracity::eval::score_images(&weights, &system(&reference, fast, sensitive)?, &manifest, &out, parse_device(&device)?, batch, views.as_deref()).map(|_| ())
+        Cmd::Score { weights, reference, manifest, out, batch, device, views, fast, sensitive, strict, all_views } => {
+            veracity::eval::score_images(&weights, &system(&reference, fast, sensitive, strict)?, &manifest, &out, parse_device(&device)?, batch, views.as_deref(), all_views).map(|_| ())
         }
         #[cfg(target_os = "macos")]
         Cmd::ScoreVideo { weights, reference, manifest, out, frames, views, second_opinion, batch, device } => {
-            veracity::eval::score_videos(&weights, &system(&reference, false, false)?, &manifest, &out, parse_device(&device)?, batch, frames, views.as_deref(), second_opinion.as_deref()).map(|_| ())
+            veracity::eval::score_videos(&weights, &system(&reference, false, false, false)?, &manifest, &out, parse_device(&device)?, batch, frames, views.as_deref(), second_opinion.as_deref()).map(|_| ())
         }
         Cmd::Report { systems, per_generator, markdown, pooled, at_rate_of } => {
             let mut loaded = Vec::new();
@@ -451,8 +490,8 @@ fn main() -> Result<()> {
             veracity::eval::evaluate(&suite, &weights, &video_weights, &tag, &scores, baselines.then_some(&b), reuse, parse_device(&device)?)
         }
         #[cfg(target_os = "macos")]
-        Cmd::Finalize { checkpoint, weights, scores, photo_fpr, sensitive_fpr, video_fpr, device } => {
-            veracity::eval::finalize(&checkpoint, &weights, &scores, photo_fpr, sensitive_fpr, video_fpr, parse_device(&device)?)
+        Cmd::Finalize { checkpoint, weights, scores, photo_fpr, strict_fpr, sensitive_fpr, video_fpr, device } => {
+            veracity::eval::finalize(&checkpoint, &weights, &scores, photo_fpr, strict_fpr, sensitive_fpr, video_fpr, parse_device(&device)?)
         }
         #[cfg(target_os = "macos")]
         Cmd::FinalizeVideo { checkpoint, weights, scores, video_fpr, second_opinion, device } => {
@@ -467,7 +506,12 @@ fn main() -> Result<()> {
             veracity::eval::finalize_video(&checkpoint, &weights, &scores, video_fpr, band, parse_device(&device)?)
         }
         #[cfg(target_os = "macos")]
-        Cmd::Calibrate { weights, scores, target_fpr, profile, rule, min_source } => {
+        Cmd::Calibrate { weights, scores, target_fpr, profile, early_exit, rule, min_source } => {
+            if early_exit {
+                let mut spec = ModelSpec::load_for(&weights)?;
+                spec.early_exit = Some(veracity::detector::EarlyExit::standard());
+                spec.save_for(&weights)?;
+            }
             use veracity::eval::Rule;
             let rule = match rule.as_str() {
                 "pooled" => Rule::Pooled,
@@ -478,7 +522,7 @@ fn main() -> Result<()> {
             veracity::eval::calibrate(&weights, &scores, target_fpr, &profile, rule)
         }
         #[cfg(target_os = "macos")]
-        Cmd::Latency { weights, reference, manifest, n, device, fast } => {
+        Cmd::Latency { weights, reference, manifest, n, device, fast, all_views } => {
             let items = ingest::read_manifest(&manifest)?;
             let mut spec = match reference.as_deref() {
                 Some("commfor") => ModelSpec::commfor(384),
@@ -490,7 +534,12 @@ fn main() -> Result<()> {
                 Detector::use_fast_profile(&mut spec);
             }
             let nv = spec.views.len();
-            let det = Detector::load(&weights, Some(spec), nv, parse_device(&device)?)?;
+            let exit = spec.early_exit.clone().filter(|_| reference.is_none() && !fast && !all_views);
+            // On the CPU early exit runs the views one or two at a time; on the GPU all
+            // six go in one batch and the stopping rule is applied afterwards.
+            let device = parse_device(&device)?;
+            let stepwise = exit.is_some() && matches!(device, Device::Cpu);
+            let det = Detector::load(&weights, Some(spec), if stepwise { 2 } else { nv }, device)?;
             let pre = det.preprocessor();
             let mut buf = vec![0f32; nv * 3 * det.spec.img * det.spec.img];
             let mut ms = Vec::new();
@@ -498,7 +547,11 @@ fn main() -> Result<()> {
                 let t = std::time::Instant::now();
                 let Ok(img) = veracity::image_io::load(&it.path) else { continue };
                 pre.apply(&img, &mut buf);
-                std::hint::black_box(det.probability(&det.logits(&buf)[..nv]));
+                match &exit {
+                    Some(e) if stepwise => std::hint::black_box(det.probability(&det.logits_adaptive(&buf, e))),
+                    Some(e) => std::hint::black_box(det.probability(&e.looked_at(&det.logits(&buf)[..nv], det.threshold_logit()))),
+                    None => std::hint::black_box(det.probability(&det.logits(&buf)[..nv])),
+                };
                 if k >= 5 {
                     ms.push(t.elapsed().as_secs_f64() * 1e3);
                 }
@@ -561,7 +614,7 @@ fn main() -> Result<()> {
             println!("{dataset}: indexed {n} files under {}", root.display());
             Ok(())
         }
-        Cmd::CheckVideos { manifest, prune } => {
+        Cmd::CheckVideos { manifest, prune, recompress } => {
             use rayon::prelude::*;
             for m in &manifest {
                 let items = ingest::read_manifest(m)?;
@@ -569,7 +622,12 @@ fn main() -> Result<()> {
                     .par_iter()
                     .filter_map(|it| {
                         let t = std::time::Instant::now();
-                        let r = veracity::video::middle_frame(&it.path);
+                        let mut r = veracity::video::middle_frame(&it.path);
+                        if recompress && r.is_ok() {
+                            let seed = it.path.to_string_lossy().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3));
+                            let mut rng = veracity::rng::Rng::new(seed);
+                            r = veracity::video::recompressed_only(&it.path, &mut rng, &std::env::temp_dir());
+                        }
                         let secs = t.elapsed().as_secs_f64();
                         match r {
                             Err(e) => Some((it.path.clone(), format!("unreadable: {e}"))),

@@ -8,12 +8,16 @@ use crate::video::VideoInfo;
 use anyhow::{anyhow, bail, Result};
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::AnyObject;
-use objc2_av_foundation::{AVAssetReader, AVAssetReaderOutput, AVAssetReaderTrackOutput, AVAssetTrack, AVMediaTypeVideo, AVURLAsset};
+use objc2_av_foundation::{
+    AVAssetReader, AVAssetReaderOutput, AVAssetReaderTrackOutput, AVAssetTrack, AVAssetWriter, AVAssetWriterInput, AVAssetWriterInputPixelBufferAdaptor, AVFileTypeMPEG4,
+    AVMediaTypeVideo, AVURLAsset, AVVideoAverageBitRateKey, AVVideoCodecKey, AVVideoCodecTypeH264, AVVideoCompressionPropertiesKey, AVVideoHeightKey, AVVideoWidthKey,
+};
 use objc2_core_foundation::{CFBoolean, CFString};
 use objc2_core_media::{kCMFormatDescriptionExtension_FullRangeVideo, kCMTimePositiveInfinity, CMFormatDescription, CMTime, CMTimeRange};
 use objc2_core_video::{
     kCVImageBufferYCbCrMatrixKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-    CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetWidth,
+    kCVPixelFormatType_32BGRA, CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRow,
+    CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetWidth,
     CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
@@ -27,20 +31,6 @@ pub struct Yuv {
     uv: Vec<u8>,
     bt709: bool,
     full_range: bool,
-}
-
-impl Yuv {
-    /// Wrap planar 4:2:0 data (`Y`, then `Cb`, then `Cr`), e.g. from a
-    /// fallback decoder.
-    pub fn from_planar(w: usize, h: usize, data: &[u8], full_range: bool) -> Option<Self> {
-        let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-        if data.len() < w * h + 2 * cw * ch {
-            return None;
-        }
-        let (u, v) = (&data[w * h..][..cw * ch], &data[w * h + cw * ch..][..cw * ch]);
-        let uv = u.iter().zip(v).flat_map(|(&a, &b)| [a, b]).collect();
-        Some(Self { w, h, y: data[..w * h].to_vec(), uv, bt709: false, full_range })
-    }
 }
 
 /// C-style division that truncates toward zero.
@@ -115,9 +105,94 @@ struct Reader {
     output: Retained<AVAssetReaderTrackOutput>,
     info: VideoInfo,
     full_range: bool,
+    /// The retagged copy being read, when the original could not be opened as it was.
+    _temp: Option<TempCopy>,
+}
+
+/// A temporary file, removed when dropped.
+struct TempCopy(std::path::PathBuf);
+
+impl Drop for TempCopy {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Byte offset of the sample-entry type in the first sample description that
+/// says `hev1`, found by walking the MP4 box tree.
+fn hev1_entry_offset(path: &Path) -> Result<Option<u64>> {
+    use std::io::{Read, Seek, SeekFrom};
+    fn walk(f: &mut std::fs::File, start: u64, end: u64, depth: usize) -> Result<Option<u64>> {
+        let mut pos = start;
+        while pos + 8 <= end {
+            let mut h = [0u8; 16];
+            f.seek(SeekFrom::Start(pos))?;
+            f.read_exact(&mut h[..8])?;
+            let (mut size, mut header) = (u32::from_be_bytes([h[0], h[1], h[2], h[3]]) as u64, 8u64);
+            if size == 1 {
+                f.read_exact(&mut h[8..])?;
+                size = u64::from_be_bytes([h[8], h[9], h[10], h[11], h[12], h[13], h[14], h[15]]);
+                header = 16;
+            } else if size == 0 {
+                size = end - pos;
+            }
+            if size < header || pos + size > end {
+                break;
+            }
+            match &h[4..8] {
+                b"moov" | b"trak" | b"mdia" | b"minf" | b"stbl" if depth < 8 => {
+                    if let Some(at) = walk(f, pos + header, pos + size, depth + 1)? {
+                        return Ok(Some(at));
+                    }
+                }
+                b"stsd" => {
+                    // Version and flags (4 bytes), entry count (4), then each entry: size (4), type (4).
+                    let entry = pos + header + 8;
+                    if entry + 8 <= pos + size {
+                        let mut kind = [0u8; 4];
+                        f.seek(SeekFrom::Start(entry + 4))?;
+                        f.read_exact(&mut kind)?;
+                        if &kind == b"hev1" {
+                            return Ok(Some(entry + 4));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            pos += size;
+        }
+        Ok(None)
+    }
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    walk(&mut f, 0, len, 0)
+}
+
+/// AVFoundation opens HEVC only when the sample description is tagged `hvc1`;
+/// many encoders write `hev1` for the same stream. For such a file, a
+/// temporary copy with the four-byte tag changed.
+fn retagged_copy(path: &Path) -> Result<Option<TempCopy>> {
+    use std::os::unix::fs::FileExt;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let Some(at) = hev1_entry_offset(path)? else { return Ok(None) };
+    let tmp = TempCopy(std::env::temp_dir().join(format!("veracity-{}-{}.mp4", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))));
+    std::fs::copy(path, &tmp.0)?;
+    std::fs::OpenOptions::new().write(true).open(&tmp.0)?.write_all_at(b"hvc1", at)?;
+    Ok(Some(tmp))
 }
 
 fn open(path: &Path, start: Option<f64>) -> Result<Reader> {
+    match retagged_copy(path).unwrap_or(None) {
+        Some(tmp) => {
+            let mut r = open_file(&tmp.0, start)?;
+            r._temp = Some(tmp);
+            Ok(r)
+        }
+        None => open_file(path, start),
+    }
+}
+
+fn open_file(path: &Path, start: Option<f64>) -> Result<Reader> {
     unsafe {
         let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
         let asset = AVURLAsset::URLAssetWithURL_options(&url, None);
@@ -159,7 +234,7 @@ fn open(path: &Path, start: Option<f64>) -> Result<Reader> {
         if !reader.startReading() {
             bail!("cannot decode {}", path.display());
         }
-        Ok(Reader { reader, output, info, full_range })
+        Ok(Reader { reader, output, info, full_range, _temp: None })
     }
 }
 
@@ -289,6 +364,103 @@ fn frames_first_inner(path: &Path, n: usize) -> Result<Vec<Rgb>> {
         bail!("no frames decoded from {}", path.display());
     }
     Ok(out)
+}
+
+/// The first `n` frames in presentation order, with the standard colour
+/// conversion (the one training and scoring use).
+pub fn frames_first_plain(path: &Path, n: usize) -> Result<Vec<Rgb>> {
+    with_deadline(path, move |p| {
+        let mut r = open(p, None)?;
+        let mut out = Vec::with_capacity(n);
+        while out.len() < n {
+            let Some((_, f)) = r.next() else { break };
+            out.push(f.to_rgb());
+        }
+        if out.is_empty() {
+            bail!("no frames decoded from {}", p.display());
+        }
+        Ok(out)
+    })
+}
+
+/// Re-encode up to `frames` frames starting at `start` seconds as H.264 into
+/// `out` (an `.mp4` path), scaled by `scale` and at `bits_per_pixel` average
+/// bitrate. Returns the number of frames written.
+pub fn recompress(path: &Path, start: f64, frames: usize, scale: f64, bits_per_pixel: f64, out: &Path) -> Result<usize> {
+    let out = out.to_path_buf();
+    with_deadline(path, move |p| unsafe {
+        let mut r = open(p, Some(start))?;
+        let fps = if r.info.fps > 0.0 { r.info.fps } else { 25.0 };
+        let mut src = Vec::with_capacity(frames);
+        while src.len() < frames {
+            let Some((_, f)) = r.next() else { break };
+            src.push(f.to_rgb());
+        }
+        drop(r);
+        if src.is_empty() {
+            bail!("no frames decoded from {}", p.display());
+        }
+        // Even dimensions, as 4:2:0 needs.
+        let even = |v: f64| ((v / 2.0).floor() as u32 * 2).max(16);
+        let (w, h) = (even(src[0].w as f64 * scale), even(src[0].h as f64 * scale));
+        let _ = std::fs::remove_file(&out);
+        let url = NSURL::fileURLWithPath(&NSString::from_str(&out.to_string_lossy()));
+        let (file_type, media) = (AVFileTypeMPEG4.ok_or_else(|| anyhow!("AVFoundation unavailable"))?, AVMediaTypeVideo.ok_or_else(|| anyhow!("AVFoundation unavailable"))?);
+        let writer = AVAssetWriter::assetWriterWithURL_fileType_error(&url, file_type).map_err(|e| anyhow!("cannot write {}: {}", out.display(), e.localizedDescription()))?;
+        let key = |k: Option<&'static NSString>| k.ok_or_else(|| anyhow!("AVFoundation unavailable"));
+        let bitrate = NSNumber::new_f64((bits_per_pixel * w as f64 * h as f64 * fps).max(20_000.0).round());
+        let compression: Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::from_slices(&[key(AVVideoAverageBitRateKey)?], &[&*bitrate as &AnyObject]);
+        let codec: &NSString = AVVideoCodecTypeH264.ok_or_else(|| anyhow!("AVFoundation unavailable"))?;
+        let (nw, nh) = (NSNumber::new_u32(w), NSNumber::new_u32(h));
+        let settings: Retained<NSDictionary<NSString, AnyObject>> = NSDictionary::from_slices(
+            &[key(AVVideoCodecKey)?, key(AVVideoWidthKey)?, key(AVVideoHeightKey)?, key(AVVideoCompressionPropertiesKey)?],
+            &[codec as &AnyObject, &*nw as &AnyObject, &*nh as &AnyObject, &*compression as &AnyObject],
+        );
+        let input = AVAssetWriterInput::assetWriterInputWithMediaType_outputSettings(media, Some(&settings));
+        input.setExpectsMediaDataInRealTime(false);
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor::assetWriterInputPixelBufferAdaptorWithAssetWriterInput_sourcePixelBufferAttributes(&input, None);
+        writer.addInput(&input);
+        if !writer.startWriting() {
+            bail!("cannot start encoding {}", out.display());
+        }
+        writer.startSessionAtSourceTime(CMTime::with_seconds(0.0, 600_000));
+        let mut written = 0;
+        for (k, frame) in src.iter().enumerate() {
+            let frame = if (frame.w, frame.h) == (w, h) { frame.crop(0, 0, w, h) } else { frame.resize(w, h, crate::image_io::Filter::Bilinear) };
+            let mut raw: *mut CVPixelBuffer = std::ptr::null_mut();
+            if CVPixelBufferCreate(None, w as usize, h as usize, kCVPixelFormatType_32BGRA, None, std::ptr::NonNull::from(&mut raw)) != 0 {
+                bail!("cannot allocate a frame buffer");
+            }
+            let Some(raw) = std::ptr::NonNull::new(raw) else { bail!("cannot allocate a frame buffer") };
+            let pb = objc2_core_foundation::CFRetained::from_raw(raw);
+            CVPixelBufferLockBaseAddress(&pb, CVPixelBufferLockFlags::empty());
+            let (base, stride) = (CVPixelBufferGetBaseAddress(&pb) as *mut u8, CVPixelBufferGetBytesPerRow(&pb));
+            for y in 0..h as usize {
+                let row = std::slice::from_raw_parts_mut(base.add(y * stride), w as usize * 4);
+                for (px, rgb) in row.chunks_exact_mut(4).zip(frame.data[y * w as usize * 3..].chunks_exact(3)) {
+                    px.copy_from_slice(&[rgb[2], rgb[1], rgb[0], 255]);
+                }
+            }
+            CVPixelBufferUnlockBaseAddress(&pb, CVPixelBufferLockFlags::empty());
+            // The encoder takes frames at its own pace.
+            let mut waited = 0;
+            while !input.isReadyForMoreMediaData() && waited < 5000 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                waited += 1;
+            }
+            if !adaptor.appendPixelBuffer_withPresentationTime(&pb, CMTime::with_seconds(k as f64 / fps, 600_000)) {
+                break;
+            }
+            written += 1;
+        }
+        input.markAsFinished();
+        #[allow(deprecated)]
+        let ok = writer.finishWriting();
+        if !ok || written == 0 {
+            bail!("encoding {} failed", out.display());
+        }
+        Ok(written)
+    })
 }
 
 /// The first frame at or after `t` seconds.

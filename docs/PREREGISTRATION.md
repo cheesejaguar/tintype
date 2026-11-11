@@ -1,8 +1,9 @@
 # What was fixed before each blind batch
 
-Two batches were scored blind: the third confirmation batch (photos, and
-video with the phase-3 weights) and the fourth (video, for the dedicated video
-checkpoint). Each note below was written before its data was downloaded and
+Three batches were scored blind: the third confirmation batch (photos, and
+video with the phase-3 weights), the fourth (video, for the dedicated video
+checkpoint) and the fifth (photos, for the balanced default threshold and
+early exit). Each note below was written before its data was downloaded and
 is reproduced unchanged.
 
 ## Third confirmation batch: what was fixed before scoring it
@@ -72,3 +73,42 @@ were frozen and before any of the confirm4 data had been downloaded.
   video, alone and with the second opinion, against WaveRep. Also reported:
   the same per set, AUROC, recall at 1% FPR, the share of clips given a second
   opinion, and time per clip.
+
+## Fifth confirmation batch (photos): what was fixed before scoring it
+
+Written 2026-11-11 01:04 UTC, after the photo configuration below was frozen
+and before any of the confirm5 data had been downloaded.
+
+- **Model**: `models/veracity.safetensors`, unchanged (the phase-3 weights,
+  SHA-256 `2d11bffd77f246416d85…`). Only how they are used changes.
+- **Default threshold**: the mean false-positive target over real sources,
+  chosen among 0.5%, 1%, 1.5%, 2%, 3% and 5% as the one at which Veracity is
+  ahead of both reference detectors on both precision and recall on the most
+  development sets (ties to the lower target). That is 1.5% (8 of 13 sets),
+  logit threshold 2.312. The previous default (0.5%, logit 4.212) stays
+  available as `--strict`; `--sensitive` (5%) and `--fast` (two views, 0.5%)
+  are unchanged.
+- **Early exit**: views are looked at in the order most-textured crop, whole
+  image, centre crop, remaining crops, and an image is decided as soon as the
+  mean logit of the views seen is far enough from the threshold: by 7 below
+  or 9 above after one view, 5 after two, 3.5 after three, 2.5 after four,
+  2 after five. Margins were fitted on the development sets, where they
+  change 0.14% of verdicts and use 2.8 views per image on average.
+- **On the development sets** (pooled, 44,336 images, in-sample): Community
+  Forensics precision 0.975, recall 0.588; SwinV2 detector 0.909, 0.813;
+  Veracity default with early exit 0.984, 0.830. On the third confirmation
+  batch, which did not inform these choices but had been seen: 0.985, 0.932
+  against 0.964, 0.637 and 0.871, 0.918.
+- **Data**: plan `confirm5` as committed in src/plans.rs: So-Fake-OOD shards
+  15, 30, 42; and 400 evenly spaced images per class from every AIGIBench
+  test archive not used before except the five face-swap ones (local edits
+  are out of scope): GLIDE, BLIP, IP-Adapter, InstantID, Infinite-ID,
+  PhotoMaker, ProGAN, R3GAN, StyleGAN3, StyleGAN-XL, StyleSwim, WFIR. Files
+  byte-identical to anything trained on or scored earlier are dropped. Real
+  photos that several archives share are counted once in the pooled table.
+- **Baselines**: Community Forensics and the SwinV2 detector run by the Rust
+  ports, 32-bit, at their shipped thresholds.
+- **Scoring**: once. Primary outcome: pooled precision and recall of the
+  default profile against both reference detectors. Also reported: the same
+  per set, the strict, sensitive and fast profiles, AUROC, recall at 1% FPR,
+  and views per image.

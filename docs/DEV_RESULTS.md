@@ -6,6 +6,12 @@ items in the calibration data, so the thresholded numbers are optimistic;
 [BENCHMARK.md](BENCHMARK.md) has the blind batches. Video rows use the video
 checkpoint.
 
+These tables were made when the default photo threshold was the 0.5% target:
+the rows labelled "Veracity" are what is now `--strict`, with all six views.
+The same suites under the current default (1.5% target, early exit) are in
+`results/benchmarks_new_default.md`, `results/confirm1_new_default.md` and
+`results/confirm2_new_default.md`.
+
 ## Benchmark sets (plan `benchmarks`)
 
 ### Photos

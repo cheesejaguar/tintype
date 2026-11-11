@@ -6,7 +6,7 @@ use crate::ingest::{self, Item, ParquetSpec};
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
-pub const PLANS: [(&str, &str); 15] = [
+pub const PLANS: [(&str, &str); 16] = [
     ("baselines", "released weights of the three reference detectors"),
     ("train-images", "phase-1 image training data"),
     ("train-video", "phase-1 video training data"),
@@ -21,6 +21,7 @@ pub const PLANS: [(&str, &str); 15] = [
     ("confirm2", "second confirmation batch (images)"),
     ("confirm3", "third confirmation batch (images and video)"),
     ("confirm4", "fourth confirmation batch (video, for the video checkpoint)"),
+    ("confirm5", "fifth confirmation batch (photos, for the balanced default and early exit)"),
     ("all", "everything above, in order"),
 ];
 
@@ -193,20 +194,37 @@ impl Run {
     }
 
     fn sofake_ood(&self, shards: &[&str], out: &str, dataset: &str) -> Result<()> {
-        let inc: Vec<String> = shards.iter().map(|x| format!("data/test_image-{x}-of-00046.parquet")).collect();
-        let got = self.hf(SOFAKE_OOD, &inc.iter().map(String::as_str).collect::<Vec<_>>(), "sofake")?;
-        self.ingest(&got, out, dataset, sofake_ood_spec())?;
-        self.rm("sofake");
+        // One shard at a time: each is about 3 GB and is removed once its images are out.
+        for x in shards {
+            let got = self.hf(SOFAKE_OOD, &[&format!("data/test_image-{x}-of-00046.parquet")], "sofake")?;
+            self.ingest(&got, out, dataset, sofake_ood_spec())?;
+            self.rm("sofake");
+        }
         Ok(())
     }
 
     /// An AIGIBench test archive with `0_real` / `1_fake` folders; `per_class > 0` samples evenly.
     fn aigibench(&self, name: &str, out: &str, dataset: &str, gen: &str, per_class: usize) -> Result<()> {
-        let got = self.hf("HorizonTEL/AIGIBench", &[&format!("test/{name}.zip")], "aigibench")?;
-        for class in ["/0_real/", "/1_fake/"] {
-            self.unpack(&got[0], out, Select { contains: class.into(), exts: IMAGE_EXTS.to_vec(), evenly: per_class, ..Default::default() })?;
+        // A sampled set is read out of the remote archive; a whole one is downloaded first.
+        let select = |class: &str| Select { contains: class.into(), exts: IMAGE_EXTS.to_vec(), evenly: per_class, ..Default::default() };
+        let classes = ["/0_real/", "/1_fake/"];
+        if per_class > 0 {
+            // A sampled set is read out of the remote archive; a whole one is downloaded first.
+            let url = fetch::hf_url("HorizonTEL/AIGIBench", &format!("test/{name}.zip"));
+            self.say(&format!("{url}: {per_class} files per class -> {out}"));
+            if !self.dry {
+                for class in classes {
+                    let names = fetch::unpack_remote_zip(&url, Path::new(out), &select(class), self.conns)?;
+                    println!("{url}: extracted {} files -> {out}", names.len());
+                }
+            }
+        } else {
+            let got = self.hf("HorizonTEL/AIGIBench", &[&format!("test/{name}.zip")], "aigibench")?;
+            for class in classes {
+                self.unpack(&got[0], out, select(class))?;
+            }
+            self.rm("aigibench");
         }
-        self.rm("aigibench");
         self.index(out, dataset, false, &[("0_real", 0, "aigibench"), ("1_fake", 1, gen)])
     }
 
@@ -440,10 +458,10 @@ impl Run {
         self.index("data/vstore/k400c", "k400", true, &[("", 0, "kinetics400")])?;
         self.drop_duplicates("data/vstore/k400c/manifest.tsv", &["data/fresh/video/manifest.tsv", "data/fresh4/video/manifest.tsv", "data/vstore/vdev/manifest.tsv"])?;
 
-        let got = self.hf("quchenyuan/UCF101-ZIP", &["UCF-101.zip"], "ucf101")?;
-        self.unpack(&got[0], "data/vstore/ucf101", Select { exts: VIDEO_EXTS.to_vec(), evenly: 1500, flatten: true, ..Default::default() })?;
-        self.rm("ucf101");
-        self.index("data/vstore/ucf101", "ucf101", true, &[("", 0, "ucf101")])
+        // The released video weights also saw 1,500 UCF101 clips (AVI files, decoded
+        // by an external tool at the time). This build reads video only through
+        // the system decoder, which does not open AVI, so they are no longer fetched.
+        Ok(())
     }
 
     /// Second round of video-only additions: current commercial generators
@@ -506,7 +524,8 @@ impl Run {
         // Hand-drawn animation: four shards of Sakugabooru clips.
         if !have("animation") {
             for got in self.hf("trojblue/sakugabooru2025", &["train/4.tar", "train/10.tar", "train/102.tar", "train/103.tar"], "sakuga")? {
-                self.unpack(&got, "data/vstore/animation", Select { exts: VIDEO_EXTS.to_vec(), flatten: true, ..Default::default() })?;
+                // MP4 only: the system decoder does not open the WebM clips.
+                self.unpack(&got, "data/vstore/animation", Select { exts: vec!["mp4"], flatten: true, ..Default::default() })?;
             }
             self.rm("sakuga");
             self.index("data/vstore/animation", "sakugabooru", true, &[("", 0, "animation")])?;
@@ -706,7 +725,58 @@ impl Run {
         }
         Ok(())
     }
+
+    /// The batch that confirms the final photo configuration (balanced
+    /// default threshold, early exit). Three more So-Fake-OOD shards and every
+    /// AIGIBench test archive not used before, except the five face-swap
+    /// ones (local edits are out of scope).
+    fn confirm5(&self) -> Result<()> {
+        let mut earlier: Vec<&str> = EVAL_IMAGE_MANIFESTS.to_vec();
+        earlier.extend(CONFIRM3_IMAGE_MANIFESTS);
+        // A set that is already indexed is left alone, so the plan can resume.
+        let have = |dir: &str| !self.dry && Path::new(dir).join("manifest.tsv").exists();
+        if !have("data/fresh6/sofake-ood") {
+            self.sofake_ood(&["00015", "00030", "00042"], "data/fresh6/sofake-ood", "sofake-ood-fresh4")?;
+            self.drop_duplicates("data/fresh6/sofake-ood/manifest.tsv", &earlier)?;
+            self.drop_duplicates("data/fresh6/sofake-ood/manifest.tsv", &TRAIN_IMAGE_MANIFESTS)?;
+        }
+        for (name, gen) in CONFIRM5_AIGIBENCH {
+            let out = format!("data/fresh6/aigibench-{name}");
+            if have(&out) {
+                continue;
+            }
+            self.aigibench(name, &out, &format!("aigibench-{}", name.to_lowercase()), gen, 400)?;
+            self.drop_duplicates(&format!("{out}/manifest.tsv"), &earlier)?;
+            self.drop_duplicates(&format!("{out}/manifest.tsv"), &TRAIN_IMAGE_MANIFESTS)?;
+        }
+        Ok(())
+    }
 }
+
+/// AIGIBench archives of the fifth confirmation batch: (archive, generator label).
+pub const CONFIRM5_AIGIBENCH: [(&str, &str); 12] = [
+    ("GLIDE", "GLIDE"),
+    ("BLIP", "BLIP-Diffusion"),
+    ("IP-Adapter", "IP-Adapter"),
+    ("InstantID", "InstantID"),
+    ("Infinite-ID", "Infinite-ID"),
+    ("PhotoMaker", "PhotoMaker"),
+    ("ProGAN", "ProGAN"),
+    ("R3GAN", "R3GAN"),
+    ("StyleGAN3", "StyleGAN3"),
+    ("StyleGAN-XL", "StyleGAN-XL"),
+    ("StyleSwim", "StyleSwim"),
+    ("WFIR", "WFIR"),
+];
+
+/// Image sets of the third confirmation batch.
+pub const CONFIRM3_IMAGE_MANIFESTS: [&str; 5] = [
+    "data/fresh4/sofake-ood/manifest.tsv",
+    "data/fresh4/aigibench-DALLE-3/manifest.tsv",
+    "data/fresh4/aigibench-SD3/manifest.tsv",
+    "data/fresh4/aigibench-SDXL/manifest.tsv",
+    "data/fresh4/aigibench-Imagen3/manifest.tsv",
+];
 
 /// Released checkpoints of the reference detectors: (URL, local path).
 pub const BASELINE_WEIGHTS: [(&str, &str); 4] = [
@@ -730,10 +800,9 @@ pub const TRAIN_IMAGE_MANIFESTS: [&str; 10] = [
 ];
 
 /// Added in phases 4 and 5, for the video checkpoint only.
-pub const PHASE4_VIDEO_MANIFESTS: [&str; 8] = [
+pub const PHASE4_VIDEO_MANIFESTS: [&str; 7] = [
     "data/vstore/aigvd3/manifest.tsv",
     "data/vstore/k400c/manifest.tsv",
-    "data/vstore/ucf101/manifest.tsv",
     "data/vstore/rapidata/manifest.tsv",
     "data/vstore/aigvd4/manifest.tsv",
     "data/vstore/animation/manifest.tsv",
@@ -828,6 +897,7 @@ pub fn run(plan: &str, dry: bool, conns: usize) -> Result<()> {
         "confirm2" => r.confirm2(),
         "confirm3" => r.confirm3(),
         "confirm4" => r.confirm4(),
+        "confirm5" => r.confirm5(),
         "all" => {
             for (p, _) in PLANS.iter().filter(|(p, _)| *p != "all" && *p != "baselines") {
                 run(p, dry, conns)?;
