@@ -727,30 +727,45 @@ Video frames always get all six views; early exit applies to photos only.
 
 **On Linux** – everything above was measured on macOS. On Linux `detect`
 runs on the CPU engine, with pure-Rust matrix kernels in place of Accelerate
-and a pure-Rust video reader in place of the system decoder. In an aarch64
-Ubuntu virtual machine on the same Mac (8 of its 12 cores), on 738 photos
-from the second blind photo batch and 130 clips from the blind video batch
+and a pure-Rust video reader in place of the system decoder. Both whole
+blind batches of the current comparison – the third blind photo batch and
+the blind video batch – were scored in an aarch64 Ubuntu virtual machine on
+the same Mac (8 of its 12 cores), next to Community Forensics as its authors
+ship it (PyTorch 2.15) and its network through this engine
 ([results/linux.log](results/linux.log)):
 
-| | Linux VM |
-|---|---|
-| Photo verdicts that differ from macOS, default profile and all six views | 0 of 738 (largest difference in probability 0.00001) |
-| The same for an x86-64 Linux binary, run under translation | 0 of 738 |
-| Clip verdicts that differ from macOS | 0 of 127 (largest difference in probability 0.014) |
-| Clips Linux could not read | 3 of 130 (lossless H.264) |
-| **Veracity**, default, 320 photos of at most 1 megapixel | **12 images/s** (10–18 over four passes) |
-| Community Forensics network, Rust port, same files | 9 images/s (7–12) |
-| Veracity `--fast` / `--all-views` | 15 / 5 images/s |
-| **Veracity**, default, all 738 photos (up to 4K) | **11 images/s** (10–11 over three passes) |
-| Community Forensics network, Rust port, same files | 8 images/s (7–8) |
-| Veracity, video | 2.7 s per clip |
+| On Linux | 16,324 photos | 2,056 clips |
+|---|---|---|
+| **Veracity**, precision / recall | **0.986 / 0.904** | **0.997 / 0.942** on the 1,756 clips it could read |
+| The same files on macOS (GPU engine) | 0.986 / 0.904 | 0.997 / 0.941 |
+| Verdicts that differ from the macOS CPU engine | 0 (largest difference in probability 0.00003) | – |
+| Verdicts that differ from the macOS GPU scores used above | 7 | 1 |
+| Files Linux could not read | 0 | 300 (lossless H.264: the real clips of ComGenVid) |
+| Community Forensics as released, precision / recall | 0.965 / 0.819 | – |
+| Community Forensics network, Rust port | 0.966 / 0.818 (no verdict differs from macOS) | – |
 
-Timings in a virtual machine vary a good deal from pass to pass; within each
-pass Veracity's default was the faster of the two photo detectors, by
-1.2–1.5×. The CPU engine replaced a generic one that managed 7 images/s on
-the first photo row. Neither reference detector's own PyTorch pipeline was
-timed on Linux, and WaveRep was not run there at all, so nothing here says
-how the released programs compare on that system.
+| On Linux, CPU, decode to verdict | Photos/s, all 16,324 | By set (19) |
+|---|---|---|
+| **Veracity**, default | **24.9** | 18.9–40.1 |
+| Community Forensics, as released | 14.8 (16.1 by its own timer, which starts once the model is loaded) | 14.4–15.3 |
+| Community Forensics network, Rust port | 16.3 | 15.2–17.7 |
+| Veracity, video | 1.4 s per clip (2,915 s for the batch) | |
+
+The three photo detectors were run one after another on each set, and
+Veracity was the fastest on all 19: 1.3–2.8× the released pipeline and
+1.2–2.6× the port. Precision and recall are what they are on macOS,
+including the per-set picture: the default profile is behind Community
+Forensics on recall on the same 14 of 19 sets. Six of the seven photo
+verdicts that differ from the GPU scores are within 0.005 of the threshold;
+the seventh is an image on which the 16-bit and 32-bit engines stop at
+different views. On Linux the engine runs one view per thread; splitting
+each matrix product across the threads instead gave 17.4 photos/s on this
+batch with the same output to the last bit. An x86-64 Linux binary, run
+under translation, gave the macOS verdict on each of 738 photos (checked
+before that threading change, and not a speed measurement). WaveRep was not
+run on Linux, and the 300 clips the pure-Rust reader cannot open are every
+real clip of one of the three video sets, so the video figures there rest
+on the other two sets for real clips.
 
 **The pure-Rust video reader against the system decoder**, on macOS, where
 both can be run on the same files (`check-videos --compare-decoders`). Over

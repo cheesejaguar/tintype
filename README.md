@@ -153,9 +153,12 @@ each with its run spec in a `.json` beside it. The
 GPU engine, training and the evaluation commands need macOS on Apple Silicon.
 `detect` also runs on Linux, on the CPU engine, for photos and for video:
 built and run on aarch64 Ubuntu (and, for photos, as an x86-64 binary under
-translation), with the same verdict as macOS on every one of 738 test photos
-and 127 test clips. It is slower there than on a Mac – 10–18 photos/s and
-about 3 s per clip on eight virtual cores
+translation). There it scored the third blind photo batch with the verdict
+the macOS CPU engine gives on every one of 16,324 photos, at 25 photos/s on
+eight virtual cores against 15 for Community Forensics' released pipeline
+on the same machine, and the blind video batch at 1.4 s per clip with the
+same precision and recall as on macOS – on the 1,756 of 2,056 clips its
+video reader can open
 ([docs/results/linux.log](docs/results/linux.log)).
 
 ## Use

@@ -52,3 +52,138 @@ read 127; unreadable 3 (lossless H.264, which the pure-Rust decoder does not sup
 verdicts that differ from macOS with the system decoder (CPU engine): 0 of 127, largest difference in probability 1.4e-02
 verdicts that differ from macOS with the pure-Rust reader: 0 of 127, largest difference in probability 4.5e-07
 73 of 77 AI clips found, 0 of 50 real clips flagged, on both systems
+
+==================== the two whole blind batches on Linux ====================
+Same virtual machine (8 virtual CPUs). Third blind photo batch: 16,324 photos (8,628 AI, 7,696 real), 19 sets.
+Blind video batch: 2,056 clips (1,156 AI, 900 real), 3 sets. `detect --json --device cpu`, at most 1,200 files per process.
+The CPU engine here runs one view per thread (the timings further up were taken before that change, when each
+matrix product was split across the threads: 17.4 photos/s on this batch, 24.9 now, the same output to the last bit).
+Reference: Community Forensics as its authors ship it (PyTorch 2.15.0, timm 1.0.31, torchvision 0.29.2, 8 loader workers, batch 64)
+and its network through this engine ("port"). The three were run one after another on each set.
+
+### tests
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+### photos: set, detector, files, seconds (whole process), rows, program's own report
+aigibench-BLIP	commfor-released	800	53.689674946	800	scored 800 images (0 unreadable) in 48.9s: 16.4 img/s end-to-end, 16.8 img/s model-only
+aigibench-BLIP	veracity	800	20.293929915	800
+aigibench-BLIP	commfor-port	800	51.834146507	800
+aigibench-GLIDE	commfor-released	784	52.551514669	784	scored 784 images (0 unreadable) in 47.7s: 16.4 img/s end-to-end, 16.8 img/s model-only
+aigibench-GLIDE	veracity	784	25.216879812	784
+aigibench-GLIDE	commfor-port	784	47.174720777	784
+aigibench-IP-Adapter	commfor-released	768	52.702921596	768	scored 768 images (0 unreadable) in 47.8s: 16.1 img/s end-to-end, 16.4 img/s model-only
+aigibench-IP-Adapter	veracity	768	38.792460671	768
+aigibench-IP-Adapter	commfor-port	768	47.991988330	768
+aigibench-Infinite-ID	commfor-released	772	52.962690381	772	scored 772 images (0 unreadable) in 48.2s: 16.0 img/s end-to-end, 16.4 img/s model-only
+aigibench-Infinite-ID	veracity	772	29.190576469	772
+aigibench-Infinite-ID	commfor-port	772	48.096078018	772
+aigibench-InstantID	commfor-released	768	53.265181822	768	scored 768 images (0 unreadable) in 48.4s: 15.9 img/s end-to-end, 16.2 img/s model-only
+aigibench-InstantID	veracity	768	29.233198461	768
+aigibench-InstantID	commfor-port	768	48.071045160	768
+aigibench-PhotoMaker	commfor-released	774	53.219134946	774	scored 774 images (0 unreadable) in 48.4s: 16.0 img/s end-to-end, 16.3 img/s model-only
+aigibench-PhotoMaker	veracity	774	41.041669491	774
+aigibench-PhotoMaker	commfor-port	774	48.470898683	774
+aigibench-ProGAN	commfor-released	800	53.289953807	800	scored 800 images (0 unreadable) in 48.5s: 16.5 img/s end-to-end, 16.8 img/s model-only
+aigibench-ProGAN	veracity	800	26.467585419	800
+aigibench-ProGAN	commfor-port	800	51.835637035	800
+aigibench-R3GAN	commfor-released	766	51.772190148	766	scored 766 images (0 unreadable) in 46.8s: 16.4 img/s end-to-end, 16.7 img/s model-only
+aigibench-R3GAN	veracity	766	25.118410907	766
+aigibench-R3GAN	commfor-port	766	47.460458828	766
+aigibench-StyleGAN-XL	commfor-released	775	53.097717876	775	scored 775 images (0 unreadable) in 48.3s: 16.1 img/s end-to-end, 16.4 img/s model-only
+aigibench-StyleGAN-XL	veracity	775	33.463285330	775
+aigibench-StyleGAN-XL	commfor-port	775	47.915323789	775
+aigibench-StyleGAN3	commfor-released	773	52.778217868	773	scored 773 images (0 unreadable) in 47.9s: 16.1 img/s end-to-end, 16.6 img/s model-only
+aigibench-StyleGAN3	veracity	773	35.312790957	773
+aigibench-StyleGAN3	commfor-port	773	47.441950094	773
+aigibench-StyleSwim	commfor-released	772	52.919663148	772	scored 772 images (0 unreadable) in 48.1s: 16.1 img/s end-to-end, 16.4 img/s model-only
+aigibench-StyleSwim	veracity	772	35.901795494	772
+aigibench-StyleSwim	commfor-port	772	47.461361754	772
+aigibench-WFIR	commfor-released	798	54.515160999	798	scored 798 images (0 unreadable) in 49.6s: 16.1 img/s end-to-end, 16.6 img/s model-only
+aigibench-WFIR	veracity	798	34.371298064	798
+aigibench-WFIR	commfor-port	798	52.606776647	798
+classic-biggan	commfor-released	598	41.287540161	598	scored 598 images (0 unreadable) in 36.5s: 16.4 img/s end-to-end, 16.9 img/s model-only
+classic-biggan	veracity	598	17.500348475	598
+classic-biggan	commfor-port	598	34.087564345	598
+classic-cyclegan	commfor-released	596	41.296832369	596	scored 596 images (0 unreadable) in 36.5s: 16.3 img/s end-to-end, 16.8 img/s model-only
+classic-cyclegan	veracity	596	20.594818829	596
+classic-cyclegan	commfor-port	596	36.700976241	596
+classic-gaugan	commfor-released	598	41.333001046	598	scored 598 images (0 unreadable) in 36.5s: 16.4 img/s end-to-end, 16.8 img/s model-only
+classic-gaugan	veracity	598	16.657352953	598
+classic-gaugan	commfor-port	598	36.963309401	598
+classic-stargan	commfor-released	598	41.510723627	598	scored 598 images (0 unreadable) in 36.7s: 16.3 img/s end-to-end, 16.8 img/s model-only
+classic-stargan	veracity	598	14.900387876	598
+classic-stargan	commfor-port	598	36.096904504	598
+classic-stylegan	commfor-released	598	41.330233321	598	scored 598 images (0 unreadable) in 36.5s: 16.4 img/s end-to-end, 16.8 img/s model-only
+classic-stylegan	veracity	598	23.037419541	598
+classic-stylegan	commfor-port	598	33.756271967	598
+classic-stylegan2	commfor-released	585	40.440649149	585	scored 585 images (0 unreadable) in 35.6s: 16.4 img/s end-to-end, 16.9 img/s model-only
+classic-stylegan2	veracity	585	25.244935450	585
+classic-stylegan2	commfor-port	585	33.735265498	585
+sofake-ood	commfor-released	3401	221.857036074	3401	scored 3401 images (0 unreadable) in 217.0s: 15.7 img/s end-to-end, 15.8 img/s model-only
+sofake-ood	veracity	3401	162.872119628	3401
+sofake-ood	commfor-port	3401	204.138926620	3401
+### video: set, detector, files, seconds, rows
+comgenvid	veracity	600	508.849792354	600
+genvideo-val	veracity	660	1061.198217249	660
+video	veracity	796	1344.602575279	796
+
+### photos per second, whole process, by set: veracity / community forensics as released / community forensics port
+aigibench-BLIP            39.4  14.9  15.4
+aigibench-GLIDE           31.1  14.9  16.6
+aigibench-IP-Adapter      19.8  14.6  16.0
+aigibench-Infinite-ID     26.4  14.6  16.1
+aigibench-InstantID       26.3  14.4  16.0
+aigibench-PhotoMaker      18.9  14.5  16.0
+aigibench-ProGAN          30.2  15.0  15.4
+aigibench-R3GAN           30.5  14.8  16.1
+aigibench-StyleGAN-XL     23.2  14.6  16.2
+aigibench-StyleGAN3       21.9  14.6  16.3
+aigibench-StyleSwim       21.5  14.6  16.3
+aigibench-WFIR            23.2  14.6  15.2
+classic-biggan            34.2  14.5  17.5
+classic-cyclegan          28.9  14.4  16.2
+classic-gaugan            35.9  14.5  16.2
+classic-stargan           40.1  14.4  16.6
+classic-stylegan          26.0  14.5  17.7
+classic-stylegan2         23.2  14.5  17.3
+sofake-ood                20.9  15.3  16.7
+all 16,324                24.9  14.8  16.3
+community forensics as released, by its own timer (starts after the model is loaded): 16.1 photos/s
+veracity is the faster on 19 of 19 sets: 1.30-2.79 times the released pipeline, 1.18-2.55 times the port
+
+### precision / recall on Linux, by set: AI / real, veracity, community forensics as released, community forensics port
+aigibench-BLIP            400 /  400   0.993 / 1.000   0.955 / 1.000   0.957 / 1.000
+aigibench-GLIDE           397 /  387   0.992 / 0.970   0.945 / 0.997   0.945 / 0.997
+aigibench-IP-Adapter      400 /  368   0.992 / 0.875   0.957 / 0.885   0.957 / 0.885
+aigibench-Infinite-ID     400 /  372   0.988 / 1.000   0.979 / 0.915   0.979 / 0.915
+aigibench-InstantID       400 /  368   0.990 / 0.985   0.930 / 0.667   0.934 / 0.667
+aigibench-PhotoMaker      400 /  374   0.992 / 0.610   0.963 / 0.713   0.963 / 0.713
+aigibench-ProGAN          400 /  400   0.943 / 0.998   0.920 / 1.000   0.920 / 1.000
+aigibench-R3GAN           400 /  366   0.997 / 0.968   0.964 / 1.000   0.966 / 1.000
+aigibench-StyleGAN-XL     400 /  375   0.989 / 0.892   0.964 / 1.000   0.964 / 1.000
+aigibench-StyleGAN3       400 /  373   0.997 / 0.845   0.990 / 0.985   0.990 / 0.985
+aigibench-StyleSwim       400 /  372   0.994 / 0.815   0.955 / 1.000   0.952 / 1.000
+aigibench-WFIR            398 /  400   1.000 / 0.920   1.000 / 1.000   1.000 / 1.000
+classic-biggan            299 /  299   0.987 / 0.997   0.984 / 1.000   0.984 / 1.000
+classic-cyclegan          298 /  298   0.983 / 0.963   0.974 / 0.997   0.974 / 0.997
+classic-gaugan            299 /  299   0.990 / 0.997   0.980 / 1.000   0.980 / 1.000
+classic-stargan           299 /  299   1.000 / 1.000   1.000 / 1.000   1.000 / 1.000
+classic-stylegan          299 /  299   0.968 / 0.923   0.963 / 0.963   0.963 / 0.963
+classic-stylegan2         299 /  286   0.988 / 0.839   0.943 / 0.990   0.943 / 0.990
+sofake-ood               2040 / 1361   0.980 / 0.857   0.976 / 0.405   0.976 / 0.401
+all                      8628 / 7696   0.986 / 0.904   0.965 / 0.819   0.966 / 0.818
+real photos flagged: veracity 1.44%, community forensics as released 3.29%, port 3.26%
+
+### agreement with macOS, photos
+veracity, Linux CPU against macOS CPU engine, 16,324 photos: verdicts that differ 0, largest difference in probability 2.7e-05
+veracity, Linux CPU against the macOS GPU scores the report uses (16-bit): verdicts that differ 7
+  six within 0.005 of the threshold; one where the 16-bit and 32-bit engines stop at different views (0.912 against 0.412, an AI image)
+  precision / recall on macOS GPU 0.9860 / 0.9036, on Linux 0.9860 / 0.9044
+community forensics port, Linux against macOS: verdicts that differ 0, largest difference 5.9e-05
+community forensics as released on Linux against the port: verdicts that differ 12 of 16,324
+
+### video on Linux (pure-Rust reader)
+read 1,756 of 2,056 clips; unreadable 300, the real clips of ComGenVid (MSVD), which are lossless H.264
+on the 1,756: precision 0.9973, recall 0.9420 (1,089 of 1,156 AI found, 3 of 600 real flagged)
+macOS GPU engine with the system decoder, same 1,756: precision 0.9973, recall 0.9412; verdicts that differ 1 (0.508 against 0.494), largest difference in probability 0.022
+2,915 s for the batch: 1.4 s per clip, 1.7 s per clip read (4,179 s before the threading change, same output)
+WaveRep was not run on Linux.

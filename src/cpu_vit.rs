@@ -64,6 +64,13 @@ mod kernels {
         }
     }
 
+    /// Accelerate schedules its own threads; the batch goes to it whole.
+    pub const ONE_VIEW_PER_THREAD: bool = false;
+
+    pub fn on_one_thread<R>(f: impl FnOnce() -> R) -> R {
+        f()
+    }
+
     pub fn exp_inplace(x: &mut [f32]) {
         let n = x.len() as i32;
         unsafe { vvexpf(x.as_mut_ptr(), x.as_ptr(), &n) }
@@ -76,11 +83,28 @@ mod kernels {
     /// attention products already run one task per view.
     const PARALLEL_FROM: usize = 1 << 22;
 
+    /// A batch runs one view per thread, each view's products on that thread:
+    /// splitting every product across the threads instead spent about 40% of
+    /// the processor time on coordination (eight cores, ViT-S/16).
+    pub const ONE_VIEW_PER_THREAD: bool = true;
+
+    thread_local! {
+        static ONE_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Run `f` with every product it makes kept on the calling thread.
+    pub fn on_one_thread<R>(f: impl FnOnce() -> R) -> R {
+        let was = ONE_THREAD.replace(true);
+        let r = f();
+        ONE_THREAD.set(was);
+        r
+    }
+
     /// `c[m, n] = a[m, k] * b + beta * c` where `b` is `[n, k]` (`b_trans`) or `[k, n]`.
     pub fn gemm(a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize, b_trans: bool, beta: f32) {
         assert!(a.len() >= m * k && b.len() >= n * k && c.len() >= m * n);
         let (b_cs, b_rs) = if b_trans { (k as isize, 1) } else { (1, n as isize) };
-        let par = if m * n * k >= PARALLEL_FROM { gemm::Parallelism::Rayon(0) } else { gemm::Parallelism::None };
+        let par = if m * n * k >= PARALLEL_FROM && !ONE_THREAD.get() { gemm::Parallelism::Rayon(0) } else { gemm::Parallelism::None };
         // dst := alpha * dst + beta * lhs * rhs, in this crate's naming.
         unsafe {
             gemm::gemm(m, n, k, c.as_mut_ptr(), 1, n as isize, beta != 0.0, a.as_ptr(), 1, k as isize, b.as_ptr(), b_cs, b_rs, beta, 1.0f32, false, false, false, par);
@@ -103,7 +127,7 @@ mod kernels {
     }
 }
 
-use kernels::{exp_inplace, gemm};
+use kernels::{exp_inplace, gemm, on_one_thread, ONE_VIEW_PER_THREAD};
 
 struct Lin {
     /// `[out, in]`, as stored in the checkpoint.
@@ -219,6 +243,9 @@ impl CpuVit {
         let (np, n) = (side * side, side * side + 1);
         let view = 3 * c.img * c.img;
         let b = x.len() / view;
+        if ONE_VIEW_PER_THREAD && b > 1 {
+            return x.par_chunks(view).flat_map_iter(|v| on_one_thread(|| self.forward(v))).collect();
+        }
         let pdim = 3 * p * p;
 
         // Unfold into patch rows (channel, row, column order, as the conv weight).
