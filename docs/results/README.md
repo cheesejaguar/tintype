@@ -18,3 +18,4 @@ of the speed runs. [../BENCHMARK.md](../BENCHMARK.md) presents them.
 | `confirm6_at_reference_rates.md` | That batch with Veracity at each reference detector's false-positive rate |
 | `*_phase6_weights.md` | The earlier suites re-scored with the phase-6 photo weights (seen data) |
 | `speed_interleaved.log` | Phase-6 and phase-3 photo weights and Community Forensics, alternated on the same files with the machine under load |
+| `linux.log` | Photo detection built, tested and run in an aarch64 Linux virtual machine: agreement with macOS and timings |

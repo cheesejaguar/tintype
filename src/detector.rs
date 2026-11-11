@@ -371,12 +371,8 @@ impl Device {
 enum Engine {
     #[cfg(target_os = "macos")]
     Mps { g: Graph, inp: T, out: T },
-    /// Accelerate-backed engine (macOS).
-    #[cfg(target_os = "macos")]
+    /// The engine in `cpu_vit`: Accelerate on macOS, pure Rust elsewhere.
     Cpu { vit: crate::cpu_vit::CpuVit },
-    /// Portable engine on candle.
-    #[cfg(not(target_os = "macos"))]
-    Cpu { vit: crate::vit::Vit },
 }
 
 pub struct Detector {
@@ -417,19 +413,7 @@ impl Detector {
             }
             #[cfg(not(target_os = "macos"))]
             Device::Gpu | Device::GpuF32 => anyhow::bail!("the GPU engine is only available on macOS; use the CPU engine"),
-            #[cfg(target_os = "macos")]
             Device::Cpu => Engine::Cpu { vit: crate::cpu_vit::CpuVit::new(w, cfg)? },
-            #[cfg(not(target_os = "macos"))]
-            Device::Cpu => {
-                let dev = candle_core::Device::Cpu;
-                let tensors = w
-                    .0
-                    .iter()
-                    .map(|(k, (d, sh))| Ok((k.clone(), candle_core::Tensor::from_slice(d, sh.as_slice(), &dev)?)))
-                    .collect::<Result<std::collections::HashMap<_, _>>>()?;
-                let vb = candle_nn::VarBuilder::from_tensors(tensors, candle_core::DType::F32, &dev);
-                Engine::Cpu { vit: crate::vit::Vit::new(vb, cfg, Some(1))? }
-            }
         };
         Ok(Self { engine, batch, spec })
     }
@@ -450,23 +434,13 @@ impl Detector {
 
     /// Raw logits for `batch` preprocessed views (CHW, concatenated).
     pub fn logits(&self, x: &[f32]) -> Vec<f32> {
-        let s = self.spec.img;
         match &self.engine {
             #[cfg(target_os = "macos")]
-            Engine::Mps { g, inp, out } => g.run(&[(inp, x, &[self.batch as isize, 3, s as isize, s as isize])], &[out.clone()], &[]).remove(0),
-            #[cfg(target_os = "macos")]
-            Engine::Cpu { vit } => vit.forward(x),
-            #[cfg(not(target_os = "macos"))]
-            Engine::Cpu { vit } => {
-                use rayon::prelude::*;
-                let vl = self.view_len();
-                x.par_chunks(vl * 2)
-                    .flat_map_iter(|c| {
-                        let t = candle_core::Tensor::from_slice(c, (c.len() / vl, 3, s, s), &candle_core::Device::Cpu).expect("tensor");
-                        vit.forward(&t).and_then(|o| o.flatten_all()?.to_vec1::<f32>()).expect("cpu forward")
-                    })
-                    .collect()
+            Engine::Mps { g, inp, out } => {
+                let s = self.spec.img as isize;
+                g.run(&[(inp, x, &[self.batch as isize, 3, s, s])], &[out.clone()], &[]).remove(0)
             }
+            Engine::Cpu { vit } => vit.forward(x),
         }
     }
 

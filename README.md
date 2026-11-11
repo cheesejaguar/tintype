@@ -132,7 +132,7 @@ set share of real items, averaged over real sources, scores above 50%:
 |---|---|---|
 | `gpu` (default on macOS) | Apple GPU, 16-bit | The whole network is compiled into one MPSGraph, driven from Rust through `objc2`. Training uses the same graph builder, with autodiff and AdamW inside the graph. |
 | `gpu-f32` | Apple GPU, 32-bit | Matches PyTorch output to five decimals. |
-| `cpu` | macOS: Accelerate-backed engine written for this network. Elsewhere: [candle](https://github.com/huggingface/candle). | |
+| `cpu` | Anywhere | An engine written for this network. The matrix products go to Accelerate on macOS and to pure-Rust kernels (NEON, AVX2 or AVX-512, chosen at run time) on Linux. |
 
 Images are decoded and resized in Rust (`image`, `zune-jpeg`,
 `fast_image_resize`) on all cores and fed to the engine through a bounded
@@ -148,9 +148,13 @@ cargo build --release
 Needs a Rust toolchain. The trained weights are `models/veracity.safetensors`
 for photos and `models/veracity-video.safetensors` for video (87 MB each),
 each with its run spec in a `.json` beside it. Video, training and the
-evaluation commands need macOS on Apple Silicon. `detect --device cpu` on
-photos is written to build anywhere: the crate type-checks for x86-64 Linux,
-but it has only been built and run on macOS.
+evaluation commands need macOS on Apple Silicon. Photo detection also runs on
+Linux (`detect` uses the CPU engine there): built and run on aarch64 Ubuntu
+and, under translation, as an x86-64 binary, with the same verdict as macOS
+on every one of 738 test photos. It is slower there than on a Mac –
+10–18 images/s on eight virtual cores, against 7–12 for the Community
+Forensics network through the same engine
+([docs/results/linux.log](docs/results/linux.log)).
 
 ## Use
 
@@ -240,7 +244,7 @@ veracity evaluate confirm4 --baselines
   thispersondoesnotexist-style faces the default profile finds 73–79%, where
   a detector trained on thousands of such generators finds nearly all.
 - The GPU engine, training, all video decoding and the second-opinion stage
-  are Apple-only. Video is read by the system decoder: MP4 and MOV with H.264
+  are Apple-only; on Linux only photos can be checked. Video is read by the system decoder: MP4 and MOV with H.264
   or HEVC work, AVI and WebM do not.
 
 ## Licence

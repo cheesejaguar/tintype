@@ -1,0 +1,48 @@
+Photo detection on Linux, in a virtual machine on the development Mac (Apple Virtualization, 8 of its 12 cores).
+Sample: 738 photos from the second blind photo batch (407 AI, 331 real; JPEG, PNG, WebP, GIF).
+
+### system
+Linux 7.0.0-38-generic aarch64
+Ubuntu 26.04.1 LTS
+8 virtual CPUs, 11 GB
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+### build
+    Finished `release` profile [optimized] target(s) in 15.19s
+### tests
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+### 320 photos of at most 1 megapixel, decode to verdict, seconds
+r1 veracity default            17.819764861
+r1 community forensics port    27.323290084
+r1 veracity fast               16.277882087
+r1 veracity all views          64.717590271
+r1 veracity default, previous engine (candle)  40.831232825
+r2 veracity default            23.566573763
+r2 community forensics port    28.940320207
+r2 veracity fast               20.815183926
+r2 veracity all views          68.044371038
+r2 veracity default, previous engine (candle)  44.289022771
+r3 veracity default            31.247546423
+r3 community forensics port    40.315873402
+r3 veracity fast               20.859100062
+r3 veracity all views          48.626545684
+r3 veracity default, previous engine (candle)  48.534325509
+r4 veracity default            29.819394224
+r4 community forensics port    43.972946475
+r4 veracity fast               24.751776848
+r4 veracity all views          53.892176251
+r4 veracity default, previous engine (candle)  42.428706851
+### all 738 photos (up to 4K), decode to verdict, seconds
+r1 veracity default            67.378128468
+r1 community forensics port    90.397130179
+r2 veracity default            70.823584094
+r2 community forensics port    107.521563358
+r3 veracity default            68.046567130
+r3 community forensics port    87.746847063
+### same verdicts as macOS (CPU engine), all 738 photos
+default profile:  largest difference in probability 1.0e-05, verdicts that differ 0
+all six views:    largest difference in probability 1.0e-05, verdicts that differ 0
+community forensics port, 320 photos: largest difference 1.9e-05, verdicts that differ 0
+precision 0.989, recall 0.887 on this sample on both systems (361 of 407 AI found, 4 of 331 real flagged)
+### x86-64 Linux binary (static, cross-built in the same VM), run under Rosetta translation
+default profile, all 738 photos: verdicts that differ from macOS 0, largest difference in probability 1.0e-05
+(258.7 s under translation; not a speed measurement)

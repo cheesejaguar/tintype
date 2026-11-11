@@ -725,6 +725,28 @@ for all views and 67 ms for the Community Forensics port.
 
 Video frames always get all six views; early exit applies to photos only.
 
+**Photos on Linux** – everything above was measured on macOS. On Linux only
+photo detection runs, on the CPU engine with pure-Rust matrix kernels in
+place of Accelerate. In an aarch64 Ubuntu virtual machine on the same Mac
+(8 of its 12 cores), on 738 photos from the second blind batch
+([results/linux.log](results/linux.log)):
+
+| | Linux VM |
+|---|---|
+| Verdicts that differ from macOS, default profile and all six views | 0 of 738 (largest difference in probability 0.00001) |
+| The same for an x86-64 Linux binary, run under translation | 0 of 738 |
+| **Veracity**, default, 320 photos of at most 1 megapixel | **12 images/s** (10–18 over four passes) |
+| Community Forensics network, Rust port, same files | 9 images/s (7–12) |
+| Veracity `--fast` / `--all-views` | 15 / 5 images/s |
+| **Veracity**, default, all 738 photos (up to 4K) | **11 images/s** (10–11 over three passes) |
+| Community Forensics network, Rust port, same files | 8 images/s (7–8) |
+
+Timings in a virtual machine vary a good deal from pass to pass; within each
+pass Veracity's default was the faster of the two, by 1.2–1.5×. This engine
+replaced a generic one that managed 7 images/s on the first row. Community
+Forensics' own PyTorch pipeline was not timed on Linux, so nothing here says
+how the two released programs compare there.
+
 ## Reproduce
 
 ```bash

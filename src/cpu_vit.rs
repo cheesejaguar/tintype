@@ -1,68 +1,109 @@
-//! CPU ViT forward pass built directly on Accelerate.
+//! CPU ViT forward pass.
 //!
 //! Every linear layer runs as one large `sgemm` over all tokens of all views
 //! in the batch, attention heads are spread over cores, and the element-wise
 //! work (layer norm, GELU, softmax) is vectorised. This is what lets the
 //! default six-view profile keep up on machines without a usable GPU engine.
-#![cfg(target_os = "macos")]
+//!
+//! The matrix products go to Accelerate on macOS and to the pure-Rust `gemm`
+//! crate (NEON, AVX2 or AVX-512 kernels picked at run time) everywhere else;
+//! the `portable-cpu` feature selects the latter on macOS too.
 
 use crate::vit::VitConfig;
 use crate::weights::Weights;
 use anyhow::Result;
 use rayon::prelude::*;
 
-#[link(name = "Accelerate", kind = "framework")]
-extern "C" {
-    fn cblas_sgemm(
-        order: i32,
-        trans_a: i32,
-        trans_b: i32,
-        m: i32,
-        n: i32,
-        k: i32,
-        alpha: f32,
-        a: *const f32,
-        lda: i32,
-        b: *const f32,
-        ldb: i32,
-        beta: f32,
-        c: *mut f32,
-        ldc: i32,
-    );
-    fn vvexpf(y: *mut f32, x: *const f32, n: *const i32);
-}
-
-const ROW_MAJOR: i32 = 101;
-const NO_TRANS: i32 = 111;
-const TRANS: i32 = 112;
-
-/// `c[m, n] = a[m, k] * b + c` where `b` is `[n, k]` (`b_trans`) or `[k, n]`.
-fn gemm(a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize, b_trans: bool, beta: f32) {
-    debug_assert!(a.len() >= m * k && c.len() >= m * n);
-    unsafe {
-        cblas_sgemm(
-            ROW_MAJOR,
-            NO_TRANS,
-            if b_trans { TRANS } else { NO_TRANS },
-            m as i32,
-            n as i32,
-            k as i32,
-            1.0,
-            a.as_ptr(),
-            k as i32,
-            b.as_ptr(),
-            if b_trans { k } else { n } as i32,
-            beta,
-            c.as_mut_ptr(),
-            n as i32,
+#[cfg(all(target_os = "macos", not(feature = "portable-cpu")))]
+mod kernels {
+    #[link(name = "Accelerate", kind = "framework")]
+    extern "C" {
+        fn cblas_sgemm(
+            order: i32,
+            trans_a: i32,
+            trans_b: i32,
+            m: i32,
+            n: i32,
+            k: i32,
+            alpha: f32,
+            a: *const f32,
+            lda: i32,
+            b: *const f32,
+            ldb: i32,
+            beta: f32,
+            c: *mut f32,
+            ldc: i32,
         );
+        fn vvexpf(y: *mut f32, x: *const f32, n: *const i32);
+    }
+
+    const ROW_MAJOR: i32 = 101;
+    const NO_TRANS: i32 = 111;
+    const TRANS: i32 = 112;
+
+    /// `c[m, n] = a[m, k] * b + beta * c` where `b` is `[n, k]` (`b_trans`) or `[k, n]`.
+    pub fn gemm(a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize, b_trans: bool, beta: f32) {
+        assert!(a.len() >= m * k && b.len() >= n * k && c.len() >= m * n);
+        unsafe {
+            cblas_sgemm(
+                ROW_MAJOR,
+                NO_TRANS,
+                if b_trans { TRANS } else { NO_TRANS },
+                m as i32,
+                n as i32,
+                k as i32,
+                1.0,
+                a.as_ptr(),
+                k as i32,
+                b.as_ptr(),
+                if b_trans { k } else { n } as i32,
+                beta,
+                c.as_mut_ptr(),
+                n as i32,
+            );
+        }
+    }
+
+    pub fn exp_inplace(x: &mut [f32]) {
+        let n = x.len() as i32;
+        unsafe { vvexpf(x.as_mut_ptr(), x.as_ptr(), &n) }
     }
 }
 
-fn exp_inplace(x: &mut [f32]) {
-    let n = x.len() as i32;
-    unsafe { vvexpf(x.as_mut_ptr(), x.as_ptr(), &n) }
+#[cfg(not(all(target_os = "macos", not(feature = "portable-cpu"))))]
+mod kernels {
+    /// Products below this many multiply-adds stay on the calling thread: the
+    /// attention products already run one task per view.
+    const PARALLEL_FROM: usize = 1 << 22;
+
+    /// `c[m, n] = a[m, k] * b + beta * c` where `b` is `[n, k]` (`b_trans`) or `[k, n]`.
+    pub fn gemm(a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize, b_trans: bool, beta: f32) {
+        assert!(a.len() >= m * k && b.len() >= n * k && c.len() >= m * n);
+        let (b_cs, b_rs) = if b_trans { (k as isize, 1) } else { (1, n as isize) };
+        let par = if m * n * k >= PARALLEL_FROM { gemm::Parallelism::Rayon(0) } else { gemm::Parallelism::None };
+        // dst := alpha * dst + beta * lhs * rhs, in this crate's naming.
+        unsafe {
+            gemm::gemm(m, n, k, c.as_mut_ptr(), 1, n as isize, beta != 0.0, a.as_ptr(), 1, k as isize, b.as_ptr(), b_cs, b_rs, beta, 1.0f32, false, false, false, par);
+        }
+    }
+
+    /// `exp` to about one unit in the last place, written so the loop
+    /// vectorises: reduce to `2^n * exp(r)` with `|r| <= ln 2 / 2`.
+    pub fn exp_inplace(x: &mut [f32]) {
+        const ROUND: f32 = 12_582_912.0; // 1.5 * 2^23: adding and subtracting rounds to nearest
+        const LN2_HI: f32 = 0.693_359_4;
+        const LN2_LO: f32 = -2.121_944_4e-4;
+        for v in x.iter_mut() {
+            let a = v.clamp(-87.0, 88.0);
+            let n = (a * std::f32::consts::LOG2_E + ROUND) - ROUND;
+            let r = (a - n * LN2_HI) - n * LN2_LO;
+            let p = 1.0 + r * (1.0 + r * (0.5 + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0 + r * (1.0 / 720.0))))));
+            *v = p * f32::from_bits(((n as i32 + 127) as u32) << 23);
+        }
+    }
 }
+
+use kernels::{exp_inplace, gemm};
 
 struct Lin {
     /// `[out, in]`, as stored in the checkpoint.
@@ -146,6 +187,7 @@ pub struct CpuVit {
 
 impl CpuVit {
     pub fn new(w: &Weights, cfg: VitConfig) -> Result<Self> {
+        anyhow::ensure!(cfg.reg_tokens == 0 && !cfg.layer_scale && !cfg.pos_on_patches_only, "this architecture runs on the GPU engine only");
         let blocks = (0..cfg.depth)
             .map(|i| {
                 let p = format!("blocks.{i}");
@@ -267,5 +309,47 @@ impl CpuVit {
         let mut out = vec![0f32; b * self.head.out];
         self.head.apply(&cn, &mut out, b);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gemm_matches_the_definition() {
+        let (m, n, k) = (5, 4, 3);
+        let a: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.37).sin()).collect();
+        let bt: Vec<f32> = (0..n * k).map(|i| (i as f32 * 0.91).cos()).collect(); // [n, k]
+        let b: Vec<f32> = (0..k * n).map(|i| bt[(i % n) * k + i / n]).collect(); // [k, n]
+        let want = |i: usize, j: usize| (0..k).map(|l| a[i * k + l] * bt[j * k + l]).sum::<f32>();
+        for (rhs, trans) in [(&bt, true), (&b, false)] {
+            let mut c = vec![2.0f32; m * n];
+            gemm(&a, rhs, &mut c, m, n, k, trans, 0.0);
+            let mut c1 = vec![2.0f32; m * n];
+            gemm(&a, rhs, &mut c1, m, n, k, trans, 1.0);
+            for i in 0..m {
+                for j in 0..n {
+                    assert!((c[i * n + j] - want(i, j)).abs() < 1e-5);
+                    assert!((c1[i * n + j] - want(i, j) - 2.0).abs() < 1e-5);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn exp_is_accurate_over_the_range_the_network_uses() {
+        // Softmax and GELU only ever pass arguments at or below zero.
+        let xs: Vec<f32> = (0..20_000).map(|i| -95.0 + i as f32 * 0.005).collect();
+        let mut ys = xs.clone();
+        exp_inplace(&mut ys);
+        for (&x, &y) in xs.iter().zip(&ys) {
+            if x < -87.0 {
+                assert!((0.0..2e-38).contains(&y), "exp({x}) = {y}");
+            } else {
+                let want = x.exp();
+                assert!((y - want).abs() <= 4e-7 * want, "exp({x}) = {y}, want {want}");
+            }
+        }
     }
 }
