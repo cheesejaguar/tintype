@@ -983,6 +983,24 @@ the photos went to the second stage – and level with the port. On the CPU
 the mode costs the default plus the 384-pixel network on the photos sent to
 it; that network's matrix products already run at the core's peak rate.
 
+Batch 7, which the mode had not seen, was then timed there the same way,
+all 30 sets:
+
+| On Linux, batch 7 (23,052 photos) | Precision / recall | Photos/s | Faster than Community Forensics as released on |
+|---|---|---|---|
+| Veracity, default | 0.988 / 0.897 | 35.5 | 30 of 30 sets (1.7–4.0×) |
+| Veracity + second opinion | 0.972 / 0.935 | 17.5 | 28 of 30 sets |
+| Community Forensics, as released | 0.945 / 0.789 | 14.3 | – |
+| Community Forensics network, Rust port | 0.945 / 0.789 | 17.4 | – |
+
+Pooled the mode is 1.2× faster than Community Forensics as released and
+level with the port. It was slower than the released pipeline on PhotoMaker
+(0.88×) and on the deepfake set (0.75×), and faster than the port on 18 of
+the 30 sets; each cell is a single run. Precision, recall and the four sets
+on which the mode falls short are the same as on macOS; against the macOS
+GPU scores above, 6 default verdicts and 1 second-opinion verdict of 23,052
+differ.
+
 The rest of this section describes the earlier tables. The three photo
 detectors were run one after another on each set, and
 Veracity was the fastest on all 19: 1.3–2.8× the released pipeline and
