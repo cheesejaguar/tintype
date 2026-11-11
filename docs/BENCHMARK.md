@@ -17,8 +17,8 @@ system is at its shipped threshold.
 | | sensitive profile: 0.955, 0.972 | SwinV2 detector: 0.896, 0.918 |
 | **Video**, 1,156 AI and 900 real | 0.997, 0.941 | WaveRep: 0.983, 0.912 |
 | | with the second opinion: 0.997, 0.960 | |
-| **Photo throughput**, GPU, end to end | 178 images/s; 454 with `--fast` | Community Forensics: 59 as released, 100 through this engine; SwinV2 detector: 8.7 and 30 |
-| **Video**, time per clip | 0.09 s; 0.22 s with the second opinion | WaveRep: 3.7 s as released, 1.06 s through this engine at 16 bits |
+| **Photo throughput**, GPU, same files | 178 images/s; 460 with `--fast` | Community Forensics: 61–67 as released, 100 through this engine; SwinV2 detector: 8.6 and 30 |
+| **Video**, time per clip, same files | 0.09 s; 0.22 s with the second opinion | WaveRep: 4.05 s as released, 1.06 s through this engine at 16 bits |
 
 Where Veracity is not ahead, or the comparison needs a qualifier:
 
@@ -38,12 +38,14 @@ Where Veracity is not ahead, or the comparison needs a qualifier:
   models are complementary and that a cascade is both more accurate and
   faster than WaveRep alone; it is not a win by Veracity's weights alone. The
   rows labelled "Veracity" use only Veracity's weights.
-- **Speed against a half-precision Community Forensics.** Run through this
-  engine at 16 bits – a configuration its authors do not ship – Community
-  Forensics does 255 images/s on the GPU and 36 on the CPU, more than the
-  six-view default profile (178 and 20). The two-view fast profile is faster
-  than Community Forensics in every configuration (454 and 54) and is still
-  ahead of it on precision and recall on every blind photo set.
+- **Speed of the default photo profile.** On the GPU it is faster than
+  Community Forensics as released (178 against 61–67 images/s) but slower
+  than Community Forensics run through this engine at 16 bits, a configuration
+  its authors do not ship (255). On the CPU it is slower than Community
+  Forensics as released (21 against 25). The two-view fast profile is faster
+  than Community Forensics in every configuration (460 on the GPU, 61 on the
+  CPU) and is still ahead of it on precision and recall on every blind photo
+  set.
 - **The first blind video result was not a win.** The phase-3 weights had
   higher recall than WaveRep and lower precision (0.987 / 0.949 against
   0.995 / 0.924). That result is kept below; it is what led to the video
@@ -464,46 +466,61 @@ video checkpoint 0.158.
 
 ## Speed
 
-Same machine, idle. "As released" rows are the authors' own PyTorch pipelines
-(PyTorch 2.15, Metal backend, 32-bit floats); the other reference rows are the
-Rust ports, which share Veracity's engine and so isolate the cost of the
-model and its preprocessing.
+Same machine, idle, same files for every row. "As released" rows are the
+authors' own PyTorch pipelines (PyTorch 2.15, Metal backend, 32-bit floats,
+12 data-loader workers). The "Rust port" rows run the same reference networks
+through Veracity's engine, which isolates the cost of the model and its
+preprocessing from the cost of the framework.
 
 **Photos** – 1,000 files drawn from the test sets (mixed JPEG and PNG, up to
 4K), decode to verdict.
 
 | System | GPU, images/s | CPU, images/s | Median latency, one image |
 |---|---|---|---|
-| **Veracity** (six views) | **178** | **20.0** | **10.7 ms** |
-| **Veracity `--fast`** (two views) | **454** | **53.6** | **8.3 ms** |
-| Community Forensics, as released | 59 | 18.4 | 19.6 ms |
+| **Veracity** (six views) | **178** | **21.1** | **11.4 ms** |
+| **Veracity `--fast`** (two views) | **460** | **60.6** | **8.1 ms** |
+| Community Forensics, as released | 61–67 | 25.4 | 19.8 ms |
 | Community Forensics, Rust port, 32-bit | 100 | 36.1 | 18.2 ms |
 | Community Forensics, Rust port, 16-bit (not a released configuration) | 255 | – | – |
-| SwinV2 detector, as released | 8.7 | – | – |
+| SwinV2 detector, as released | 8.6 | – | – |
 | SwinV2 detector, Rust port, 32-bit | 30 | – | 39.4 ms |
 
 Veracity's GPU engine runs at 16 bits; the CPU engine at 32. The default
 profile pushes about twice as many tokens through the same size of network as
-Community Forensics does (six 224 px views against one 384 px view), so on
-equal engines it is the slower of the two and the fast profile the faster.
-Against the reference detectors as their authors ship them, both profiles
-are faster on the GPU and on the CPU.
+Community Forensics does (six 224 px views against one 384 px view). So:
+
+- On the GPU both profiles are faster than Community Forensics as released
+  and than its 32-bit port; only the fast profile is faster than its 16-bit
+  port.
+- On the CPU the fast profile is faster than Community Forensics in every
+  form, and the default profile is slower than all of them, including the
+  authors' own pipeline (21 against 25 images/s).
+- Both profiles are many times faster than the SwinV2 detector.
+
+A second pass of the default profile later in the same session measured 139
+images/s on the GPU; the machine had been under load for hours and the figure
+moves with temperature. The reference rows were measured in the same pass.
 
 **Video** – 147 clips, every fourteenth of the blind batch.
 
 | System | Seconds per clip | Clips/s |
 |---|---|---|
-| **Veracity** (GPU, 16 frames × 6 views) | **0.091** | **11.0** |
+| **Veracity** (GPU, 16 frames × 6 views) | **0.090** | **11.1** |
 | **Veracity + second opinion** (GPU; 11% of these clips took the second stage) | **0.22** | **4.5** |
 | Veracity (CPU) | 0.77 | 1.3 |
-| WaveRep, Rust port, 32-bit (the released precision) | 3.72 | 0.27 |
-| WaveRep, Rust port, 16-bit | 1.06 | 0.95 |
-| WaveRep, as released (measured on a different 40-clip sample) | 3.76 | 0.27 |
+| WaveRep, as released (GPU) | 4.05 | 0.25 |
+| WaveRep, Rust port, 32-bit | 3.72 | 0.27 |
+| WaveRep, Rust port, 16-bit (not a released configuration) | 1.06 | 0.95 |
 
-Over the whole blind batch (2,056 clips) Veracity took 0.091 s per clip and
-0.227 s with the second opinion, 13% of clips taking the second stage. Running
-the second-opinion mode end to end gave the same verdict as the evaluation on
-every clip.
+On the same clips Veracity is 45 times faster than WaveRep as released, and 18
+times faster with the second opinion on; its CPU engine is faster than
+WaveRep on the GPU. Over the whole blind batch (2,056 clips) Veracity took
+0.091 s per clip and 0.227 s with the second opinion, 13% of clips taking the
+second stage. Running the second-opinion mode end to end gave the same
+verdict as the evaluation on every clip.
+
+The logs are in [results/](results/): `speed_same_files.log` (Veracity and the
+authors' pipelines in one pass) and `speed.log` (the Rust ports).
 
 ## Reproduce
 

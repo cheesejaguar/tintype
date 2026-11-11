@@ -25,14 +25,14 @@ scored once. Each system is at its shipped threshold.
 |---|---|---|---|
 | **Photos** (6,172 AI, 4,541 real) | | | images/s, GPU |
 | Veracity | 0.997 | 0.865 | 178 |
-| Veracity `--fast` | 0.997 | 0.789 | 454 |
-| Community Forensics | 0.970 | 0.637 | 59 (100 through this engine) |
+| Veracity `--fast` | 0.997 | 0.789 | 460 |
+| Community Forensics | 0.970 | 0.637 | 61–67 (100 through this engine) |
 | Veracity `--sensitive` | 0.955 | 0.972 | 178 |
-| SwinV2 detector | 0.896 | 0.918 | 8.7 (30 through this engine) |
+| SwinV2 detector | 0.896 | 0.918 | 8.6 (30 through this engine) |
 | **Video** (1,156 AI, 900 real) | | | seconds per clip |
 | Veracity | 0.997 | 0.941 | 0.09 |
 | Veracity `--second-opinion` | 0.997 | 0.960 | 0.22 |
-| WaveRep | 0.983 | 0.912 | 3.7 (1.06 through this engine at 16 bits) |
+| WaveRep | 0.983 | 0.912 | 4.05 (1.06 through this engine at 16 bits) |
 
 What that table does not show:
 
@@ -43,10 +43,13 @@ What that table does not show:
   Veracity's video model is unsure about. The plain "Veracity" video row uses
   only Veracity's weights; on one of the three video sets its recall is a
   hair below WaveRep's (0.966 against 0.970) with higher precision.
-- Run through this engine at half precision – not something its authors ship –
-  Community Forensics is faster than the six-view default (255 images/s). The
-  two-view `--fast` profile is faster than that and still ahead on precision
-  and recall.
+- Speeds are on the same files, the reference detectors through their
+  authors' own pipelines. Two cases go against the six-view default: Community
+  Forensics run through this engine at half precision (not something its
+  authors ship) does 255 images/s, and on the CPU Community Forensics as
+  released does 25 images/s to the default's 21. The two-view `--fast` profile
+  is faster in both cases (460 and 61) and still ahead on precision and
+  recall.
 
 [docs/BENCHMARK.md](docs/BENCHMARK.md) has every set, the speed tables, how the
 reference detectors were ported and checked, and the other places where

@@ -8,4 +8,5 @@ of the speed runs. [../BENCHMARK.md](../BENCHMARK.md) presents them.
 | `confirm3.md` | Blind photo batch; first blind video result (phase-3 weights) |
 | `confirm4.md` | Blind video batch (video checkpoint) |
 | `benchmarks.md`, `confirm1.md`, `confirm2.md` | Development suites with the released weights |
-| `speed.log` | Throughput and latency runs on the idle machine |
+| `speed.log` | Throughput and latency runs on the idle machine (Veracity and the Rust ports) |
+| `speed_same_files.log` | Veracity and the reference detectors' own PyTorch pipelines, one pass, same files |
