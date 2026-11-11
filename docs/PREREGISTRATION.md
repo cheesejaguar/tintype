@@ -112,3 +112,53 @@ and before any of the confirm5 data had been downloaded.
   default profile against both reference detectors. Also reported: the same
   per set, the strict, sensitive and fast profiles, AUROC, recall at 1% FPR,
   and views per image.
+
+## Sixth confirmation batch (photos): what was fixed before scoring it
+
+Written 2026-11-11 05:00 UTC, after the phase-6 photo weights and their thresholds were
+frozen and before any of the confirm6 data had been downloaded.
+
+- **Model**: the phase-6 checkpoint at step 8,000 (SHA-256 `9dcb21dc9800591ffd75…`). No
+  checkpoint selection. It continues the phase-3 weights (`2d11bffd77f246416d85…`) on the
+  original training mix plus the plan `phase6` stores: 15 more generated and
+  10 more real shards of Community Forensics (Small), Tiny-GenImage, StyleGAN2
+  and StyleGAN3 faces, two IP-Adapter FaceID sets and CelebA-HQ faces.
+  Training files identical to any evaluation file were removed first (916).
+- **Adoption**: the phase-6 weights replace the phase-3 photo weights, by the
+  rule set beforehand: pooled recall on batch 5 must rise and pooled precision
+  and recall on batch 3 must not fall by more than 0.01. In-sample they give
+  0.992 / 0.892 on batch 5 (phase 3: 0.980 / 0.875) and 0.994 / 0.932 on
+  batch 3 (0.988 / 0.932). Video keeps its own checkpoint, unchanged.
+- **Calibration data**: validation split of every photo training store,
+  phase 6 included, plus every photo set scored before this batch, batches 3
+  and 5 included.
+- **Thresholds**: mean false-positive rate over real sources with at least
+  100 items. Default 1.5% (logit 1.692) – the same rule as before picks it
+  again, as the target at which Veracity is ahead of both reference detectors
+  on both measures on the most development sets (13 of 30). Strict 0.5%
+  (3.396), sensitive 5% (-0.776), fast 0.5% (4.197).
+- **Early exit**: the schedule fitted for the phase-3 weights, unchanged. On
+  the development sets it changes 0.19% of verdicts with these weights and
+  uses 2.5 views per image; the rule was to keep it if under 0.5%.
+- **What is already known and not expected to change**: on the development
+  sets no single threshold puts Veracity ahead of Community Forensics on
+  recall on every set. Community Forensics reaches 0.98–1.00 recall on several
+  GAN sets while flagging 3–5% of their real photos; at the default threshold
+  Veracity flags under 1% there and finds 0.84–0.99.
+- **Data**: plan `confirm6` as committed in src/plans.rs: So-Fake-OOD shards
+  1, 33, 45; a second sample of 400 per class from each of the twelve
+  AIGIBench archives of batch 5, half a step away from that batch's files;
+  300 per class from six families of the classic GAN test set of Wang et al.
+  (StyleGAN, StyleGAN2, BigGAN, CycleGAN, GauGAN, StarGAN). Files identical
+  to anything trained on or scored earlier, or to an earlier set of this
+  batch, are dropped. StyleGAN2, StyleGAN3, BigGAN, GLIDE and IP-Adapter are
+  now in the training data through other collections; no AIGIBench or classic
+  test-set file is.
+- **Baselines**: Community Forensics and the SwinV2 detector run by the Rust
+  ports, 32-bit, at their shipped thresholds.
+- **Scoring**: once. Primary outcome: pooled precision and recall of the
+  default profile against both reference detectors. Also reported: the same
+  per set with the number of sets on which each reference detector has the
+  higher recall; the strict, sensitive and fast profiles; the phase-3 weights
+  on the same batch; AUROC; recall at 1% FPR; recall at each reference
+  detector's own false-positive rate; views per image.
