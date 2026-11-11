@@ -6,7 +6,7 @@ use crate::ingest::{self, Item, ParquetSpec};
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
-pub const PLANS: [(&str, &str); 14] = [
+pub const PLANS: [(&str, &str); 15] = [
     ("baselines", "released weights of the three reference detectors"),
     ("train-images", "phase-1 image training data"),
     ("train-video", "phase-1 video training data"),
@@ -14,6 +14,7 @@ pub const PLANS: [(&str, &str); 14] = [
     ("phase3", "phase-3 additions: previously held-out generators, in-the-wild images"),
     ("phase4", "phase-4 additions for the video checkpoint: more video generators and low-resolution footage"),
     ("phase5", "phase-5 additions for the video checkpoint: recent commercial video generators, animation, gameplay"),
+    ("phase6", "phase-6 photo additions: older GAN and diffusion families, face-identity generators, real faces"),
     ("dev", "development shards for sanity checks and calibration"),
     ("benchmarks", "development-visible benchmark sets"),
     ("confirm1", "first confirmation batch (images and video)"),
@@ -522,6 +523,65 @@ impl Run {
         Ok(())
     }
 
+    /// Photo additions after the fifth confirmation batch, which showed the
+    /// phase-3 weights finding fewer images than Community Forensics from
+    /// older GAN and diffusion families and from face-identity adapters.
+    /// A store that is already indexed is left alone, so the plan can resume.
+    fn phase6(&self) -> Result<()> {
+        let have = |store: &str| !self.dry && Path::new("data/store").join(store).join("manifest.tsv").exists();
+
+        // 25 further shards of Community Forensics (Small), spread over its sections.
+        if !have("commfor-small2") {
+            let shards = [0, 9, 15, 21, 27, 33, 39, 45, 51, 57, 63, 66, 75, 85, 91, 95, 99, 103, 107, 111, 114, 130, 145, 170, 180];
+            for chunk in shards.chunks(5) {
+                let inc: Vec<String> = chunk.iter().map(|i| format!("data/HFCF_small_{i}.parquet")).collect();
+                let got = self.hf("OwensLab/CommunityForensics-Small", &inc.iter().map(String::as_str).collect::<Vec<_>>(), "commfor-small")?;
+                self.ingest(&got, "data/store/commfor-small2", "commfor-small", ParquetSpec { image_col: "image_data".into(), ..labelled("label", &["1"], &["0"], Some("model_name"), Some("real_source")) })?;
+                self.rm("commfor-small");
+            }
+        }
+
+        // GenImage in miniature: ADM, BigGAN, GLIDE, VQDM, Wukong, SD 1.4/1.5, Midjourney, and ImageNet photos.
+        if !have("tiny-genimage") {
+            let got = self.hf("TheKernel01/Tiny-GenImage", &["data/train-*.parquet"], "tiny-genimage")?;
+            self.ingest(&got, "data/store/tiny-genimage", "tiny-genimage", labelled("label", &["1", "fake"], &["0", "real"], Some("generator"), None))?;
+            let names = ["Real", "ADM", "BigGAN", "GLIDE", "Midjourney", "SD14", "SD15", "VQDM", "Wukong"];
+            self.rewrite("data/store/tiny-genimage/manifest.tsv", |_, label, g| {
+                Some(if label == 0 { "real:imagenet".to_string() } else { g.parse::<usize>().ok().and_then(|i| names.get(i)).map_or(g.to_string(), |n| format!("genimage-{n}")) })
+            })?;
+            self.rm("tiny-genimage");
+        }
+
+        // StyleGAN3 and StyleGAN2 faces.
+        if !have("stylegan3") {
+            let got = self.hf("34data/StyleGAN3_1024x1024_images", &["*.parquet"], "stylegan3")?;
+            self.ingest(&got, "data/store/stylegan3", "stylegan3", ParquetSpec { image_col: "image".into(), const_label: Some(1), const_gen: Some("StyleGAN3".into()), ..Default::default() })?;
+            self.rm("stylegan3");
+        }
+        if !have("tpdne") {
+            let all: Vec<RemoteFile> = fetch::hf_list("javi22/this-person-does-not-exist-10k")?.into_iter().filter(|f| f.path.to_ascii_lowercase().ends_with(".jpg")).collect();
+            self.hf_files("javi22/this-person-does-not-exist-10k", &fetch::evenly(&all, 3000, false), "../store/tpdne")?;
+            self.index("data/store/tpdne", "tpdne", false, &[("", 1, "StyleGAN2")])?;
+        }
+
+        // Face-identity adapters on SD 1.5 / SDXL and on SD 3.5.
+        if !have("ip-adapter") {
+            for (repo, gen) in [("34data/ip-adapter-faceid", "IP-Adapter FaceID"), ("34data/sd35-ip-adapter-faceid", "IP-Adapter FaceID SD3.5")] {
+                let got = self.hf(repo, &["*.parquet"], "ip-adapter")?;
+                self.ingest(&got, "data/store/ip-adapter", "ip-adapter-faceid", ParquetSpec { image_col: "image".into(), const_label: Some(1), const_gen: Some(gen.into()), max_per_file: Some(3000), ..Default::default() })?;
+                self.rm("ip-adapter");
+            }
+        }
+
+        // Real faces from a source no evaluation set uses.
+        if !have("celeba-hq") {
+            let got = self.hf("mattymchen/celeba-hq", &["*train-0000[0-2]-*.parquet"], "celeba-hq")?;
+            self.ingest(&got, "data/store/celeba-hq", "celeba-hq", ParquetSpec { image_col: "image".into(), const_label: Some(0), max_per_file: Some(2500), ..Default::default() })?;
+            self.rm("celeba-hq");
+        }
+        Ok(())
+    }
+
     fn confirm1(&self) -> Result<()> {
         self.sofake_ood(&["00006", "00018"], "data/fresh/sofake-ood", "sofake-ood-fresh")?;
         self.drop_duplicates("data/fresh/sofake-ood/manifest.tsv", &["data/store/sofake-ood/manifest.tsv"])?;
@@ -681,6 +741,16 @@ pub const PHASE4_VIDEO_MANIFESTS: [&str; 8] = [
     "data/vstore/cartoons/manifest.tsv",
 ];
 
+/// Added in phase 6, for the photo weights.
+pub const PHASE6_IMAGE_MANIFESTS: [&str; 6] = [
+    "data/store/commfor-small2/manifest.tsv",
+    "data/store/tiny-genimage/manifest.tsv",
+    "data/store/stylegan3/manifest.tsv",
+    "data/store/tpdne/manifest.tsv",
+    "data/store/ip-adapter/manifest.tsv",
+    "data/store/celeba-hq/manifest.tsv",
+];
+
 pub const TRAIN_VIDEO_MANIFESTS: [&str; 9] = [
     "data/vstore/vidguard/manifest.tsv",
     "data/vstore/genbuster/manifest.tsv",
@@ -751,6 +821,7 @@ pub fn run(plan: &str, dry: bool, conns: usize) -> Result<()> {
         "phase3" => r.phase3(),
         "phase4" => r.phase4(),
         "phase5" => r.phase5(),
+        "phase6" => r.phase6(),
         "dev" => r.dev(),
         "benchmarks" => r.benchmarks(),
         "confirm1" => r.confirm1(),
