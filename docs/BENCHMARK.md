@@ -397,6 +397,11 @@ added.
 
 ### Blind batch
 
+The tables below were scored once, when a handful of clips (HEVC tagged
+`hev1`) were still decoded by an external tool. Re-scoring the whole batch
+with the final build, which decodes everything through the system decoder,
+reproduces every number in them.
+
 **AIGVDBench, batch 3 (AccVideo, Gen-3, CausVid, RepVideo, IPOC)** (496 AI, 300 real)
 
 | System | Precision | Recall | F1 | False-positive rate | AUROC | Recall at 1% FPR |
