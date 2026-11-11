@@ -216,6 +216,18 @@ both. Set by set:
   share of real photos flagged on those two falling from 2.2% and 3.8% to
   0.5% and 0.3%.
 
+**Could a second opinion close the set-by-set gap?** Not fully. An estimate
+from the score files of all 49 photo sets scored so far (seen data, so
+optimistic): sending the photos the default profile rejects without being
+sure – about one in five – to the Community Forensics network, and flagging
+those where the two scores add up high enough, would put Veracity at or
+above Community Forensics on both precision and recall on 39 of the 49 sets,
+against 25 for the default alone, and move the pooled result from
+0.986 / 0.876 to 0.983 / 0.905. Ten sets would still go to Community
+Forensics on one measure or the other, because a second opinion can only add
+detections: it cannot repair the sets where Veracity's precision is the
+lower one. This mode is not built.
+
 Raw tables: [results/confirm6.md](results/confirm6.md),
 [results/confirm6_phase3_weights.md](results/confirm6_phase3_weights.md),
 [results/confirm6_at_reference_rates.md](results/confirm6_at_reference_rates.md).
