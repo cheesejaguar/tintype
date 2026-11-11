@@ -279,6 +279,11 @@ impl std::io::Seek for RemoteFileReader {
     }
 }
 
+/// Member names of a remote zip, read from its directory alone.
+pub fn list_remote_zip(url: &str) -> Result<Vec<String>> {
+    Ok(zip::ZipArchive::new(RemoteFileReader::open(url)?)?.file_names().filter_map(|s| s.ok().map(|c| c.to_string())).collect())
+}
+
 /// Extract the selected members of a remote zip into `out` without
 /// downloading the rest of it; returns their names.
 pub fn unpack_remote_zip(url: &str, out: &Path, sel: &Select, conns: usize) -> Result<Vec<String>> {
@@ -314,6 +319,8 @@ pub struct Select {
     pub exts: Vec<&'static str>,
     /// Skip members whose full path is in this list.
     pub exclude: Vec<String>,
+    /// When not empty, keep only members whose full path is in this list.
+    pub only: Vec<String>,
     /// Take this many, evenly spaced over the sorted member list (0 = all).
     pub evenly: usize,
     /// Start the evenly spaced selection half a step in, so that it shares no
@@ -346,6 +353,7 @@ fn choose(mut names: Vec<String>, sel: &Select) -> Vec<String> {
             && n.contains(&sel.contains)
             && (sel.exts.is_empty() || sel.exts.iter().any(|e| lower.ends_with(&format!(".{e}"))))
             && !sel.exclude.contains(n)
+            && (sel.only.is_empty() || sel.only.contains(n))
     });
     names.sort();
     if sel.evenly > 0 {

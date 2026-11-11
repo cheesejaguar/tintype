@@ -6,7 +6,7 @@ use crate::ingest::{self, Item, ParquetSpec};
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
-pub const PLANS: [(&str, &str); 16] = [
+pub const PLANS: [(&str, &str); 17] = [
     ("baselines", "released weights of the three reference detectors"),
     ("train-images", "phase-1 image training data"),
     ("train-video", "phase-1 video training data"),
@@ -22,6 +22,7 @@ pub const PLANS: [(&str, &str); 16] = [
     ("confirm3", "third confirmation batch (images and video)"),
     ("confirm4", "fourth confirmation batch (video, for the video checkpoint)"),
     ("confirm5", "fifth confirmation batch (photos, for the balanced default and early exit)"),
+    ("confirm6", "sixth confirmation batch (photos, for the phase-6 weights)"),
     ("all", "everything above, in order"),
 ];
 
@@ -205,8 +206,12 @@ impl Run {
 
     /// An AIGIBench test archive with `0_real` / `1_fake` folders; `per_class > 0` samples evenly.
     fn aigibench(&self, name: &str, out: &str, dataset: &str, gen: &str, per_class: usize) -> Result<()> {
-        // A sampled set is read out of the remote archive; a whole one is downloaded first.
-        let select = |class: &str| Select { contains: class.into(), exts: IMAGE_EXTS.to_vec(), evenly: per_class, ..Default::default() };
+        self.aigibench_sample(name, out, dataset, gen, per_class, false)
+    }
+
+    /// As [`Run::aigibench`]; `second` takes the sample half a step away from the first one.
+    fn aigibench_sample(&self, name: &str, out: &str, dataset: &str, gen: &str, per_class: usize, second: bool) -> Result<()> {
+        let select = |class: &str| Select { contains: class.into(), exts: IMAGE_EXTS.to_vec(), evenly: per_class, offset_half: second, ..Default::default() };
         let classes = ["/0_real/", "/1_fake/"];
         if per_class > 0 {
             // A sampled set is read out of the remote archive; a whole one is downloaded first.
@@ -549,7 +554,8 @@ impl Run {
     fn phase6(&self) -> Result<()> {
         let have = |store: &str| !self.dry && Path::new("data/store").join(store).join("manifest.tsv").exists();
 
-        // 25 further shards of Community Forensics (Small), spread over its sections.
+        // 25 further shards of Community Forensics (Small): 15 generated (about 830
+        // generators, GAN families among them) and 10 real.
         if !have("commfor-small2") {
             let shards = [0, 9, 15, 21, 27, 33, 39, 45, 51, 57, 63, 66, 75, 85, 91, 95, 99, 103, 107, 111, 114, 130, 145, 170, 180];
             for chunk in shards.chunks(5) {
@@ -558,6 +564,8 @@ impl Run {
                 self.ingest(&got, "data/store/commfor-small2", "commfor-small", ParquetSpec { image_col: "image_data".into(), ..labelled("label", &["1"], &["0"], Some("model_name"), Some("real_source")) })?;
                 self.rm("commfor-small");
             }
+            // The real shards (COCO, FFHQ, LHQ, VISION) carry no usable source name.
+            self.rewrite("data/store/commfor-small2/manifest.tsv", |_, label, g| Some(if label == 0 { "real:commfor".into() } else { g.to_string() }))?;
         }
 
         // GenImage in miniature: ADM, BigGAN, GLIDE, VQDM, Wukong, SD 1.4/1.5, Midjourney, and ImageNet photos.
@@ -751,7 +759,64 @@ impl Run {
         }
         Ok(())
     }
+
+    /// The batch that confirms the phase-6 photo weights. No image here was
+    /// scored by any model before those weights and their thresholds were
+    /// frozen, and none is in any training data.
+    fn confirm6(&self) -> Result<()> {
+        let mut earlier: Vec<String> = EVAL_IMAGE_MANIFESTS.iter().chain(CONFIRM3_IMAGE_MANIFESTS.iter()).map(|m| m.to_string()).collect();
+        earlier.push("data/fresh6/sofake-ood/manifest.tsv".into());
+        earlier.extend(CONFIRM5_AIGIBENCH.iter().map(|(name, _)| format!("data/fresh6/aigibench-{name}/manifest.tsv")));
+        earlier.extend(TRAIN_IMAGE_MANIFESTS.iter().chain(PHASE6_IMAGE_MANIFESTS.iter()).map(|m| m.to_string()));
+        let have = |dir: &str| !self.dry && Path::new(dir).join("manifest.tsv").exists();
+        let dedupe = |manifest: String, seen: &[String]| -> Result<()> { self.drop_duplicates(&manifest, &seen.iter().map(String::as_str).collect::<Vec<_>>()) };
+
+        // Current commercial generators in social-media photos: three unused shards.
+        if !have("data/fresh7/sofake-ood") {
+            self.sofake_ood(&["00001", "00033", "00045"], "data/fresh7/sofake-ood", "sofake-ood-fresh5")?;
+            dedupe("data/fresh7/sofake-ood/manifest.tsv".into(), &earlier)?;
+        }
+
+        // The AIGIBench archives of batch 5 again: 400 per class, half a step
+        // away from that batch's files. Anything shared with it, with an
+        // earlier archive of this batch, or with training data is dropped.
+        let mut seen = earlier.clone();
+        for (name, gen) in CONFIRM5_AIGIBENCH {
+            let out = format!("data/fresh7/aigibench-{name}");
+            if !have(&out) {
+                self.aigibench_sample(name, &out, &format!("aigibench-{}-b2", name.to_lowercase()), gen, 400, true)?;
+                dedupe(format!("{out}/manifest.tsv"), &seen)?;
+            }
+            seen.push(format!("{out}/manifest.tsv"));
+        }
+
+        // The classic GAN test set (Wang et al., CVPR 2020): 300 per class of each family.
+        let url = fetch::hf_url("sywang/CNNDetection", "CNN_synth_testset.zip");
+        for (folder, gen) in CONFIRM6_CLASSIC {
+            let out = format!("data/fresh7/classic-{folder}");
+            if !have(&out) {
+                self.say(&format!("{url}: {folder}, 300 files per class -> {out}"));
+                if !self.dry {
+                    let mut all = fetch::list_remote_zip(&url)?;
+                    all.sort();
+                    for class in ["0_real", "1_fake"] {
+                        let of_class: Vec<String> = all.iter().filter(|n| n.starts_with(&format!("{folder}/")) && n.contains(&format!("/{class}/"))).cloned().collect();
+                        let sel = Select { exts: IMAGE_EXTS.to_vec(), only: fetch::evenly(&of_class, 300, false), ..Default::default() };
+                        let names = fetch::unpack_remote_zip(&url, Path::new(&out), &sel, self.conns)?;
+                        println!("{url}: extracted {} files -> {out}", names.len());
+                    }
+                }
+                self.index(&out, &format!("classic-{folder}"), false, &[("0_real", 0, "classic-gan-real"), ("1_fake", 1, gen)])?;
+                dedupe(format!("{out}/manifest.tsv"), &seen)?;
+            }
+            seen.push(format!("{out}/manifest.tsv"));
+        }
+        Ok(())
+    }
 }
+
+/// Families of the classic GAN test set used in the sixth confirmation batch.
+pub const CONFIRM6_CLASSIC: [(&str, &str); 6] = [("stylegan", "StyleGAN"), ("stylegan2", "StyleGAN2"), ("biggan", "BigGAN"), ("cyclegan", "CycleGAN"), ("gaugan", "GauGAN"), ("stargan", "StarGAN")];
 
 /// AIGIBench archives of the fifth confirmation batch: (archive, generator label).
 pub const CONFIRM5_AIGIBENCH: [(&str, &str); 12] = [
@@ -898,6 +963,7 @@ pub fn run(plan: &str, dry: bool, conns: usize) -> Result<()> {
         "confirm3" => r.confirm3(),
         "confirm4" => r.confirm4(),
         "confirm5" => r.confirm5(),
+        "confirm6" => r.confirm6(),
         "all" => {
             for (p, _) in PLANS.iter().filter(|(p, _)| *p != "all" && *p != "baselines") {
                 run(p, dry, conns)?;

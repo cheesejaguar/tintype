@@ -350,7 +350,18 @@ pub fn suite(name: &str) -> Result<Vec<Set>> {
             }
             v
         }
-        other => anyhow::bail!("unknown suite `{other}` (benchmarks, confirm1 to confirm5)"),
+        "confirm6" => {
+            let leak = |x: String| -> &'static str { Box::leak(x.into_boxed_str()) };
+            let mut v = vec![img("fresh7-sofake-ood", "data/fresh7/sofake-ood/manifest.tsv")];
+            for (name, _) in crate::plans::CONFIRM5_AIGIBENCH {
+                v.push(img(leak(format!("fresh7-aigibench-{name}")), leak(format!("data/fresh7/aigibench-{name}/manifest.tsv"))));
+            }
+            for (folder, _) in crate::plans::CONFIRM6_CLASSIC {
+                v.push(img(leak(format!("fresh7-classic-{folder}")), leak(format!("data/fresh7/classic-{folder}/manifest.tsv"))));
+            }
+            v
+        }
+        other => anyhow::bail!("unknown suite `{other}` (benchmarks, confirm1 to confirm6)"),
     })
 }
 
