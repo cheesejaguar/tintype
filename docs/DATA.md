@@ -250,6 +250,20 @@ Files identical to anything trained on or scored earlier, or to a file in an
 earlier set of this batch, were dropped (291 in all, mostly real photos that
 AIGIBench archives share).
 
+### Plan `confirm7` (photos only)
+
+Fetched after the photo second opinion was fixed in writing
+([PREREGISTRATION.md](PREREGISTRATION.md)). Counts are filled in once the
+plan has run.
+
+| Set | Source |
+|---|---|
+| So-Fake-OOD, batch 7 | shards 4, 20, 37 |
+| AIGIBench, third sample | 400 files per class from what batches 5 and 6 left of each of their twelve archives |
+| AIGIBench, commercial generators | 400 per class from what batches 2 and 3 left of the Midjourney, FLUX.1-dev, DALL-E 3, SD3, SDXL and Imagen 3 archives |
+| Classic test set, second sample | 300 per class from what batch 6 left of StyleGAN, StyleGAN2, BigGAN, CycleGAN, GauGAN, StarGAN |
+| Classic test set, new families | 300 per class of CRN, IMLE, SAN, SITD and the FaceForensics++ deepfakes |
+
 ## Overlap checks
 
 `veracity overlap` compares files byte for byte.

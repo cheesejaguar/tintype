@@ -28,6 +28,10 @@ enum Cmd {
         /// Videos the video model is unsure about are also scored by that network.
         #[arg(long)]
         second_opinion: Option<PathBuf>,
+        /// Community Forensics weights (384 px; `veracity data baselines` fetches them).
+        /// Photos the default profile does not flag with confidence are also scored by that network.
+        #[arg(long, conflicts_with_all = ["fast", "sensitive", "strict"])]
+        photo_second_opinion: Option<PathBuf>,
         /// Frames analysed per video (default: the model's video profile).
         #[arg(long)]
         frames: Option<usize>,
@@ -80,6 +84,9 @@ enum Cmd {
         /// Look at every view of every image (no early exit).
         #[arg(long)]
         all_views: bool,
+        /// Community Forensics weights: give the photos inside the model's band a second opinion (see `detect --photo-second-opinion`).
+        #[arg(long, conflicts_with_all = ["reference", "views", "fast", "sensitive", "strict"])]
+        photo_second_opinion: Option<PathBuf>,
     },
     /// Score every clip in a manifest (frame sampling + aggregation).
     ScoreVideo {
@@ -127,7 +134,7 @@ enum Cmd {
     },
     /// Score a whole evaluation suite and print the comparison tables.
     Evaluate {
-        /// benchmarks, confirm1, confirm2, confirm3 or confirm4.
+        /// benchmarks, or confirm1 to confirm7.
         suite: String,
         #[arg(long, default_value = "models/veracity.safetensors")]
         weights: PathBuf,
@@ -191,6 +198,15 @@ enum Cmd {
         second_opinion: Option<String>,
         #[arg(long, default_value = "auto")]
         device: String,
+    },
+    /// Store the band of the photo second opinion in a checkpoint's spec
+    /// (see `detect --photo-second-opinion`), or remove it with `--band none`.
+    SetPhotoSecondOpinion {
+        #[arg(long, default_value = "models/veracity.safetensors")]
+        weights: PathBuf,
+        /// `lo,hi,weight,threshold` in calibrated first-stage logits, or `none`.
+        #[arg(long, allow_hyphen_values = true)]
+        band: String,
     },
     /// Fit the decision calibration of one profile from scored held-out data.
     Calibrate {
@@ -412,7 +428,7 @@ fn load_manifests(ms: &[PathBuf]) -> Result<Vec<ingest::Item>> {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Detect { paths, weights, video_weights, second_opinion, frames, fast, sensitive, strict, all_views, json, device } => {
+        Cmd::Detect { paths, weights, video_weights, second_opinion, photo_second_opinion, frames, fast, sensitive, strict, all_views, json, device } => {
             let device = parse_device(&device)?;
             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
             let (vids, imgs): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| ingest::is_video(p));
@@ -429,6 +445,10 @@ fn main() -> Result<()> {
                     Detector::use_strict_profile(&mut spec);
                 }
                 let exit = spec.early_exit.clone().filter(|_| !fast && !all_views);
+                let band = match &photo_second_opinion {
+                    Some(_) => Some(spec.second_opinion.ok_or_else(|| anyhow::anyhow!("{} has no second-opinion band for photos", weights.display()))?),
+                    None => None,
+                };
                 let batch = 64.min(imgs.len() * spec.views.len());
                 // On the GPU one batch costs about the same whatever is in it: when every
                 // view of every image fits in one, run them all and apply the stopping
@@ -443,7 +463,15 @@ fn main() -> Result<()> {
                     Some(e) => det.score_files_adaptive(&imgs, threads, e),
                     None => det.score_files(&imgs, threads),
                 };
-                rows.extend(imgs.iter().zip(res).map(|(p, r)| (p.clone(), "image", r.map(|l| det.probability(&l)), 1)));
+                let mut probs: Vec<Option<f32>> = res.iter().map(|r| r.as_ref().map(|l| det.probability(l))).collect();
+                if let (Some(w2), Some(band)) = (&photo_second_opinion, band) {
+                    let first: Vec<Option<f32>> = res.iter().map(|r| r.as_ref().map(|l| det.calibrated_logit(l))).collect();
+                    drop(det); // free the first network before loading the second
+                    for (i, p) in veracity::detector::photo_second_opinion(&band, w2, &imgs, &first, device, threads)?.0 {
+                        probs[i] = Some(p);
+                    }
+                }
+                rows.extend(imgs.iter().zip(probs).map(|(p, pr)| (p.clone(), "image", pr, 1)));
             }
             if !vids.is_empty() {
                 let video_weights = video_weights.unwrap_or_else(|| veracity::detector::video_weights_for(&weights));
@@ -502,8 +530,8 @@ fn main() -> Result<()> {
             Ok(())
         }
         #[cfg(target_os = "macos")]
-        Cmd::Score { weights, reference, manifest, out, batch, device, views, fast, sensitive, strict, all_views } => {
-            veracity::eval::score_images(&weights, &system(&reference, fast, sensitive, strict)?, &manifest, &out, parse_device(&device)?, batch, views.as_deref(), all_views).map(|_| ())
+        Cmd::Score { weights, reference, manifest, out, batch, device, views, fast, sensitive, strict, all_views, photo_second_opinion } => {
+            veracity::eval::score_images(&weights, &system(&reference, fast, sensitive, strict)?, &manifest, &out, parse_device(&device)?, batch, views.as_deref(), all_views, photo_second_opinion.as_deref()).map(|_| ())
         }
         #[cfg(target_os = "macos")]
         Cmd::ScoreVideo { weights, reference, manifest, out, frames, views, second_opinion, all_frames, batch, device } => {
@@ -668,6 +696,17 @@ fn main() -> Result<()> {
         #[cfg(not(target_os = "macos"))]
         Cmd::Score { .. } | Cmd::ScoreVideo { .. } | Cmd::Evaluate { .. } | Cmd::Finalize { .. } | Cmd::FinalizeVideo { .. } | Cmd::Calibrate { .. } | Cmd::Latency { .. } | Cmd::Profile { .. } | Cmd::Train { .. } => {
             anyhow::bail!("this command uses the Apple GPU engine and needs macOS on Apple Silicon; `detect --device cpu` works everywhere")
+        }
+        Cmd::SetPhotoSecondOpinion { weights, band } => {
+            let mut spec = ModelSpec::load_for(&weights)?;
+            spec.second_opinion = if band == "none" {
+                None
+            } else {
+                let v: Vec<f32> = band.split(',').map(|x| x.trim().parse::<f32>()).collect::<Result<_, _>>()?;
+                anyhow::ensure!(v.len() == 4 && v[0] < v[1], "--band takes lo,hi,weight,threshold with lo < hi");
+                Some(veracity::detector::PhotoSecondOpinion { lo: v[0], hi: v[1], weight: v[2], threshold: v[3] })
+            };
+            spec.save_for(&weights)
         }
         Cmd::Data { plan, dry_run, connections } => {
             if plan == "list" {

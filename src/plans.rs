@@ -6,7 +6,7 @@ use crate::ingest::{self, Item, ParquetSpec};
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
-pub const PLANS: [(&str, &str); 17] = [
+pub const PLANS: [(&str, &str); 18] = [
     ("baselines", "released weights of the three reference detectors"),
     ("train-images", "phase-1 image training data"),
     ("train-video", "phase-1 video training data"),
@@ -23,6 +23,7 @@ pub const PLANS: [(&str, &str); 17] = [
     ("confirm4", "fourth confirmation batch (video, for the video checkpoint)"),
     ("confirm5", "fifth confirmation batch (photos, for the balanced default and early exit)"),
     ("confirm6", "sixth confirmation batch (photos, for the phase-6 weights)"),
+    ("confirm7", "seventh confirmation batch (photos, for the photo second opinion)"),
     ("all", "everything above, in order"),
 ];
 
@@ -825,6 +826,104 @@ impl Run {
     }
 }
 
+impl Run {
+    /// `per_class` files per class of a remote archive with `0_real` /
+    /// `1_fake` folders under `prefix`, evenly spaced over the files that the
+    /// earlier samples in `taken` left out (`half` starts half a step in).
+    /// Returns false, having written nothing, when fewer than 100 files of
+    /// either class are left. `raw` says the earlier samples were counted
+    /// over every archive entry of the class (as batch 6 did for the classic
+    /// test set) and not over its image files only.
+    #[allow(clippy::too_many_arguments)]
+    fn sample_rest(&self, url: &str, prefix: &str, out: &str, dataset: &str, real_gen: &str, gen: &str, taken: &[(usize, bool)], per_class: usize, half: bool, raw: bool) -> Result<bool> {
+        self.say(&format!("{url}: {prefix} {per_class} files per class not sampled before -> {out}"));
+        if self.dry {
+            return Ok(true);
+        }
+        let mut all = fetch::list_remote_zip(url)?;
+        all.sort();
+        let mut only = Vec::new();
+        for class in ["/0_real/", "/1_fake/"] {
+            let images: Vec<String> = fetch::members(&all, &Select { contains: class.into(), exts: IMAGE_EXTS.to_vec(), ..Default::default() }).into_iter().filter(|n| n.starts_with(prefix)).collect();
+            let of_class: Vec<String> = if raw { all.iter().filter(|n| n.starts_with(prefix) && n.contains(class)).cloned().collect() } else { images.clone() };
+            let rest: Vec<String> = fetch::unsampled(&of_class, taken).into_iter().filter(|n| images.contains(n)).collect();
+            println!("{url}: {prefix}{class} has {} files, {} not sampled before", of_class.len(), rest.len());
+            if rest.len() < 100 {
+                println!("{out}: skipped, fewer than 100 unused files in {class}");
+                return Ok(false);
+            }
+            only.extend(fetch::evenly(&rest, per_class, half));
+        }
+        let names = fetch::unpack_remote_zip(url, Path::new(out), &Select { exts: IMAGE_EXTS.to_vec(), only, ..Default::default() }, self.conns)?;
+        println!("{url}: extracted {} files -> {out}", names.len());
+        self.index(out, dataset, false, &[("0_real", 0, real_gen), ("1_fake", 1, gen)])?;
+        Ok(true)
+    }
+
+    /// Seventh confirmation batch (photos): the first scoring of the photo
+    /// second opinion. Fresh files from every collection the earlier photo
+    /// batches drew on, and five families of the classic test set that no
+    /// batch has used. Nothing here was downloaded before the band was fixed.
+    fn confirm7(&self) -> Result<()> {
+        let mut seen: Vec<String> = EVAL_IMAGE_MANIFESTS.iter().chain(CONFIRM3_IMAGE_MANIFESTS.iter()).map(|m| m.to_string()).collect();
+        for batch in ["fresh6", "fresh7"] {
+            seen.push(format!("data/{batch}/sofake-ood/manifest.tsv"));
+            seen.extend(CONFIRM5_AIGIBENCH.iter().map(|(name, _)| format!("data/{batch}/aigibench-{name}/manifest.tsv")));
+        }
+        seen.extend(CONFIRM6_CLASSIC.iter().map(|(folder, _)| format!("data/fresh7/classic-{folder}/manifest.tsv")));
+        seen.extend(TRAIN_IMAGE_MANIFESTS.iter().chain(PHASE6_IMAGE_MANIFESTS.iter()).map(|m| m.to_string()));
+        let have = |dir: &str| !self.dry && Path::new(dir).join("manifest.tsv").exists();
+        let dedupe = |manifest: &str, seen: &[String]| -> Result<()> { self.drop_duplicates(manifest, &seen.iter().map(String::as_str).collect::<Vec<_>>()) };
+
+        // Current commercial generators in social-media photos: three unused shards.
+        if !have("data/fresh8/sofake-ood") {
+            self.sofake_ood(&CONFIRM7_SOFAKE_SHARDS, "data/fresh8/sofake-ood", "sofake-ood-fresh6")?;
+            dedupe("data/fresh8/sofake-ood/manifest.tsv", &seen)?;
+        }
+        seen.push("data/fresh8/sofake-ood/manifest.tsv".into());
+
+        // AIGIBench: 400 per class from what earlier batches left of each archive.
+        for (name, gen, taken) in confirm7_aigibench() {
+            let out = format!("data/fresh8/aigibench-{name}");
+            let url = fetch::hf_url("HorizonTEL/AIGIBench", &format!("test/{name}.zip"));
+            if !have(&out) && self.sample_rest(&url, "", &out, &format!("aigibench-{}-b3", name.to_lowercase()), "aigibench", gen, &taken, 400, false, false)? {
+                dedupe(&format!("{out}/manifest.tsv"), &seen)?;
+            }
+            seen.push(format!("{out}/manifest.tsv"));
+        }
+
+        // The classic test set: 300 per class from what batch 6 left of its six
+        // families, and from five families not used before. IMLE shares its real
+        // photos with CRN, so its sample starts half a step in.
+        let url = fetch::hf_url("sywang/CNNDetection", "CNN_synth_testset.zip");
+        let again = CONFIRM6_CLASSIC.iter().map(|&(folder, gen)| (folder, gen, vec![(300, false)], false));
+        let new = CONFIRM7_CLASSIC.iter().map(|&(folder, gen)| (folder, gen, vec![], folder == "imle"));
+        for (folder, gen, taken, half) in again.chain(new) {
+            let out = format!("data/fresh8/classic-{folder}");
+            if !have(&out) && self.sample_rest(&url, &format!("{folder}/"), &out, &format!("classic-{folder}-b2"), "classic-gan-real", gen, &taken, 300, half, true)? {
+                dedupe(&format!("{out}/manifest.tsv"), &seen)?;
+            }
+            seen.push(format!("{out}/manifest.tsv"));
+        }
+        Ok(())
+    }
+}
+
+/// So-Fake-OOD shards of the seventh confirmation batch (no earlier plan uses them).
+pub const CONFIRM7_SOFAKE_SHARDS: [&str; 3] = ["00004", "00020", "00037"];
+
+/// Families of the classic test set first used in the seventh confirmation batch.
+pub const CONFIRM7_CLASSIC: [(&str, &str); 5] = [("crn", "CRN"), ("imle", "IMLE"), ("san", "SAN"), ("seeingdark", "SITD"), ("deepfake", "FaceForensics++ Deepfakes")];
+
+/// AIGIBench archives of the seventh confirmation batch with the samples
+/// earlier batches took from each: (archive, generator label, samples).
+pub fn confirm7_aigibench() -> Vec<(&'static str, &'static str, Vec<(usize, bool)>)> {
+    let mut v: Vec<(&str, &str, Vec<(usize, bool)>)> = CONFIRM5_AIGIBENCH.iter().map(|&(name, gen)| (name, gen, vec![(400, false), (400, true)])).collect();
+    v.extend([("Midjourney", "Midjourney", vec![(1500, false)]), ("FLUX1-dev", "FLUX.1-dev", vec![(1500, false)])]);
+    v.extend([("DALLE-3", "DALL-E 3"), ("SD3", "SD3"), ("SDXL", "SDXL"), ("Imagen3", "Imagen 3")].map(|(name, gen)| (name, gen, vec![(1000, false)])));
+    v
+}
+
 /// Families of the classic GAN test set used in the sixth confirmation batch.
 pub const CONFIRM6_CLASSIC: [(&str, &str); 6] = [("stylegan", "StyleGAN"), ("stylegan2", "StyleGAN2"), ("biggan", "BigGAN"), ("cyclegan", "CycleGAN"), ("gaugan", "GauGAN"), ("stargan", "StarGAN")];
 
@@ -989,6 +1088,7 @@ pub fn run(plan: &str, dry: bool, conns: usize) -> Result<()> {
         "confirm4" => r.confirm4(),
         "confirm5" => r.confirm5(),
         "confirm6" => r.confirm6(),
+        "confirm7" => r.confirm7(),
         "all" => {
             for (p, _) in PLANS.iter().filter(|(p, _)| *p != "all" && *p != "baselines") {
                 run(p, dry, conns)?;

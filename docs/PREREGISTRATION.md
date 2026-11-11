@@ -163,6 +163,73 @@ frozen and before any of the confirm6 data had been downloaded.
   on the same batch; AUROC; recall at 1% FPR; recall at each reference
   detector's own false-positive rate; views per image.
 
+## Seventh confirmation batch (photos): what was fixed before scoring it
+
+Written 2026-11-11 18:20 UTC, after the photo second opinion below was built
+and its band fixed, and before any of the confirm7 data had been downloaded.
+
+- **Why**: on batch 6 the default profile is ahead of Community Forensics
+  pooled, but at default thresholds it finds fewer of the AI images on 14 of
+  the 19 sets. The second opinion is the attempt to close that set by set.
+- **Model**: the phase-6 photo weights, unchanged (SHA-256
+  `9dcb21dc9800591ffd75…`), with the default profile, its threshold and the
+  early-exit schedule as they stand after the speed changes.
+- **Second opinion** (`--photo-second-opinion`, optional): a photo whose
+  first-stage calibrated logit lies between -7 and 0.5 (a reported
+  probability between 0.09% and 62%) is also scored by the Community
+  Forensics network – its released 384-pixel weights (SHA-256
+  `b89f36275f3bf5e2b040…`) and preprocessing – and is flagged when half the
+  first logit plus that network's logit is positive. Photos outside the band
+  keep the first-stage verdict. The stage can add a detection and, for a
+  photo the first stage only just flagged, take one away.
+- **How the band was chosen**: on the 48 photo sets scored so far (all seen;
+  batches 3, 5 and 6 included), over a grid of weight, band and threshold,
+  the setting with the most sets on which precision and recall are both at
+  or above Community Forensics', among settings that send at most half of
+  those photos to the second stage; ties by pooled recall. The 224-pixel
+  Community Forensics network was tried as a cheaper second stage and
+  rejected (28 of 48 sets at best).
+- **On those 48 sets** (47,277 AI, 38,453 real photos; in-sample):
+  Community Forensics 0.969 / 0.663, 988 real photos flagged; the default
+  profile 0.986 / 0.874, 575, at or above Community Forensics on both
+  measures on 24 sets; with the second opinion 0.980 / 0.897, 859, on 46
+  sets (the exceptions: SocialRF, precision 0.009 lower; batch 6's StyleGAN3,
+  recall 0.005 lower). 48.8% of the photos go to the second stage: 91% of the
+  real ones and 15% of the AI ones. Choosing the setting on four batches and
+  counting on the fifth gives 43 of 48 (17 of 19 on batch 6).
+- **What is expected**: more sets at or above Community Forensics than the
+  default manages, not all of them; pooled recall above the default's and
+  pooled precision between the default's and Community Forensics'. The mode
+  costs the first stage plus the second network on about half of a balanced
+  test set: on batch 6 it ran at 311 photos a second on the GPU, against 634
+  for the default and 310 for Community Forensics through the same engine.
+  On mostly real photos nearly all go to the second stage, and it is slower
+  than Community Forensics alone through this engine.
+- **Data**: plan `confirm7` as committed in src/plans.rs. So-Fake-OOD shards
+  4, 20, 37. From each AIGIBench archive used before, 400 files per class
+  evenly spaced over the files earlier batches did not take: the twelve
+  archives of batches 5 and 6, and Midjourney, FLUX.1-dev, DALL-E 3, SD3,
+  SDXL and Imagen 3 from batches 2 and 3. From the classic test set of Wang
+  et al., 300 per class from what batch 6 left of its six families, and from
+  five families no batch has used: CRN, IMLE, SAN, SITD and the
+  FaceForensics++ deepfakes (face swaps, which neither detector is built
+  for; included so that no family is left out by choice). A set with fewer
+  than 100 unused files in either class is skipped. Files identical to
+  anything trained on or scored earlier, or to an earlier set of this batch,
+  are dropped.
+- **Baseline**: Community Forensics run by the Rust port, 32-bit, at its
+  shipped threshold. The second-opinion result is computed from the default
+  profile's scores and those baseline scores, which is the same arithmetic
+  as running the mode (checked on batch 6: no verdict differs).
+- **Scoring**: once. Primary outcome: for the default profile with the
+  second opinion against Community Forensics, pooled precision and recall,
+  and the number of sets on which both are at or above Community Forensics'.
+  Also reported: the same for the default profile alone and per set; the
+  share of photos given a second opinion; real photos flagged; and photos
+  per second on this batch for the default, the second-opinion mode and
+  Community Forensics (through this engine, and as released in PyTorch), on
+  the GPU and the CPU.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames

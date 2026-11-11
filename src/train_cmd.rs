@@ -138,6 +138,7 @@ pub fn run(a: TrainArgs) -> Result<()> {
         sensitive: None,
         strict: None,
         early_exit: None,
+        second_opinion: None,
         arch: String::new(),
         logit_scale: 1.0,
         logit_bias: 0.0,

@@ -345,6 +345,22 @@ pub fn evenly<T: Clone>(v: &[T], n: usize, offset_half: bool) -> Vec<T> {
     (0..n).map(|i| v[start + i * k].clone()).collect()
 }
 
+/// The members of an archive that `sel` picks, in sorted order.
+pub fn members(names: &[String], sel: &Select) -> Vec<String> {
+    choose(names.to_vec(), sel)
+}
+
+/// What is left of `names` (sorted) once the evenly spaced samples in
+/// `taken` – (size, started half a step in) – are removed: the files a later
+/// sample can draw on without sharing any with the earlier ones.
+pub fn unsampled(names: &[String], taken: &[(usize, bool)]) -> Vec<String> {
+    let mut used = std::collections::HashSet::new();
+    for &(n, half) in taken {
+        used.extend(evenly(names, n, half));
+    }
+    names.iter().filter(|n| !used.contains(*n)).cloned().collect()
+}
+
 fn choose(mut names: Vec<String>, sel: &Select) -> Vec<String> {
     names.retain(|n| {
         let lower = n.to_ascii_lowercase();
@@ -461,6 +477,19 @@ pub fn list_archive(archive: &Path, sel: &Select) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_later_sample_shares_nothing_with_the_earlier_ones() {
+        let names: Vec<String> = (0..1037).map(|i| format!("img_{i:05}.png")).collect();
+        let (first, second) = (evenly(&names, 400, false), evenly(&names, 400, true));
+        let rest = unsampled(&names, &[(400, false), (400, true)]);
+        assert_eq!(rest.len(), 1037 - 800);
+        let third = evenly(&rest, 400, false);
+        assert_eq!(third.len(), 237);
+        assert!(third.iter().all(|n| !first.contains(n) && !second.contains(n)));
+        // An archive the earlier sample took whole leaves nothing.
+        assert!(unsampled(&names, &[(1500, false)]).is_empty());
+    }
 
     #[test]
     fn half_step_selection_shares_nothing_with_the_first() {

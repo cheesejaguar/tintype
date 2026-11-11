@@ -60,8 +60,13 @@ pub enum System {
 /// Veracity's six-view profiles stop early on clear images when the
 /// checkpoint has an early-exit schedule, unless `all_views` is set; the
 /// logits written are then the ones looked at, in looking order.
+///
+/// With `second` (the Community Forensics weights) and a second-opinion band
+/// in the checkpoint's spec, photos inside the band get the second stage and
+/// their probability comes from both networks; the logits written stay the
+/// first stage's.
 #[allow(clippy::too_many_arguments)]
-pub fn score_images(weights: &Path, sys: &System, manifests: &[PathBuf], out: &Path, device: Device, batch: usize, views: Option<&str>, all_views: bool) -> Result<Timing> {
+pub fn score_images(weights: &Path, sys: &System, manifests: &[PathBuf], out: &Path, device: Device, batch: usize, views: Option<&str>, all_views: bool, second: Option<&Path>) -> Result<Timing> {
     let items = items_of(manifests)?;
     let (mut spec, batch) = match sys {
         System::Veracity { profile } => {
@@ -81,26 +86,41 @@ pub fn score_images(weights: &Path, sys: &System, manifests: &[PathBuf], out: &P
     }
     let det = Detector::load(weights, Some(spec), batch, device)?;
     let paths: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
-    let (res, t) = match det.spec.early_exit.clone() {
+    let (res, mut t) = match det.spec.early_exit.clone() {
         Some(exit) => det.score_files_adaptive(&paths, threads(), &exit),
         None => det.score_files(&paths, threads()),
     };
+    let mut probs: Vec<Option<f32>> = res.iter().map(|r| r.as_ref().map(|l| det.probability(l))).collect();
+    let mut asked = 0;
+    if let Some(w2) = second {
+        let band = det.spec.second_opinion.ok_or_else(|| anyhow::anyhow!("{} has no second-opinion band for photos", weights.display()))?;
+        let first: Vec<Option<f32>> = res.iter().map(|r| r.as_ref().map(|l| det.calibrated_logit(l))).collect();
+        drop(det); // free the first network before loading the second
+        let (second, n, t2) = crate::detector::photo_second_opinion(&band, w2, &paths, &first, device, threads())?;
+        for (i, p) in second {
+            probs[i] = Some(p);
+        }
+        asked = n;
+        t.wall_s += t2.wall_s;
+        t.model_s += t2.model_s;
+    }
     let mut w = std::io::BufWriter::new(std::fs::File::create(out)?);
     let mut bad = 0;
     let mut looked = 0usize;
-    for (it, r) in items.iter().zip(&res) {
-        let Some(l) = r else {
+    for ((it, r), p) in items.iter().zip(&res).zip(&probs) {
+        let (Some(l), Some(p)) = (r, p) else {
             bad += 1;
             continue;
         };
         looked += l.len();
         let ls: Vec<String> = l.iter().map(|x| format!("{x:.5}")).collect();
-        writeln!(w, "{}\t{}\t{}\t{}\t{:.6}\t{}", it.path.display(), it.label, it.generator, it.dataset, det.probability(l), ls.join("\t"))?;
+        writeln!(w, "{}\t{}\t{}\t{}\t{:.6}\t{}", it.path.display(), it.label, it.generator, it.dataset, p, ls.join("\t"))?;
     }
     eprintln!(
-        "scored {} images ({} unreadable) in {:.1}s: {:.1} img/s end-to-end, {:.1} img/s model-only, {:.2} views per image",
+        "scored {} images ({} unreadable{}) in {:.1}s: {:.1} img/s end-to-end, {:.1} img/s model-only, {:.2} views per image",
         t.images,
         bad,
+        if second.is_some() { format!(", {asked} given a second opinion") } else { String::new() },
         t.wall_s,
         t.images as f64 / t.wall_s,
         t.images as f64 / t.model_s,
@@ -205,6 +225,34 @@ pub fn second_opinion_from_scores(first: &Path, waverep: &Path, weights: &Path, 
             continue;
         }
         let z1 = clip_logit(&c);
+        match z2.get(c[0]) {
+            Some(&z2) if band.wanted(z1) => writeln!(w, "{}\t{}\t{}\t{}\t{:.6}\t{}", c[0], c[1], c[2], c[3], band.probability(z1, z2), c[5..].join("\t"))?,
+            _ => writeln!(w, "{l}")?,
+        }
+    }
+    Ok(())
+}
+
+/// What the photo second-opinion stage would decide, computed from a
+/// default-profile score file and a Community Forensics score file of the
+/// same photos (the same arithmetic as running it, without scoring the band
+/// photos twice). Writes nothing when the checkpoint has no band.
+pub fn photo_second_opinion_from_scores(first: &Path, commfor: &Path, weights: &Path, out: &Path) -> Result<()> {
+    let spec = ModelSpec::load_for(weights)?;
+    let Some(band) = spec.second_opinion else { return Ok(()) };
+    let mean = |cols: &[&str]| -> f32 {
+        let v: Vec<f32> = cols[5..].iter().filter_map(|x| x.parse::<f32>().ok()).collect();
+        v.iter().sum::<f32>() / v.len().max(1) as f32
+    };
+    let text2 = std::fs::read_to_string(commfor)?;
+    let z2: std::collections::HashMap<&str, f32> = text2.lines().filter_map(|l| { let c: Vec<&str> = l.split('\t').collect(); (c.len() > 5).then(|| (c[0], mean(&c))) }).collect();
+    let mut w = std::io::BufWriter::new(std::fs::File::create(out)?);
+    for l in std::fs::read_to_string(first)?.lines() {
+        let c: Vec<&str> = l.split('\t').collect();
+        if c.len() < 6 {
+            continue;
+        }
+        let z1 = spec.logit_scale * mean(&c) + spec.logit_bias;
         match z2.get(c[0]) {
             Some(&z2) if band.wanted(z1) => writeln!(w, "{}\t{}\t{}\t{}\t{:.6}\t{}", c[0], c[1], c[2], c[3], band.probability(z1, z2), c[5..].join("\t"))?,
             _ => writeln!(w, "{l}")?,
@@ -372,7 +420,15 @@ pub fn suite(name: &str) -> Result<Vec<Set>> {
             }
             v
         }
-        other => anyhow::bail!("unknown suite `{other}` (benchmarks, confirm1 to confirm6)"),
+        "confirm7" => {
+            // Sets that the plan skipped (too few unused files) have no manifest.
+            let leak = |x: String| -> &'static str { Box::leak(x.into_boxed_str()) };
+            let mut v = vec![("sofake-ood".to_string(), "data/fresh8/sofake-ood/manifest.tsv".to_string())];
+            v.extend(crate::plans::confirm7_aigibench().iter().map(|(name, _, _)| (format!("aigibench-{name}"), format!("data/fresh8/aigibench-{name}/manifest.tsv"))));
+            v.extend(crate::plans::CONFIRM6_CLASSIC.iter().chain(crate::plans::CONFIRM7_CLASSIC.iter()).map(|(folder, _)| (format!("classic-{folder}"), format!("data/fresh8/classic-{folder}/manifest.tsv"))));
+            v.into_iter().filter(|(_, m)| Path::new(m).exists()).map(|(set, m)| img(leak(format!("fresh8-{set}")), leak(m))).collect()
+        }
+        other => anyhow::bail!("unknown suite `{other}` (benchmarks, confirm1 to confirm7)"),
     })
 }
 
@@ -445,19 +501,20 @@ pub fn evaluate(suite_name: &str, weights: &Path, video_weights: &Path, tag: &st
         } else {
             // The three six-view profiles differ only in threshold: score every view once, then apply each.
             let views = file(s.name, &format!("{tag}-views"));
-            score_images(weights, &System::Veracity { profile: Photo::Default }, &m, &views, device, 64, None, true)?;
+            score_images(weights, &System::Veracity { profile: Photo::Default }, &m, &views, device, 64, None, true, None)?;
             apply_profile(&views, &file(s.name, tag), weights, Photo::Default)?;
             apply_profile(&views, &file(s.name, &format!("{tag}-strict")), weights, Photo::Strict)?;
             apply_profile(&views, &file(s.name, &format!("{tag}-sensitive")), weights, Photo::Sensitive)?;
-            score_images(weights, &System::Veracity { profile: Photo::Fast }, &m, &file(s.name, &format!("{tag}-fast")), device, 64, None, false)?;
+            score_images(weights, &System::Veracity { profile: Photo::Fast }, &m, &file(s.name, &format!("{tag}-fast")), device, 64, None, false, None)?;
             if let Some(b) = baselines {
                 for (sys, w, name) in [(System::CommunityForensics, &b.commfor, "commfor"), (System::SwinV2, &b.swinv2, "swinv2")] {
                     let p = file(s.name, name);
                     if need(&p) {
                         // The reference pipelines run in 32-bit floats, as released.
-                        score_images(w, &sys, &m, &p, Device::GpuF32, 64, None, true)?;
+                        score_images(w, &sys, &m, &p, Device::GpuF32, 64, None, true, None)?;
                     }
                 }
+                photo_second_opinion_from_scores(&file(s.name, tag), &file(s.name, "commfor"), weights, &file(s.name, &format!("{tag}-second")))?;
             }
         }
     }
@@ -476,6 +533,7 @@ pub fn evaluate(suite_name: &str, weights: &Path, video_weights: &Path, tag: &st
                 ("Community Forensics", "commfor".into()),
                 ("SwinV2 detector", "swinv2".into()),
                 ("Veracity", tag.to_string()),
+                ("Veracity + second opinion", format!("{tag}-second")),
                 ("Veracity (strict)", format!("{tag}-strict")),
                 ("Veracity (fast)", format!("{tag}-fast")),
                 ("Veracity (sensitive)", format!("{tag}-sensitive")),
@@ -524,6 +582,7 @@ fn standard_spec(size: u32) -> ModelSpec {
         sensitive: None,
         strict: None,
         early_exit: Some(crate::detector::EarlyExit::standard()),
+        second_opinion: None,
         arch: String::new(),
     }
 }
@@ -607,8 +666,8 @@ pub fn finalize(checkpoint: &Path, weights: &Path, scores: &Path, photo_fpr: f64
         "data/fresh/genvideo-val/manifest.tsv",
     ]));
     let (ci, cf, cv) = (scores.join("calib_images.tsv"), scores.join("calib_images_fast.tsv"), scores.join("calib_videos.tsv"));
-    score_images(weights, &System::Veracity { profile: Photo::Default }, &images, &ci, device, 64, None, true)?;
-    score_images(weights, &System::Veracity { profile: Photo::Fast }, &images, &cf, device, 64, None, true)?;
+    score_images(weights, &System::Veracity { profile: Photo::Default }, &images, &ci, device, 64, None, true, None)?;
+    score_images(weights, &System::Veracity { profile: Photo::Fast }, &images, &cf, device, 64, None, true, None)?;
     score_videos(weights, &System::Veracity { profile: Photo::Default }, &videos, &cv, device, 64, None, None, None, true)?;
     calibrate(weights, &[ci.clone()], photo_fpr, "photo", Rule::Balanced(100))?;
     calibrate(weights, &[ci.clone()], strict_fpr, "strict", Rule::Balanced(100))?;

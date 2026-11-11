@@ -198,6 +198,50 @@ impl SecondOpinion {
     }
 }
 
+/// Optional second stage for photos (`--photo-second-opinion`). A photo whose
+/// first-stage logit lies strictly between `lo` and `hi` is also scored by
+/// the Community Forensics network (its released 384-pixel weights and
+/// preprocessing), and it is flagged when `weight` times the first logit plus
+/// the second network's logit comes to more than `threshold`. Photos outside
+/// the band keep the first-stage verdict.
+///
+/// Unlike the video band, this one is in calibrated logits: the logit of the
+/// probability the default profile reports, so 0 is its decision threshold.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PhotoSecondOpinion {
+    pub lo: f32,
+    pub hi: f32,
+    pub weight: f32,
+    pub threshold: f32,
+}
+
+impl PhotoSecondOpinion {
+    pub fn wanted(&self, first_logit: f32) -> bool {
+        first_logit > self.lo && first_logit < self.hi
+    }
+
+    /// P(AI-generated) for a photo inside the band, from both logits.
+    pub fn probability(&self, first_logit: f32, second_logit: f32) -> f32 {
+        sigmoid(0.5 * (self.weight * first_logit + second_logit - self.threshold))
+    }
+}
+
+/// Run the photo second stage: the photos whose first-stage calibrated logit
+/// (`first`, `None` for an unreadable file) lies inside `band` are scored by
+/// the Community Forensics network at `weights2`. Returns `(index,
+/// probability)` for each of them that could be read, how many were asked
+/// about, and the time taken.
+pub fn photo_second_opinion(band: &PhotoSecondOpinion, weights2: &Path, paths: &[PathBuf], first: &[Option<f32>], device: Device, threads: usize) -> Result<(Vec<(usize, f32)>, usize, Timing)> {
+    let pick: Vec<usize> = (0..paths.len()).filter(|&i| first[i].is_some_and(|z| band.wanted(z))).collect();
+    if pick.is_empty() {
+        return Ok((Vec::new(), 0, Timing { images: 0, wall_s: 0.0, model_s: 0.0 }));
+    }
+    let det = Detector::load(weights2, Some(ModelSpec::commfor(384)), 64.min(pick.len()), device)?;
+    let (res, t) = det.score_files(&pick.iter().map(|&i| paths[i].clone()).collect::<Vec<_>>(), threads);
+    let out = pick.iter().zip(res).filter_map(|(&i, r)| Some((i, band.probability(first[i]?, r?[0])))).collect();
+    Ok((out, pick.len(), t))
+}
+
 /// How clips are analysed: which frames, which views of each frame, and the
 /// clip-level calibration.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -258,6 +302,10 @@ pub struct ModelSpec {
     /// of every image is looked at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub early_exit: Option<EarlyExit>,
+    /// Band and rule of the optional second stage for photos
+    /// (`--photo-second-opinion`), defined on the default profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub second_opinion: Option<PhotoSecondOpinion>,
     /// Network architecture; empty means the ViT-S/16 Veracity ships.
     #[serde(default)]
     pub arch: String,
@@ -285,6 +333,7 @@ impl ModelSpec {
             sensitive: None,
             strict: None,
             early_exit: None,
+            second_opinion: None,
             arch: "swinv2_large_w16_256".into()
         }
     }
@@ -304,6 +353,7 @@ impl ModelSpec {
             sensitive: None,
             strict: None,
             early_exit: None,
+            second_opinion: None,
             arch: "vit_base_patch14_reg4_dinov2".into()
         }
     }
@@ -311,7 +361,7 @@ impl ModelSpec {
     /// The Community Forensics baseline's own preprocessing.
     pub fn commfor(img: usize) -> Self {
         let resize = if img == 384 { 440 } else { 256 };
-        Self { img, views: vec![ViewSpec::FitPillow { resize, crop: img as u32 }], logit_scale: 1.0, logit_bias: 0.0, threshold: 0.5, prefix: "vit.".into(), video: None, fast: None, sensitive: None, strict: None, early_exit: None, arch: String::new() }
+        Self { img, views: vec![ViewSpec::FitPillow { resize, crop: img as u32 }], logit_scale: 1.0, logit_bias: 0.0, threshold: 0.5, prefix: "vit.".into(), video: None, fast: None, sensitive: None, strict: None, early_exit: None, second_opinion: None, arch: String::new() }
     }
 
     pub fn sidecar(weights: &Path) -> PathBuf {
@@ -869,8 +919,13 @@ impl Detector {
 
     /// Calibrated P(AI-generated) from per-view logits.
     pub fn probability(&self, view_logits: &[f32]) -> f32 {
+        sigmoid(self.calibrated_logit(view_logits))
+    }
+
+    /// The logit of [`Detector::probability`]: 0 is the decision threshold.
+    pub fn calibrated_logit(&self, view_logits: &[f32]) -> f32 {
         let z = view_logits.iter().sum::<f32>() / view_logits.len() as f32;
-        sigmoid(self.spec.logit_scale * z + self.spec.logit_bias)
+        self.spec.logit_scale * z + self.spec.logit_bias
     }
 
     /// Score already-decoded images (e.g. video frames). Returns per-image
@@ -997,6 +1052,32 @@ mod tests {
         assert!(so.probability(2.0, -0.5) > 0.5);
         assert!(so.probability(2.0, -1.5) < 0.5);
         assert!(so.probability(-0.5, 2.0) > 0.5);
+    }
+
+    #[test]
+    fn photo_second_opinion_band_and_verdict() {
+        let so = PhotoSecondOpinion { lo: -7.0, hi: 0.5, weight: 0.5, threshold: 0.0 };
+        // Only photos strictly inside the band are sent on.
+        assert!(so.wanted(-6.9) && so.wanted(0.0) && so.wanted(0.4));
+        assert!(!so.wanted(-7.0) && !so.wanted(0.5) && !so.wanted(3.0));
+        // Flagged exactly when half the first logit plus the second is positive:
+        // a confident second network overrules a first stage that leant to "real" ...
+        assert!(so.probability(-4.0, 2.5) > 0.5);
+        assert!(so.probability(-4.0, 1.5) < 0.5);
+        // ... and a first stage that only just flagged a photo can be overruled too.
+        assert!(so.probability(0.4, -1.0) < 0.5);
+        assert!(so.probability(0.4, 0.0) > 0.5);
+    }
+
+    #[test]
+    fn photo_spec_keeps_its_band_and_older_specs_have_none() {
+        let old = r#"{"img":224,"views":[{"native":{"crop":224}}]}"#;
+        let mut m: ModelSpec = serde_json::from_str(old).unwrap();
+        assert!(m.second_opinion.is_none());
+        assert!(!serde_json::to_string(&m).unwrap().contains("second_opinion"));
+        m.second_opinion = Some(PhotoSecondOpinion { lo: -7.0, hi: 0.5, weight: 0.5, threshold: 0.0 });
+        let again: ModelSpec = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(again.second_opinion, m.second_opinion);
     }
 
     #[test]
