@@ -751,6 +751,13 @@ ship it (PyTorch 2.15) and its network through this engine
 | Community Forensics network, Rust port | 16.3 | 15.2–17.7 |
 | Veracity, video | 1.4 s per clip (2,915 s for the batch) | |
 
+| On Linux, video | Precision / recall | Real clips flagged | Seconds per clip, CPU |
+|---|---|---|---|
+| **Veracity**, the 1,756 clips it could read | **0.997 / 0.942** | 3 of 600 | 1.4 |
+| WaveRep network (Rust port, macOS scores), same 1,756 | 0.989 / 0.912 | 12 of 600 | – |
+| **Veracity**, 130-clip sample (127 read) | **1.000 / 0.948** | 0 of 50 | 1.6–2.0 |
+| WaveRep as released, run on Linux, same 127 | 0.986 / 0.909 | 1 of 50 | 26.4 |
+
 The three photo detectors were run one after another on each set, and
 Veracity was the fastest on all 19: 1.3–2.8× the released pipeline and
 1.2–2.6× the port. Precision and recall are what they are on macOS,
@@ -762,10 +769,23 @@ different views. On Linux the engine runs one view per thread; splitting
 each matrix product across the threads instead gave 17.4 photos/s on this
 batch with the same output to the last bit. An x86-64 Linux binary, run
 under translation, gave the macOS verdict on each of 738 photos (checked
-before that threading change, and not a speed measurement). WaveRep was not
-run on Linux, and the 300 clips the pure-Rust reader cannot open are every
-real clip of one of the three video sets, so the video figures there rest
-on the other two sets for real clips.
+before that threading change, and not a speed measurement).
+
+For video, WaveRep as its authors ship it (PyTorch on the CPU, 504 px crops
+of the first 64 frames) was run in the same virtual machine on a 130-clip
+sample of the blind batch, between two Veracity passes over the same clips:
+26.4 s per clip against 1.6–2.0, so Veracity is 13–16× faster there, and on
+the 127 clips it could read it found 73 of the 77 AI clips to WaveRep's 70
+and flagged no real clip to WaveRep's one. The released pipeline agreed with
+this report's Rust port of WaveRep on 129 of the 130 verdicts. Over the
+1,756 readable clips of the whole batch, Veracity's Linux verdicts are ahead
+of the port's on precision and recall pooled and on GenVideo-val, ahead on
+recall on ComGenVid's AI clips (0.907 against 0.817), and behind on recall
+on AIGVDBench by the same 0.004 as on macOS. Two limits: WaveRep
+as released was not run over the whole batch on Linux (about 15 hours at
+that rate), and the 300 clips the pure-Rust reader cannot open are every
+real clip of one of the three video sets – clips WaveRep's reader opens –
+so the Linux video figures rest on the other two sets for real clips.
 
 **The pure-Rust video reader against the system decoder**, on macOS, where
 both can be run on the same files (`check-videos --compare-decoders`). Over

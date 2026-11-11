@@ -186,4 +186,26 @@ read 1,756 of 2,056 clips; unreadable 300, the real clips of ComGenVid (MSVD), w
 on the 1,756: precision 0.9973, recall 0.9420 (1,089 of 1,156 AI found, 3 of 600 real flagged)
 macOS GPU engine with the system decoder, same 1,756: precision 0.9973, recall 0.9412; verdicts that differ 1 (0.508 against 0.494), largest difference in probability 0.022
 2,915 s for the batch: 1.4 s per clip, 1.7 s per clip read (4,179 s before the threading change, same output)
-WaveRep was not run on Linux.
+
+### video against WaveRep on Linux
+WaveRep's released network through this engine (macOS scores, mean frame logit above 0), against Veracity on Linux, on the 1,756 clips Linux could read:
+set                       AI / real   veracity on Linux   WaveRep
+                                      precision / recall (real flagged)
+ComGenVid                 300 /   0   1.000 / 0.907 (-)          1.000 / 0.817 (-)
+GenVideo-val              360 / 300   0.994 / 0.939 (2 of 300)   0.991 / 0.911 (3 of 300)
+AIGVDBench                496 / 300   0.998 / 0.966 (1 of 300)   0.982 / 0.970 (9 of 300)
+all                      1156 / 600   0.997 / 0.942 (3 of 600)   0.989 / 0.912 (12 of 600)
+
+WaveRep as its authors ship it (PyTorch 2.15 on the CPU, OpenCV 5.0 reader, 504 px crop, first 64 frames), run on Linux
+on the 130-clip sample above (77 AI, 53 real), between two Veracity passes over the same clips:
+veracity, 130 clips, pass 1: 265.722809439 s
+waverep as released, 130 clips, whole process: 3426.910492857 s
+scored 130 clips in 3425.0s: 0.038 clips/s end-to-end (26347 ms/clip), model time 3413.5s
+veracity, 130 clips, pass 2: 211.327052247 s
+veracity: 2.0 and 1.6 s per clip (the two passes give the same output); WaveRep as released: 26.4 s per clip
+WaveRep as released on Linux, all 130: precision 0.986, recall 0.909 (70 of 77 AI found, 1 of 53 real flagged)
+the Rust port's macOS scores, same 130: precision 1.000, recall 0.909 (70 of 77, 0 of 53); verdicts that differ 1
+  (a real clip at 0.515 on Linux against 0.490), largest difference in probability 0.080
+on the 127 clips Veracity can read on Linux: veracity 1.000 / 0.948 (73 of 77 AI found, 0 of 50 real flagged),
+  WaveRep as released 0.986 / 0.909 (70 of 77, 1 of 50). The other 3 are real clips; WaveRep passes all three.
+WaveRep as released was not run on the whole blind video batch on Linux (about 15 hours at this rate).
