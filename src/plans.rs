@@ -643,7 +643,7 @@ impl Run {
             true,
             &[("aigvd-AccVideo/", 1, "AccVideo"), ("aigvd-Gen3/", 1, "Gen-3"), ("aigvd-causvid_24fps/", 1, "CausVid"), ("aigvd-RepVideo/", 1, "RepVideo"), ("aigvd-IPOC/", 1, "IPOC"), ("kinetics/", 0, "kinetics400-test")],
         )?;
-        let earlier: Vec<&str> = crate::eval::DEV_VIDEO_MANIFESTS.iter().chain(TRAIN_VIDEO_MANIFESTS.iter()).chain(PHASE4_VIDEO_MANIFESTS.iter()).copied().collect();
+        let earlier: Vec<&str> = DEV_VIDEO_MANIFESTS.iter().chain(TRAIN_VIDEO_MANIFESTS.iter()).chain(PHASE4_VIDEO_MANIFESTS.iter()).copied().collect();
         self.drop_duplicates("data/fresh5/video/manifest.tsv", &earlier)?;
 
         let files = self.hf_folder("OmerXYZ/comgenvid", "videos/")?;
@@ -707,6 +707,21 @@ pub const CONFIRM5_AIGIBENCH: [(&str, &str); 12] = [
     ("StyleGAN-XL", "StyleGAN-XL"),
     ("StyleSwim", "StyleSwim"),
     ("WFIR", "WFIR"),
+];
+
+/// Video sets scored before the fourth confirmation batch; their real clips
+/// calibrate the video checkpoint.
+pub const DEV_VIDEO_MANIFESTS: [&str; 10] = [
+    "data/vstore/vdev/manifest.tsv",
+    "data/vstore/wasitai/manifest.tsv",
+    "data/vstore/comgenvid/manifest.tsv",
+    "data/vstore/genvideo-val/manifest.tsv",
+    "data/fresh/video/manifest.tsv",
+    "data/fresh/comgenvid/manifest.tsv",
+    "data/fresh/genvideo-val/manifest.tsv",
+    "data/fresh4/video/manifest.tsv",
+    "data/fresh4/comgenvid/manifest.tsv",
+    "data/fresh4/genvideo-val/manifest.tsv",
 ];
 
 /// Image sets of the third confirmation batch.
