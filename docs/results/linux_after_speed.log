@@ -2,13 +2,13 @@
 # Run by the companion session; raw logs, with the VM's home directory written as ~.
 
 ## Run 13a: scratch merge of the speed work and the Linux work (same code as commit 63c20e9) against the Linux branch before it (f520640); build, tests, blind photo batch 6
-77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881  ~/veracity-combined/models/veracity-video.safetensors
-9dcb21dc9800591ffd758a3c7ca6aa65fa5a9f09a223fecc952f34294ae9aeba  ~/veracity-combined/models/veracity.safetensors
-77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881  ~/veracity/models/veracity-video.safetensors
-9dcb21dc9800591ffd758a3c7ca6aa65fa5a9f09a223fecc952f34294ae9aeba  ~/veracity/models/veracity.safetensors
+77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881  ~/tintype-combined/models/tintype-video.safetensors
+9dcb21dc9800591ffd758a3c7ca6aa65fa5a9f09a223fecc952f34294ae9aeba  ~/tintype-combined/models/tintype.safetensors
+77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881  ~/tintype/models/tintype-video.safetensors
+9dcb21dc9800591ffd758a3c7ca6aa65fa5a9f09a223fecc952f34294ae9aeba  ~/tintype/models/tintype.safetensors
 ### build
    Compiling candle-core v0.11.1
-   Compiling veracity v0.1.0 (~/veracity-combined)
+   Compiling tintype v0.1.0 (~/tintype-combined)
     Finished `release` profile [optimized] target(s) in 29.82s
 build seconds 30
 ### tests
@@ -70,7 +70,7 @@ RUN13_DONE
 
 ## Run 14: commit 6cde2b7 on blind photo batch 6 (seen data for the second-opinion mode): Community Forensics as released, default, second opinion, Community Forensics port
 ### build
-   Compiling veracity v0.1.0 (~/veracity-so)
+   Compiling tintype v0.1.0 (~/tintype-so)
     Finished `release` profile [optimized] target(s) in 49.18s
 build seconds 49
 ### tests

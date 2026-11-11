@@ -1,6 +1,6 @@
 # State of the art in AI-generated image and video detection (November 2026)
 
-This is the survey that shaped Veracity's design and its choice of baselines.
+This is the survey that shaped Tintype's design and its choice of baselines.
 Claims are tied to sources; numbers measured on this machine are marked
 "measured here".
 

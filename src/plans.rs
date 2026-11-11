@@ -1,5 +1,5 @@
 //! The dataset recipes: exactly which files every training, development and
-//! confirmation set is built from, and how each is sampled. `veracity data
+//! confirmation set is built from, and how each is sampled. `tintype data
 //! <plan>` runs one; `--dry-run` only resolves and prints the downloads.
 use crate::fetch::{self, RemoteFile, Select, IMAGE_EXTS, VIDEO_EXTS};
 use crate::ingest::{self, Item, ParquetSpec};

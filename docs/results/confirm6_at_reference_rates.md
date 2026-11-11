@@ -1,6 +1,6 @@
 Against Community Forensics:
 
-| Set | Community Forensics: real items flagged | Community Forensics: precision / recall | Veracity at that rate: precision / recall |
+| Set | Community Forensics: real items flagged | Community Forensics: precision / recall | Tintype at that rate: precision / recall |
 |---|---|---|---|
 | aigibench-blip-b2 | 18 of 400 (4.50%) | 0.957 / 1.000 | 0.957 / 1.000 |
 | aigibench-glide-b2 | 23 of 387 (5.94%) | 0.945 / 0.997 | 0.945 / 0.995 |
@@ -24,7 +24,7 @@ Against Community Forensics:
 
 Against the SwinV2 detector:
 
-| Set | SwinV2 detector: real items flagged | SwinV2 detector: precision / recall | Veracity at that rate: precision / recall |
+| Set | SwinV2 detector: real items flagged | SwinV2 detector: precision / recall | Tintype at that rate: precision / recall |
 |---|---|---|---|
 | aigibench-blip-b2 | 37 of 400 (9.25%) | 0.915 / 1.000 | 0.915 / 1.000 |
 | aigibench-glide-b2 | 55 of 387 (14.21%) | 0.797 / 0.544 | 0.878 / 0.997 |

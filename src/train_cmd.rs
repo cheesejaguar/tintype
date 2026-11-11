@@ -1,4 +1,4 @@
-//! `veracity train`: fine-tune the detector on the Apple GPU.
+//! `tintype train`: fine-tune the detector on the Apple GPU.
 #![cfg(target_os = "macos")]
 
 use crate::data::{is_val, spawn_loader, AugConfig, Sampler};

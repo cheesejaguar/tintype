@@ -1,6 +1,6 @@
 # Notices
 
-Veracity's code is dual-licensed under MIT ([LICENSE-MIT](LICENSE-MIT)) or
+Tintype's code is dual-licensed under MIT ([LICENSE-MIT](LICENSE-MIT)) or
 Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)), at your option. The trained
 weights have their own licence: [models/LICENSE.md](models/LICENSE.md).
 
@@ -12,7 +12,7 @@ Third-party work this project builds on:
   non-profit use) and the **SwinV2 detector**
   `haywoodsloan/ai-image-detector-deploy` (Apache-2.0) are reference
   detectors. Their networks are re-implemented here in Rust to run their
-  released weights; the weights are downloaded by `veracity data baselines`
+  released weights; the weights are downloaded by `tintype data baselines`
   and are not redistributed. WaveRep's weights also serve as the optional
   second opinion for video (`detect --second-opinion`).
 - **rust_h264** and **rust_h265** (MIT OR Apache-2.0) decode video where

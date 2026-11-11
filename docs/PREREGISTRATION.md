@@ -19,7 +19,7 @@ before any of the confirm3 data had been downloaded.
 - **Threshold rule**: mean false-positive rate over real sources with at
   least 100 items.
   - Photo, default and fast profiles: the loosest target among 0.5%, 1% and
-    2% at which, on every earlier set that has real images, Veracity's
+    2% at which, on every earlier set that has real images, Tintype's
     precision is above Community Forensics'.
   - Photo, sensitive profile: 5%.
   - Video: 1%.
@@ -41,7 +41,7 @@ before any of the confirm3 data had been downloaded.
 Written 2026-11-10 22:30 UTC, after the video checkpoint and its thresholds
 were frozen and before any of the confirm4 data had been downloaded.
 
-- **Model**: `models/veracity-video.safetensors`, the phase-5 checkpoint at
+- **Model**: `models/tintype-video.safetensors`, the phase-5 checkpoint at
   step 4,000 (SHA-256 `77010f7cd733b23a73f2…`). No checkpoint selection.
   Photos keep the phase-3 weights; nothing about them changes.
 - **Frames and views**: 16 frames, six views each, mean logit – unchanged.
@@ -57,7 +57,7 @@ were frozen and before any of the confirm4 data had been downloaded.
   were chosen on the eight earlier AIGVDBench, ComGenVid and GenVideo-Val
   sets.
 - **On those eight development sets** (2,761 AI, 1,750 real clips): WaveRep
-  precision 0.993, recall 0.912, 17 real clips flagged; Veracity video 0.993,
+  precision 0.993, recall 0.912, 17 real clips flagged; Tintype video 0.993,
   0.937, 19; with the second opinion 0.996, 0.951, 11, with 13.5% of clips
   going to the second stage. These numbers are in-sample.
 - **Data**: plan `confirm4` as committed in src/plans.rs: AIGVDBench AccVideo
@@ -69,7 +69,7 @@ were frozen and before any of the confirm4 data had been downloaded.
   training data; Gen-3, RepVideo, Sora, Veo 3, Gen-2 and VideoCrafter are, as
   other clips from the same or other collections.
 - **Baseline**: WaveRep run by the Rust port at its shipped threshold.
-- **Scoring**: once. Primary outcome: pooled precision and recall of Veracity
+- **Scoring**: once. Primary outcome: pooled precision and recall of Tintype
   video, alone and with the second opinion, against WaveRep. Also reported:
   the same per set, AUROC, recall at 1% FPR, the share of clips given a second
   opinion, and time per clip.
@@ -79,10 +79,10 @@ were frozen and before any of the confirm4 data had been downloaded.
 Written 2026-11-11 01:04 UTC, after the photo configuration below was frozen
 and before any of the confirm5 data had been downloaded.
 
-- **Model**: `models/veracity.safetensors`, unchanged (the phase-3 weights,
+- **Model**: `models/tintype.safetensors`, unchanged (the phase-3 weights,
   SHA-256 `2d11bffd77f246416d85…`). Only how they are used changes.
 - **Default threshold**: the mean false-positive target over real sources,
-  chosen among 0.5%, 1%, 1.5%, 2%, 3% and 5% as the one at which Veracity is
+  chosen among 0.5%, 1%, 1.5%, 2%, 3% and 5% as the one at which Tintype is
   ahead of both reference detectors on both precision and recall on the most
   development sets (ties to the lower target). That is 1.5% (8 of 13 sets),
   logit threshold 2.312. The previous default (0.5%, logit 4.212) stays
@@ -96,7 +96,7 @@ and before any of the confirm5 data had been downloaded.
   change 0.14% of verdicts and use 2.8 views per image on average.
 - **On the development sets** (pooled, 44,336 images, in-sample): Community
   Forensics precision 0.975, recall 0.588; SwinV2 detector 0.909, 0.813;
-  Veracity default with early exit 0.984, 0.830. On the third confirmation
+  Tintype default with early exit 0.984, 0.830. On the third confirmation
   batch, which did not inform these choices but had been seen: 0.985, 0.932
   against 0.964, 0.637 and 0.871, 0.918.
 - **Data**: plan `confirm5` as committed in src/plans.rs: So-Fake-OOD shards
@@ -134,17 +134,17 @@ frozen and before any of the confirm6 data had been downloaded.
   and 5 included.
 - **Thresholds**: mean false-positive rate over real sources with at least
   100 items. Default 1.5% (logit 1.692) – the same rule as before picks it
-  again, as the target at which Veracity is ahead of both reference detectors
+  again, as the target at which Tintype is ahead of both reference detectors
   on both measures on the most development sets (13 of 30). Strict 0.5%
   (3.396), sensitive 5% (-0.776), fast 0.5% (4.197).
 - **Early exit**: the schedule fitted for the phase-3 weights, unchanged. On
   the development sets it changes 0.19% of verdicts with these weights and
   uses 2.5 views per image; the rule was to keep it if under 0.5%.
 - **What is already known and not expected to change**: on the development
-  sets no single threshold puts Veracity ahead of Community Forensics on
+  sets no single threshold puts Tintype ahead of Community Forensics on
   recall on every set. Community Forensics reaches 0.98–1.00 recall on several
   GAN sets while flagging 3–5% of their real photos; at the default threshold
-  Veracity flags under 1% there and finds 0.84–0.99.
+  Tintype flags under 1% there and finds 0.84–0.99.
 - **Data**: plan `confirm6` as committed in src/plans.rs: So-Fake-OOD shards
   1, 33, 45; a second sample of 400 per class from each of the twelve
   AIGIBench archives of batch 5, half a step away from that batch's files;

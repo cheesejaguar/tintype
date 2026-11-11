@@ -22,7 +22,7 @@ fn items_of(manifests: &[PathBuf]) -> Result<Vec<Item>> {
     Ok(items)
 }
 
-/// Veracity's photo operating points.
+/// Tintype's photo operating points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Photo {
     /// Up to six views, balanced threshold.
@@ -49,15 +49,15 @@ impl Photo {
 /// Which system a score run uses.
 #[derive(Clone, Debug)]
 pub enum System {
-    /// Veracity with its sidecar spec and one of its photo profiles.
-    Veracity { profile: Photo },
+    /// Tintype with its sidecar spec and one of its photo profiles.
+    Tintype { profile: Photo },
     CommunityForensics,
     SwinV2,
     WaveRep,
 }
 
 /// Score images; writes `path label generator dataset prob logits...`.
-/// Veracity's six-view profiles stop early on clear images when the
+/// Tintype's six-view profiles stop early on clear images when the
 /// checkpoint has an early-exit schedule, unless `all_views` is set; the
 /// logits written are then the ones looked at, in looking order.
 ///
@@ -69,7 +69,7 @@ pub enum System {
 pub fn score_images(weights: &Path, sys: &System, manifests: &[PathBuf], out: &Path, device: Device, batch: usize, views: Option<&str>, all_views: bool, second: Option<&Path>) -> Result<Timing> {
     let items = items_of(manifests)?;
     let (mut spec, batch) = match sys {
-        System::Veracity { profile } => {
+        System::Tintype { profile } => {
             let mut s = ModelSpec::load_for(weights)?;
             profile.apply(&mut s);
             if all_views || views.is_some() || *profile == Photo::Fast {
@@ -490,7 +490,7 @@ pub fn evaluate(suite_name: &str, weights: &Path, video_weights: &Path, tag: &st
     for s in &sets {
         let m = [PathBuf::from(s.manifest)];
         if s.video {
-            score_videos(video_weights, &System::Veracity { profile: Photo::Default }, &m, &file(s.name, tag), device, 64, None, None, None, false)?;
+            score_videos(video_weights, &System::Tintype { profile: Photo::Default }, &m, &file(s.name, tag), device, 64, None, None, None, false)?;
             if let Some(b) = baselines {
                 let p = file(s.name, "waverep");
                 if need(&p) {
@@ -501,11 +501,11 @@ pub fn evaluate(suite_name: &str, weights: &Path, video_weights: &Path, tag: &st
         } else {
             // The three six-view profiles differ only in threshold: score every view once, then apply each.
             let views = file(s.name, &format!("{tag}-views"));
-            score_images(weights, &System::Veracity { profile: Photo::Default }, &m, &views, device, 64, None, true, None)?;
+            score_images(weights, &System::Tintype { profile: Photo::Default }, &m, &views, device, 64, None, true, None)?;
             apply_profile(&views, &file(s.name, tag), weights, Photo::Default)?;
             apply_profile(&views, &file(s.name, &format!("{tag}-strict")), weights, Photo::Strict)?;
             apply_profile(&views, &file(s.name, &format!("{tag}-sensitive")), weights, Photo::Sensitive)?;
-            score_images(weights, &System::Veracity { profile: Photo::Fast }, &m, &file(s.name, &format!("{tag}-fast")), device, 64, None, false, None)?;
+            score_images(weights, &System::Tintype { profile: Photo::Fast }, &m, &file(s.name, &format!("{tag}-fast")), device, 64, None, false, None)?;
             if let Some(b) = baselines {
                 for (sys, w, name) in [(System::CommunityForensics, &b.commfor, "commfor"), (System::SwinV2, &b.swinv2, "swinv2")] {
                     let p = file(s.name, name);
@@ -527,16 +527,16 @@ pub fn evaluate(suite_name: &str, weights: &Path, video_weights: &Path, tag: &st
         let mut systems: Vec<(String, BTreeMap<String, Scored>, f32)> = Vec::new();
         let mut pooled: Vec<(String, BTreeMap<String, Scored>, f32)> = Vec::new();
         let names: Vec<(&str, String)> = if video {
-            vec![("WaveRep", "waverep".into()), ("Veracity", tag.to_string()), ("Veracity + second opinion", format!("{tag}-second"))]
+            vec![("WaveRep", "waverep".into()), ("Tintype", tag.to_string()), ("Tintype + second opinion", format!("{tag}-second"))]
         } else {
             vec![
                 ("Community Forensics", "commfor".into()),
                 ("SwinV2 detector", "swinv2".into()),
-                ("Veracity", tag.to_string()),
-                ("Veracity + second opinion", format!("{tag}-second")),
-                ("Veracity (strict)", format!("{tag}-strict")),
-                ("Veracity (fast)", format!("{tag}-fast")),
-                ("Veracity (sensitive)", format!("{tag}-sensitive")),
+                ("Tintype", tag.to_string()),
+                ("Tintype + second opinion", format!("{tag}-second")),
+                ("Tintype (strict)", format!("{tag}-strict")),
+                ("Tintype (fast)", format!("{tag}-fast")),
+                ("Tintype (sensitive)", format!("{tag}-sensitive")),
             ]
         };
         let pooled_name = format!("{suite_name}, pooled");
@@ -625,7 +625,7 @@ pub fn finalize_video(checkpoint: &Path, weights: &Path, scores: &Path, video_fp
     let mut videos = vec![vv];
     videos.extend(crate::plans::DEV_VIDEO_MANIFESTS.iter().map(PathBuf::from).filter(|p| p.exists()));
     let cv = scores.join("calib_videos_phase4.tsv");
-    score_videos(weights, &System::Veracity { profile: Photo::Default }, &videos, &cv, device, 64, None, None, None, true)?;
+    score_videos(weights, &System::Tintype { profile: Photo::Default }, &videos, &cv, device, 64, None, None, None, true)?;
     calibrate(weights, &[cv], video_fpr, "video", Rule::Balanced(100))
 }
 
@@ -666,9 +666,9 @@ pub fn finalize(checkpoint: &Path, weights: &Path, scores: &Path, photo_fpr: f64
         "data/fresh/genvideo-val/manifest.tsv",
     ]));
     let (ci, cf, cv) = (scores.join("calib_images.tsv"), scores.join("calib_images_fast.tsv"), scores.join("calib_videos.tsv"));
-    score_images(weights, &System::Veracity { profile: Photo::Default }, &images, &ci, device, 64, None, true, None)?;
-    score_images(weights, &System::Veracity { profile: Photo::Fast }, &images, &cf, device, 64, None, true, None)?;
-    score_videos(weights, &System::Veracity { profile: Photo::Default }, &videos, &cv, device, 64, None, None, None, true)?;
+    score_images(weights, &System::Tintype { profile: Photo::Default }, &images, &ci, device, 64, None, true, None)?;
+    score_images(weights, &System::Tintype { profile: Photo::Fast }, &images, &cf, device, 64, None, true, None)?;
+    score_videos(weights, &System::Tintype { profile: Photo::Default }, &videos, &cv, device, 64, None, None, None, true)?;
     calibrate(weights, &[ci.clone()], photo_fpr, "photo", Rule::Balanced(100))?;
     calibrate(weights, &[ci.clone()], strict_fpr, "strict", Rule::Balanced(100))?;
     calibrate(weights, &[ci], sensitive_fpr, "sensitive", Rule::Balanced(100))?;

@@ -1,6 +1,6 @@
 # Licence for the trained weights
 
-`veracity.safetensors`, `veracity-video.safetensors` and their `.json` run
+`tintype.safetensors`, `tintype-video.safetensors` and their `.json` run
 specs are released under
 **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International**
 (CC BY-NC-SA 4.0, <https://creativecommons.org/licenses/by-nc-sa/4.0/>).
@@ -21,7 +21,7 @@ licence because of what they were trained on:
 
 Whether model weights inherit the licences of their training data is not
 settled law. This licence takes the cautious reading. For commercial use,
-retrain with `veracity train` on data you have the rights to.
+retrain with `tintype train` on data you have the rights to.
 
 `detect --second-opinion` loads the WaveRep checkpoint. That file is not part
 of this repository or of this licence: it is downloaded from its authors

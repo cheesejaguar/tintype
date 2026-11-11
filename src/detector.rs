@@ -306,7 +306,7 @@ pub struct ModelSpec {
     /// (`--photo-second-opinion`), defined on the default profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub second_opinion: Option<PhotoSecondOpinion>,
-    /// Network architecture; empty means the ViT-S/16 Veracity ships.
+    /// Network architecture; empty means the ViT-S/16 Tintype ships.
     #[serde(default)]
     pub arch: String,
 }
@@ -382,7 +382,7 @@ impl ModelSpec {
 /// `<name>-video.safetensors` beside it when that exists, otherwise the photo
 /// checkpoint itself (its own video profile).
 pub fn video_weights_for(weights: &Path) -> std::path::PathBuf {
-    let stem = weights.file_stem().and_then(|s| s.to_str()).unwrap_or("veracity");
+    let stem = weights.file_stem().and_then(|s| s.to_str()).unwrap_or("tintype");
     let sibling = weights.with_file_name(format!("{stem}-video.safetensors"));
     if sibling.exists() {
         sibling
@@ -1151,7 +1151,7 @@ mod tests {
 
     #[test]
     fn video_weights_default_to_the_photo_checkpoint() {
-        let p = std::path::Path::new("/nonexistent/dir/veracity.safetensors");
+        let p = std::path::Path::new("/nonexistent/dir/tintype.safetensors");
         assert_eq!(video_weights_for(p), p);
     }
 }

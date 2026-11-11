@@ -1,11 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use veracity::detector::{Detector, Device, ModelSpec};
-use veracity::ingest;
+use tintype::detector::{Detector, Device, ModelSpec};
+use tintype::ingest;
 
 #[derive(Parser)]
-#[command(name = "veracity", version, about = "AI-generated image and video detection")]
+#[command(name = "tintype", version, about = "AI-generated image and video detection")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -19,16 +19,16 @@ enum Cmd {
         #[arg(required = true)]
         paths: Vec<PathBuf>,
         /// Photo model weights.
-        #[arg(long, default_value = "models/veracity.safetensors")]
+        #[arg(long, default_value = "models/tintype.safetensors")]
         weights: PathBuf,
         /// Video model weights (default: `<weights>-video.safetensors` beside the photo weights, if present).
         #[arg(long)]
         video_weights: Option<PathBuf>,
-        /// WaveRep weights (`veracity data baselines` fetches them; research-only licence).
+        /// WaveRep weights (`tintype data baselines` fetches them; research-only licence).
         /// Videos the video model is unsure about are also scored by that network.
         #[arg(long)]
         second_opinion: Option<PathBuf>,
-        /// Community Forensics weights (384 px; `veracity data baselines` fetches them).
+        /// Community Forensics weights (384 px; `tintype data baselines` fetches them).
         /// Photos the default profile does not flag with confidence are also scored by that network.
         #[arg(long, conflicts_with_all = ["fast", "sensitive", "strict"])]
         photo_second_opinion: Option<PathBuf>,
@@ -136,17 +136,17 @@ enum Cmd {
     Evaluate {
         /// benchmarks, or confirm1 to confirm7.
         suite: String,
-        #[arg(long, default_value = "models/veracity.safetensors")]
+        #[arg(long, default_value = "models/tintype.safetensors")]
         weights: PathBuf,
         /// Video model weights (default: `<weights>-video.safetensors` beside the photo weights, if present).
         #[arg(long)]
         video_weights: Option<PathBuf>,
-        /// Suffix of the score files written for Veracity.
-        #[arg(long, default_value = "veracity")]
+        /// Suffix of the score files written for Tintype.
+        #[arg(long, default_value = "tintype")]
         tag: String,
         #[arg(long, default_value = "runs/scores")]
         scores: PathBuf,
-        /// Also run the three reference detectors (weights from `veracity data baselines`).
+        /// Also run the three reference detectors (weights from `tintype data baselines`).
         #[arg(long)]
         baselines: bool,
         /// Keep reference score files that already exist.
@@ -158,7 +158,7 @@ enum Cmd {
     /// Freeze a checkpoint: write its spec and calibrate photo, fast and video profiles.
     Finalize {
         checkpoint: PathBuf,
-        #[arg(long, default_value = "models/veracity.safetensors")]
+        #[arg(long, default_value = "models/tintype.safetensors")]
         weights: PathBuf,
         #[arg(long, default_value = "runs/scores")]
         scores: PathBuf,
@@ -186,7 +186,7 @@ enum Cmd {
     /// Freeze a checkpoint as the video model: write its spec and calibrate the video threshold.
     FinalizeVideo {
         checkpoint: PathBuf,
-        #[arg(long, default_value = "models/veracity-video.safetensors")]
+        #[arg(long, default_value = "models/tintype-video.safetensors")]
         weights: PathBuf,
         #[arg(long, default_value = "runs/scores")]
         scores: PathBuf,
@@ -202,7 +202,7 @@ enum Cmd {
     /// Store the band of the photo second opinion in a checkpoint's spec
     /// (see `detect --photo-second-opinion`), or remove it with `--band none`.
     SetPhotoSecondOpinion {
-        #[arg(long, default_value = "models/veracity.safetensors")]
+        #[arg(long, default_value = "models/tintype.safetensors")]
         weights: PathBuf,
         /// `lo,hi,weight,threshold` in calibrated first-stage logits, or `none`.
         #[arg(long, allow_hyphen_values = true)]
@@ -315,7 +315,7 @@ enum Cmd {
         #[arg(long, default_value_t = 0.25)]
         p_messenger: f32,
     },
-    /// Download and prepare a dataset plan (`veracity data list` shows them).
+    /// Download and prepare a dataset plan (`tintype data list` shows them).
     Data {
         plan: String,
         /// Resolve and print the downloads without fetching anything.
@@ -407,10 +407,10 @@ fn parse_device(s: &str) -> Result<Device> {
 }
 
 #[cfg(target_os = "macos")]
-fn system(reference: &Option<String>, fast: bool, sensitive: bool, strict: bool) -> Result<veracity::eval::System> {
-    use veracity::eval::{Photo, System};
+fn system(reference: &Option<String>, fast: bool, sensitive: bool, strict: bool) -> Result<tintype::eval::System> {
+    use tintype::eval::{Photo, System};
     Ok(match reference.as_deref() {
-        None => System::Veracity { profile: if fast { Photo::Fast } else if sensitive { Photo::Sensitive } else if strict { Photo::Strict } else { Photo::Default } },
+        None => System::Tintype { profile: if fast { Photo::Fast } else if sensitive { Photo::Sensitive } else if strict { Photo::Strict } else { Photo::Default } },
         Some("commfor") => System::CommunityForensics,
         Some("swinv2") => System::SwinV2,
         Some("waverep") => System::WaveRep,
@@ -467,20 +467,20 @@ fn main() -> Result<()> {
                 if let (Some(w2), Some(band)) = (&photo_second_opinion, band) {
                     let first: Vec<Option<f32>> = res.iter().map(|r| r.as_ref().map(|l| det.calibrated_logit(l))).collect();
                     drop(det); // free the first network before loading the second
-                    for (i, p) in veracity::detector::photo_second_opinion(&band, w2, &imgs, &first, device, threads)?.0 {
+                    for (i, p) in tintype::detector::photo_second_opinion(&band, w2, &imgs, &first, device, threads)?.0 {
                         probs[i] = Some(p);
                     }
                 }
                 rows.extend(imgs.iter().zip(probs).map(|(p, pr)| (p.clone(), "image", pr, 1)));
             }
             if !vids.is_empty() {
-                let video_weights = video_weights.unwrap_or_else(|| veracity::detector::video_weights_for(&weights));
+                let video_weights = video_weights.unwrap_or_else(|| tintype::detector::video_weights_for(&weights));
                 // A second opinion is asked for on the logit of all frames, so it turns
                 // early exit off; so does `--all-views`.
                 let exit = ModelSpec::load_for(&video_weights).ok().and_then(|s| s.video).and_then(|v| v.early_exit).filter(|_| second_opinion.is_none() && !all_views);
                 let mut det = Detector::load(&video_weights, None, if exit.is_some() { 96 } else { 64 }, device)?;
                 let profile_frames = det.use_video_profile();
-                let sampling = veracity::video::Sampling { frames: frames.unwrap_or(profile_frames), ..Default::default() };
+                let sampling = tintype::video::Sampling { frames: frames.unwrap_or(profile_frames), ..Default::default() };
                 let (res, _) = match &exit {
                     Some(e) => det.score_videos_adaptive(&vids, sampling, threads, e),
                     None => det.score_videos(&vids, sampling, threads),
@@ -488,7 +488,7 @@ fn main() -> Result<()> {
                 // Clip logit (mean over frames of the mean over views) and frame count.
                 let clips: Vec<Option<(f32, usize)>> = res
                     .iter()
-                    .map(|r| r.as_ref().map(|fr| (veracity::video::aggregate(&fr.iter().map(|v| v.iter().sum::<f32>() / v.len() as f32).collect::<Vec<f32>>()), fr.len())))
+                    .map(|r| r.as_ref().map(|fr| (tintype::video::aggregate(&fr.iter().map(|v| v.iter().sum::<f32>() / v.len() as f32).collect::<Vec<f32>>()), fr.len())))
                     .collect();
                 // Only the second-opinion stage, which is macOS-only, changes these.
                 #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
@@ -500,7 +500,7 @@ fn main() -> Result<()> {
                         drop(det);
                         #[cfg(target_os = "macos")]
                         {
-                            let (z2, _) = veracity::eval::waverep_logits(w2, &pick.iter().map(|&i| vids[i].clone()).collect::<Vec<_>>(), device, 16)?;
+                            let (z2, _) = tintype::eval::waverep_logits(w2, &pick.iter().map(|&i| vids[i].clone()).collect::<Vec<_>>(), device, 16)?;
                             for (&i, z2) in pick.iter().zip(z2) {
                                 if let (Some((z1, _)), Some(z2)) = (clips[i], z2) {
                                     probs[i] = Some(band.probability(z1, z2));
@@ -516,7 +516,7 @@ fn main() -> Result<()> {
             for (path, kind, prob, n) in rows {
                 // Say why a clip could not be read (on stderr, so the output stays parseable).
                 if prob.is_none() && kind == "video" {
-                    if let Err(e) = veracity::video::frame_at(&path, 0.0) {
+                    if let Err(e) = tintype::video::frame_at(&path, 0.0) {
                         eprintln!("{e:#}");
                     }
                 }
@@ -531,11 +531,11 @@ fn main() -> Result<()> {
         }
         #[cfg(target_os = "macos")]
         Cmd::Score { weights, reference, manifest, out, batch, device, views, fast, sensitive, strict, all_views, photo_second_opinion } => {
-            veracity::eval::score_images(&weights, &system(&reference, fast, sensitive, strict)?, &manifest, &out, parse_device(&device)?, batch, views.as_deref(), all_views, photo_second_opinion.as_deref()).map(|_| ())
+            tintype::eval::score_images(&weights, &system(&reference, fast, sensitive, strict)?, &manifest, &out, parse_device(&device)?, batch, views.as_deref(), all_views, photo_second_opinion.as_deref()).map(|_| ())
         }
         #[cfg(target_os = "macos")]
         Cmd::ScoreVideo { weights, reference, manifest, out, frames, views, second_opinion, all_frames, batch, device } => {
-            veracity::eval::score_videos(&weights, &system(&reference, false, false, false)?, &manifest, &out, parse_device(&device)?, batch, frames, views.as_deref(), second_opinion.as_deref(), all_frames).map(|_| ())
+            tintype::eval::score_videos(&weights, &system(&reference, false, false, false)?, &manifest, &out, parse_device(&device)?, batch, frames, views.as_deref(), second_opinion.as_deref(), all_frames).map(|_| ())
         }
         Cmd::Report { systems, per_generator, markdown, pooled, at_rate_of } => {
             let mut loaded = Vec::new();
@@ -545,26 +545,26 @@ fn main() -> Result<()> {
                     Some((p, t)) => (p, t.parse::<f32>()?),
                     None => (rest, 0.5),
                 };
-                loaded.push((name.to_string(), veracity::report::read_scores(std::path::Path::new(path))?, thr));
+                loaded.push((name.to_string(), tintype::report::read_scores(std::path::Path::new(path))?, thr));
             }
             if let Some(baseline) = at_rate_of {
-                veracity::report::matched_markdown(&loaded, &baseline, pooled.as_deref())?;
+                tintype::report::matched_markdown(&loaded, &baseline, pooled.as_deref())?;
             } else if markdown {
-                veracity::report::compare_markdown(&loaded, pooled.as_deref());
+                tintype::report::compare_markdown(&loaded, pooled.as_deref());
             } else {
-                veracity::report::compare(&loaded, per_generator);
+                tintype::report::compare(&loaded, per_generator);
             }
             Ok(())
         }
         #[cfg(target_os = "macos")]
         Cmd::Evaluate { suite, weights, video_weights, tag, scores, baselines, reuse, device } => {
-            let b = veracity::eval::Baselines::default();
-            let video_weights = video_weights.unwrap_or_else(|| veracity::detector::video_weights_for(&weights));
-            veracity::eval::evaluate(&suite, &weights, &video_weights, &tag, &scores, baselines.then_some(&b), reuse, parse_device(&device)?)
+            let b = tintype::eval::Baselines::default();
+            let video_weights = video_weights.unwrap_or_else(|| tintype::detector::video_weights_for(&weights));
+            tintype::eval::evaluate(&suite, &weights, &video_weights, &tag, &scores, baselines.then_some(&b), reuse, parse_device(&device)?)
         }
         #[cfg(target_os = "macos")]
         Cmd::Finalize { checkpoint, weights, scores, photo_fpr, strict_fpr, sensitive_fpr, video_fpr, also_trained_on, also_scored_on, device } => {
-            veracity::eval::finalize(&checkpoint, &weights, &scores, photo_fpr, strict_fpr, sensitive_fpr, video_fpr, (&also_trained_on, &also_scored_on), parse_device(&device)?)
+            tintype::eval::finalize(&checkpoint, &weights, &scores, photo_fpr, strict_fpr, sensitive_fpr, video_fpr, (&also_trained_on, &also_scored_on), parse_device(&device)?)
         }
         #[cfg(target_os = "macos")]
         Cmd::FinalizeVideo { checkpoint, weights, scores, video_fpr, second_opinion, device } => {
@@ -572,27 +572,27 @@ fn main() -> Result<()> {
                 Some(s) => {
                     let v: Vec<f32> = s.split(',').map(|x| x.trim().parse::<f32>()).collect::<Result<_, _>>()?;
                     anyhow::ensure!(v.len() == 3 && v[0] < v[1], "--second-opinion takes lo,hi,threshold with lo < hi");
-                    Some(veracity::detector::SecondOpinion { lo: v[0], hi: v[1], threshold: v[2] })
+                    Some(tintype::detector::SecondOpinion { lo: v[0], hi: v[1], threshold: v[2] })
                 }
                 None => None,
             };
-            veracity::eval::finalize_video(&checkpoint, &weights, &scores, video_fpr, band, parse_device(&device)?)
+            tintype::eval::finalize_video(&checkpoint, &weights, &scores, video_fpr, band, parse_device(&device)?)
         }
         #[cfg(target_os = "macos")]
         Cmd::Calibrate { weights, scores, target_fpr, profile, early_exit, rule, min_source } => {
             if early_exit {
                 let mut spec = ModelSpec::load_for(&weights)?;
-                spec.early_exit = Some(veracity::detector::EarlyExit::standard());
+                spec.early_exit = Some(tintype::detector::EarlyExit::standard());
                 spec.save_for(&weights)?;
             }
-            use veracity::eval::Rule;
+            use tintype::eval::Rule;
             let rule = match rule.as_str() {
                 "pooled" => Rule::Pooled,
                 "strictest" => Rule::Strictest(min_source),
                 "balanced" => Rule::Balanced(min_source),
                 other => anyhow::bail!("unknown rule `{other}` (pooled, strictest, balanced)"),
             };
-            veracity::eval::calibrate(&weights, &scores, target_fpr, &profile, rule)
+            tintype::eval::calibrate(&weights, &scores, target_fpr, &profile, rule)
         }
         #[cfg(target_os = "macos")]
         Cmd::Latency { weights, reference, manifest, n, device, fast, all_views } => {
@@ -618,7 +618,7 @@ fn main() -> Result<()> {
             let mut ms = Vec::new();
             for (k, it) in items.iter().take(n + 5).enumerate() {
                 let t = std::time::Instant::now();
-                let Ok(img) = veracity::image_io::load(&it.path) else { continue };
+                let Ok(img) = tintype::image_io::load(&it.path) else { continue };
                 pre.apply(&img, &mut buf);
                 match &exit {
                     Some(e) if stepwise => std::hint::black_box(det.probability(&det.logits_adaptive(&buf, e))),
@@ -644,7 +644,7 @@ fn main() -> Result<()> {
                 let items = ingest::read_manifest(&manifest)?;
                 let paths: Vec<PathBuf> = items.iter().take(n).map(|i| i.path.clone()).collect();
                 let t = Instant::now();
-                let imgs: Vec<veracity::image_io::Rgb> = paths.par_iter().filter_map(|p| veracity::image_io::load(p).ok()).collect();
+                let imgs: Vec<tintype::image_io::Rgb> = paths.par_iter().filter_map(|p| tintype::image_io::load(p).ok()).collect();
                 let s = t.elapsed().as_secs_f64();
                 let mp: f64 = imgs.iter().map(|i| i.w as f64 * i.h as f64 / 1e6).sum();
                 println!("decode: {} images, {:.0} megapixels in {:.2}s: {:.0} img/s, {:.0} MP/s", imgs.len(), mp, s, imgs.len() as f64 / s, mp / s);
@@ -657,7 +657,7 @@ fn main() -> Result<()> {
             let vl = 3 * spec.img * spec.img;
             for &b in &batches {
                 let det = Detector::load(&weights, Some(spec.clone()), b, device)?;
-                let mut rng = veracity::rng::Rng::new(7);
+                let mut rng = tintype::rng::Rng::new(7);
                 let x: Vec<u8> = (0..b * vl).map(|_| rng.below(256) as u8).collect();
                 for _ in 0..3 {
                     std::hint::black_box(det.logits(&x));
@@ -674,7 +674,7 @@ fn main() -> Result<()> {
         }
         #[cfg(target_os = "macos")]
         Cmd::Train { init, init_prefix, manifest, out, steps, batch, lr, warmup, val_pct, val_max, eval_every, threads, seed, p_native, layer_decay, weight_decay, smoothing, sampler_alpha, p_messenger } => {
-            veracity::train_cmd::run(veracity::train_cmd::TrainArgs {
+            tintype::train_cmd::run(tintype::train_cmd::TrainArgs {
                 init,
                 init_prefix,
                 manifests: manifest,
@@ -688,8 +688,8 @@ fn main() -> Result<()> {
                 eval_every,
                 threads,
                 seed,
-                aug: veracity::data::AugConfig { p_native, p_messenger, ..Default::default() },
-                opt: veracity::trainer::OptConfig { layer_decay, weight_decay, smoothing, ..Default::default() },
+                aug: tintype::data::AugConfig { p_native, p_messenger, ..Default::default() },
+                opt: tintype::trainer::OptConfig { layer_decay, weight_decay, smoothing, ..Default::default() },
                 sampler_alpha,
             })
         }
@@ -704,18 +704,18 @@ fn main() -> Result<()> {
             } else {
                 let v: Vec<f32> = band.split(',').map(|x| x.trim().parse::<f32>()).collect::<Result<_, _>>()?;
                 anyhow::ensure!(v.len() == 4 && v[0] < v[1], "--band takes lo,hi,weight,threshold with lo < hi");
-                Some(veracity::detector::PhotoSecondOpinion { lo: v[0], hi: v[1], weight: v[2], threshold: v[3] })
+                Some(tintype::detector::PhotoSecondOpinion { lo: v[0], hi: v[1], weight: v[2], threshold: v[3] })
             };
             spec.save_for(&weights)
         }
         Cmd::Data { plan, dry_run, connections } => {
             if plan == "list" {
-                for (name, what) in veracity::plans::PLANS {
+                for (name, what) in tintype::plans::PLANS {
                     println!("{name:<14} {what}");
                 }
                 return Ok(());
             }
-            veracity::plans::run(&plan, dry_run, connections)
+            tintype::plans::run(&plan, dry_run, connections)
         }
         Cmd::Ingest { inputs, out, dataset, image_col, label_col, fake_values, real_values, const_label, gen_col, real_src_col, const_gen, max_per_file } => {
             let spec = ingest::ParquetSpec { image_col, label_col, fake_values, real_values, const_label, gen_col, real_src_col, const_gen, max_per_file };
@@ -742,12 +742,12 @@ fn main() -> Result<()> {
             if let Some(limit) = compare_decoders {
                 for m in &manifest {
                     let items = ingest::read_manifest(m)?;
-                    let rows: Vec<(PathBuf, Result<veracity::avf::Comparison>, Option<String>)> = items
+                    let rows: Vec<(PathBuf, Result<tintype::avf::Comparison>, Option<String>)> = items
                         .par_iter()
                         .map(|it| {
-                            let c = veracity::avf::compare_with_pure_rust(&it.path, limit);
+                            let c = tintype::avf::compare_with_pure_rust(&it.path, limit);
                             // When the comparison fails, say which reader could not open the clip.
-                            let rust_only = c.is_err().then(|| veracity::swdec::open(&it.path, None).err().map(|e| e.to_string())).flatten();
+                            let rust_only = c.is_err().then(|| tintype::swdec::open(&it.path, None).err().map(|e| e.to_string())).flatten();
                             (it.path.clone(), c, rust_only)
                         })
                         .collect();
@@ -785,11 +785,11 @@ fn main() -> Result<()> {
                     .par_iter()
                     .filter_map(|it| {
                         let t = std::time::Instant::now();
-                        let mut r = veracity::video::middle_frame(&it.path);
+                        let mut r = tintype::video::middle_frame(&it.path);
                         if recompress && r.is_ok() {
                             let seed = it.path.to_string_lossy().bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01B3));
-                            let mut rng = veracity::rng::Rng::new(seed);
-                            r = veracity::video::recompressed_only(&it.path, &mut rng, &std::env::temp_dir());
+                            let mut rng = tintype::rng::Rng::new(seed);
+                            r = tintype::video::recompressed_only(&it.path, &mut rng, &std::env::temp_dir());
                         }
                         let secs = t.elapsed().as_secs_f64();
                         match r {

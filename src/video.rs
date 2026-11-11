@@ -2,7 +2,7 @@
 //!
 //! Frames are decoded in-process: by the system decoder on macOS
 //! ([`crate::avf`]) and by a pure-Rust reader elsewhere ([`crate::swdec`],
-//! MP4 and MOV with H.264 or HEVC). `VERACITY_DECODER=rust` selects the
+//! MP4 and MOV with H.264 or HEVC). `TINTYPE_DECODER=rust` selects the
 //! pure-Rust reader on macOS too. No external tool is called.
 use crate::image_io::Rgb;
 use anyhow::Result;
@@ -24,7 +24,7 @@ fn unsupported<T>(path: &Path) -> Result<T> {
 /// Whether the pure-Rust reader was asked for in place of the system decoder.
 #[cfg(target_os = "macos")]
 fn pure_rust() -> bool {
-    std::env::var("VERACITY_DECODER").is_ok_and(|v| v == "rust")
+    std::env::var("TINTYPE_DECODER").is_ok_and(|v| v == "rust")
 }
 
 /// Run a decode, and once more if the system decoder stalled: stalls are
@@ -160,15 +160,15 @@ pub fn middle_frame(path: &Path) -> Result<Rgb> {
 mod tests {
     use super::*;
 
-    /// Needs a real clip: `VERACITY_TEST_VIDEO=clip.mp4 cargo test --release -- --ignored`.
+    /// Needs a real clip: `TINTYPE_TEST_VIDEO=clip.mp4 cargo test --release -- --ignored`.
     #[test]
     #[ignore]
     fn reencoded_frame_keeps_the_picture() {
-        let path = std::path::PathBuf::from(std::env::var("VERACITY_TEST_VIDEO").expect("set VERACITY_TEST_VIDEO"));
+        let path = std::path::PathBuf::from(std::env::var("TINTYPE_TEST_VIDEO").expect("set TINTYPE_TEST_VIDEO"));
         let info = probe(&path).unwrap();
         let t = (info.duration / 2.0 - 0.3).max(0.0);
         let original = frame_at(&path, t).unwrap();
-        let tmp = std::env::temp_dir().join(format!("veracity-test-{}.mp4", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("tintype-test-{}.mp4", std::process::id()));
         let written = crate::avf::recompress(&path, t, 4, 1.0, 0.2, &tmp).unwrap();
         assert!(written >= 1);
         let again = crate::avf::frames_first_plain(&tmp, 1).unwrap().remove(0);

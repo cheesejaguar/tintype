@@ -1,7 +1,11 @@
 # Raw results
 
-The tables `veracity evaluate` printed for each suite, unedited, and the log
+The tables `tintype evaluate` printed for each suite, unedited, and the log
 of the speed runs. [../BENCHMARK.md](../BENCHMARK.md) presents them.
+
+The project was called Veracity while these runs were made. The name has
+been replaced with Tintype throughout these files, in table rows, commands
+and paths alike; nothing else in them was changed.
 
 | File | Run |
 |---|---|
@@ -15,7 +19,7 @@ of the speed runs. [../BENCHMARK.md](../BENCHMARK.md) presents them.
 | `speed_released.log` | The reference detectors through their authors' PyTorch pipelines, same files, idle machine |
 | `confirm6.md` | Third blind photo batch (phase-6 photo weights) |
 | `confirm6_phase3_weights.md` | The same batch scored with the phase-3 weights |
-| `confirm6_at_reference_rates.md` | That batch with Veracity at each reference detector's false-positive rate |
+| `confirm6_at_reference_rates.md` | That batch with Tintype at each reference detector's false-positive rate |
 | `*_phase6_weights.md` | The earlier suites re-scored with the phase-6 photo weights (seen data) |
 | `speed_interleaved.log` | Phase-6 and phase-3 photo weights and Community Forensics, alternated on the same files with the machine under load |
 | `speed_improvements.log` | The build before and after the five speed changes, alternated on the same files, then both builds on blind batch 6 (photos) and the blind video batch |
@@ -23,4 +27,4 @@ of the speed runs. [../BENCHMARK.md](../BENCHMARK.md) presents them.
 | `confirm7_second_opinion.log` | That batch set by set against Community Forensics, the timing of the mode on a sample of it, and the check of a real two-stage run against the score-file arithmetic |
 | `linux.log` | Photo and video detection built, tested and run in an aarch64 Linux virtual machine: a sample first, then both whole blind batches next to Community Forensics as released – agreement with macOS, precision, recall and timings |
 | `linux_after_speed.log` | The Linux runs after the speed changes: the build with them against the build before on both blind batches, and the photo second opinion on blind batches 6 and 7 next to Community Forensics as released |
-| `photo_operating_points.log` | Third blind photo batch, computed after scoring: per-set AUC against Community Forensics, Veracity's recall when it may flag no more real photos than Community Forensics does on each set, and precision and recall as one threshold is moved – the per-set recall gap is mostly the shipped threshold, and no single threshold wins on every set |
+| `photo_operating_points.log` | Third blind photo batch, computed after scoring: per-set AUC against Community Forensics, Tintype's recall when it may flag no more real photos than Community Forensics does on each set, and precision and recall as one threshold is moved – the per-set recall gap is mostly the shipped threshold, and no single threshold wins on every set |

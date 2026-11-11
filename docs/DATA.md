@@ -3,9 +3,9 @@
 Every set is public and is fetched from its original host by a named plan:
 
 ```bash
-veracity data list            # the plans
-veracity data train-images    # run one
-veracity data confirm3 --dry-run
+tintype data list            # the plans
+tintype data train-images    # run one
+tintype data confirm3 --dry-run
 ```
 
 The plans live in [src/plans.rs](../src/plans.rs); that file is the exact
@@ -149,7 +149,7 @@ frozen.
    the SwinV2 detector but found fewer AI images, and on the CPU the six
    views made it slower than Community Forensics in the same engine.
    Decisions, with the weights unchanged: the default threshold moved to the
-   target at which Veracity is ahead of both reference detectors on the most
+   target at which Tintype is ahead of both reference detectors on the most
    development sets (1.5%; the 0.5% point stays as `--strict`), and early
    exit over the views. → scored once on *confirmation batch 5* (`confirm5`).
    These are the numbers to trust for the default photo profile with the
@@ -269,7 +269,7 @@ SDXL, which that archive shares with others, so that set is AI only.
 
 ## Overlap checks
 
-`veracity overlap` compares files byte for byte.
+`tintype overlap` compares files byte for byte.
 
 - No file in any benchmark or confirmation set is identical to a training
   file. Where a plan found a duplicate it dropped the file from the later set

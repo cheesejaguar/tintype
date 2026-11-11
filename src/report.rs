@@ -1,4 +1,4 @@
-//! Compare score files (as written by `veracity score` or the baseline
+//! Compare score files (as written by `tintype score` or the baseline
 //! harness) with one shared metric implementation.
 use crate::metrics::{self, Metrics};
 use anyhow::{Context, Result};

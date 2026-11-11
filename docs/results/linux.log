@@ -11,32 +11,32 @@ rustc 1.99.1 (58cf8f9c3 2026-10-13)
 ### tests (35 with the video reader added later; 29 when the photo timings below were taken)
 test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
 ### 320 photos of at most 1 megapixel, decode to verdict, seconds
-r1 veracity default            17.819764861
+r1 tintype default            17.819764861
 r1 community forensics port    27.323290084
-r1 veracity fast               16.277882087
-r1 veracity all views          64.717590271
-r1 veracity default, previous engine (candle)  40.831232825
-r2 veracity default            23.566573763
+r1 tintype fast               16.277882087
+r1 tintype all views          64.717590271
+r1 tintype default, previous engine (candle)  40.831232825
+r2 tintype default            23.566573763
 r2 community forensics port    28.940320207
-r2 veracity fast               20.815183926
-r2 veracity all views          68.044371038
-r2 veracity default, previous engine (candle)  44.289022771
-r3 veracity default            31.247546423
+r2 tintype fast               20.815183926
+r2 tintype all views          68.044371038
+r2 tintype default, previous engine (candle)  44.289022771
+r3 tintype default            31.247546423
 r3 community forensics port    40.315873402
-r3 veracity fast               20.859100062
-r3 veracity all views          48.626545684
-r3 veracity default, previous engine (candle)  48.534325509
-r4 veracity default            29.819394224
+r3 tintype fast               20.859100062
+r3 tintype all views          48.626545684
+r3 tintype default, previous engine (candle)  48.534325509
+r4 tintype default            29.819394224
 r4 community forensics port    43.972946475
-r4 veracity fast               24.751776848
-r4 veracity all views          53.892176251
-r4 veracity default, previous engine (candle)  42.428706851
+r4 tintype fast               24.751776848
+r4 tintype all views          53.892176251
+r4 tintype default, previous engine (candle)  42.428706851
 ### all 738 photos (up to 4K), decode to verdict, seconds
-r1 veracity default            67.378128468
+r1 tintype default            67.378128468
 r1 community forensics port    90.397130179
-r2 veracity default            70.823584094
+r2 tintype default            70.823584094
 r2 community forensics port    107.521563358
-r3 veracity default            68.046567130
+r3 tintype default            68.046567130
 r3 community forensics port    87.746847063
 ### same verdicts as macOS (CPU engine), all 738 photos
 default profile:  largest difference in probability 1.0e-05, verdicts that differ 0
@@ -65,68 +65,68 @@ and its network through this engine ("port"). The three were run one after anoth
 test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
 ### photos: set, detector, files, seconds (whole process), rows, program's own report
 aigibench-BLIP	commfor-released	800	53.689674946	800	scored 800 images (0 unreadable) in 48.9s: 16.4 img/s end-to-end, 16.8 img/s model-only
-aigibench-BLIP	veracity	800	20.293929915	800
+aigibench-BLIP	tintype	800	20.293929915	800
 aigibench-BLIP	commfor-port	800	51.834146507	800
 aigibench-GLIDE	commfor-released	784	52.551514669	784	scored 784 images (0 unreadable) in 47.7s: 16.4 img/s end-to-end, 16.8 img/s model-only
-aigibench-GLIDE	veracity	784	25.216879812	784
+aigibench-GLIDE	tintype	784	25.216879812	784
 aigibench-GLIDE	commfor-port	784	47.174720777	784
 aigibench-IP-Adapter	commfor-released	768	52.702921596	768	scored 768 images (0 unreadable) in 47.8s: 16.1 img/s end-to-end, 16.4 img/s model-only
-aigibench-IP-Adapter	veracity	768	38.792460671	768
+aigibench-IP-Adapter	tintype	768	38.792460671	768
 aigibench-IP-Adapter	commfor-port	768	47.991988330	768
 aigibench-Infinite-ID	commfor-released	772	52.962690381	772	scored 772 images (0 unreadable) in 48.2s: 16.0 img/s end-to-end, 16.4 img/s model-only
-aigibench-Infinite-ID	veracity	772	29.190576469	772
+aigibench-Infinite-ID	tintype	772	29.190576469	772
 aigibench-Infinite-ID	commfor-port	772	48.096078018	772
 aigibench-InstantID	commfor-released	768	53.265181822	768	scored 768 images (0 unreadable) in 48.4s: 15.9 img/s end-to-end, 16.2 img/s model-only
-aigibench-InstantID	veracity	768	29.233198461	768
+aigibench-InstantID	tintype	768	29.233198461	768
 aigibench-InstantID	commfor-port	768	48.071045160	768
 aigibench-PhotoMaker	commfor-released	774	53.219134946	774	scored 774 images (0 unreadable) in 48.4s: 16.0 img/s end-to-end, 16.3 img/s model-only
-aigibench-PhotoMaker	veracity	774	41.041669491	774
+aigibench-PhotoMaker	tintype	774	41.041669491	774
 aigibench-PhotoMaker	commfor-port	774	48.470898683	774
 aigibench-ProGAN	commfor-released	800	53.289953807	800	scored 800 images (0 unreadable) in 48.5s: 16.5 img/s end-to-end, 16.8 img/s model-only
-aigibench-ProGAN	veracity	800	26.467585419	800
+aigibench-ProGAN	tintype	800	26.467585419	800
 aigibench-ProGAN	commfor-port	800	51.835637035	800
 aigibench-R3GAN	commfor-released	766	51.772190148	766	scored 766 images (0 unreadable) in 46.8s: 16.4 img/s end-to-end, 16.7 img/s model-only
-aigibench-R3GAN	veracity	766	25.118410907	766
+aigibench-R3GAN	tintype	766	25.118410907	766
 aigibench-R3GAN	commfor-port	766	47.460458828	766
 aigibench-StyleGAN-XL	commfor-released	775	53.097717876	775	scored 775 images (0 unreadable) in 48.3s: 16.1 img/s end-to-end, 16.4 img/s model-only
-aigibench-StyleGAN-XL	veracity	775	33.463285330	775
+aigibench-StyleGAN-XL	tintype	775	33.463285330	775
 aigibench-StyleGAN-XL	commfor-port	775	47.915323789	775
 aigibench-StyleGAN3	commfor-released	773	52.778217868	773	scored 773 images (0 unreadable) in 47.9s: 16.1 img/s end-to-end, 16.6 img/s model-only
-aigibench-StyleGAN3	veracity	773	35.312790957	773
+aigibench-StyleGAN3	tintype	773	35.312790957	773
 aigibench-StyleGAN3	commfor-port	773	47.441950094	773
 aigibench-StyleSwim	commfor-released	772	52.919663148	772	scored 772 images (0 unreadable) in 48.1s: 16.1 img/s end-to-end, 16.4 img/s model-only
-aigibench-StyleSwim	veracity	772	35.901795494	772
+aigibench-StyleSwim	tintype	772	35.901795494	772
 aigibench-StyleSwim	commfor-port	772	47.461361754	772
 aigibench-WFIR	commfor-released	798	54.515160999	798	scored 798 images (0 unreadable) in 49.6s: 16.1 img/s end-to-end, 16.6 img/s model-only
-aigibench-WFIR	veracity	798	34.371298064	798
+aigibench-WFIR	tintype	798	34.371298064	798
 aigibench-WFIR	commfor-port	798	52.606776647	798
 classic-biggan	commfor-released	598	41.287540161	598	scored 598 images (0 unreadable) in 36.5s: 16.4 img/s end-to-end, 16.9 img/s model-only
-classic-biggan	veracity	598	17.500348475	598
+classic-biggan	tintype	598	17.500348475	598
 classic-biggan	commfor-port	598	34.087564345	598
 classic-cyclegan	commfor-released	596	41.296832369	596	scored 596 images (0 unreadable) in 36.5s: 16.3 img/s end-to-end, 16.8 img/s model-only
-classic-cyclegan	veracity	596	20.594818829	596
+classic-cyclegan	tintype	596	20.594818829	596
 classic-cyclegan	commfor-port	596	36.700976241	596
 classic-gaugan	commfor-released	598	41.333001046	598	scored 598 images (0 unreadable) in 36.5s: 16.4 img/s end-to-end, 16.8 img/s model-only
-classic-gaugan	veracity	598	16.657352953	598
+classic-gaugan	tintype	598	16.657352953	598
 classic-gaugan	commfor-port	598	36.963309401	598
 classic-stargan	commfor-released	598	41.510723627	598	scored 598 images (0 unreadable) in 36.7s: 16.3 img/s end-to-end, 16.8 img/s model-only
-classic-stargan	veracity	598	14.900387876	598
+classic-stargan	tintype	598	14.900387876	598
 classic-stargan	commfor-port	598	36.096904504	598
 classic-stylegan	commfor-released	598	41.330233321	598	scored 598 images (0 unreadable) in 36.5s: 16.4 img/s end-to-end, 16.8 img/s model-only
-classic-stylegan	veracity	598	23.037419541	598
+classic-stylegan	tintype	598	23.037419541	598
 classic-stylegan	commfor-port	598	33.756271967	598
 classic-stylegan2	commfor-released	585	40.440649149	585	scored 585 images (0 unreadable) in 35.6s: 16.4 img/s end-to-end, 16.9 img/s model-only
-classic-stylegan2	veracity	585	25.244935450	585
+classic-stylegan2	tintype	585	25.244935450	585
 classic-stylegan2	commfor-port	585	33.735265498	585
 sofake-ood	commfor-released	3401	221.857036074	3401	scored 3401 images (0 unreadable) in 217.0s: 15.7 img/s end-to-end, 15.8 img/s model-only
-sofake-ood	veracity	3401	162.872119628	3401
+sofake-ood	tintype	3401	162.872119628	3401
 sofake-ood	commfor-port	3401	204.138926620	3401
 ### video: set, detector, files, seconds, rows
-comgenvid	veracity	600	508.849792354	600
-genvideo-val	veracity	660	1061.198217249	660
-video	veracity	796	1344.602575279	796
+comgenvid	tintype	600	508.849792354	600
+genvideo-val	tintype	660	1061.198217249	660
+video	tintype	796	1344.602575279	796
 
-### photos per second, whole process, by set: veracity / community forensics as released / community forensics port
+### photos per second, whole process, by set: tintype / community forensics as released / community forensics port
 aigibench-BLIP            39.4  14.9  15.4
 aigibench-GLIDE           31.1  14.9  16.6
 aigibench-IP-Adapter      19.8  14.6  16.0
@@ -148,9 +148,9 @@ classic-stylegan2         23.2  14.5  17.3
 sofake-ood                20.9  15.3  16.7
 all 16,324                24.9  14.8  16.3
 community forensics as released, by its own timer (starts after the model is loaded): 16.1 photos/s
-veracity is the faster on 19 of 19 sets: 1.30-2.79 times the released pipeline, 1.18-2.55 times the port
+tintype is the faster on 19 of 19 sets: 1.30-2.79 times the released pipeline, 1.18-2.55 times the port
 
-### precision / recall on Linux, by set: AI / real, veracity, community forensics as released, community forensics port
+### precision / recall on Linux, by set: AI / real, tintype, community forensics as released, community forensics port
 aigibench-BLIP            400 /  400   0.993 / 1.000   0.955 / 1.000   0.957 / 1.000
 aigibench-GLIDE           397 /  387   0.992 / 0.970   0.945 / 0.997   0.945 / 0.997
 aigibench-IP-Adapter      400 /  368   0.992 / 0.875   0.957 / 0.885   0.957 / 0.885
@@ -171,11 +171,11 @@ classic-stylegan          299 /  299   0.968 / 0.923   0.963 / 0.963   0.963 / 0
 classic-stylegan2         299 /  286   0.988 / 0.839   0.943 / 0.990   0.943 / 0.990
 sofake-ood               2040 / 1361   0.980 / 0.857   0.976 / 0.405   0.976 / 0.401
 all                      8628 / 7696   0.986 / 0.904   0.965 / 0.819   0.966 / 0.818
-real photos flagged: veracity 1.44%, community forensics as released 3.29%, port 3.26%
+real photos flagged: tintype 1.44%, community forensics as released 3.29%, port 3.26%
 
 ### agreement with macOS, photos
-veracity, Linux CPU against macOS CPU engine, 16,324 photos: verdicts that differ 0, largest difference in probability 2.7e-05
-veracity, Linux CPU against the macOS GPU scores the report uses (16-bit): verdicts that differ 7
+tintype, Linux CPU against macOS CPU engine, 16,324 photos: verdicts that differ 0, largest difference in probability 2.7e-05
+tintype, Linux CPU against the macOS GPU scores the report uses (16-bit): verdicts that differ 7
   six within 0.005 of the threshold; one where the 16-bit and 32-bit engines stop at different views (0.912 against 0.412, an AI image)
   precision / recall on macOS GPU 0.9860 / 0.9036, on Linux 0.9860 / 0.9044
 community forensics port, Linux against macOS: verdicts that differ 0, largest difference 5.9e-05
@@ -188,8 +188,8 @@ macOS GPU engine with the system decoder, same 1,756: precision 0.9973, recall 0
 2,915 s for the batch: 1.4 s per clip, 1.7 s per clip read (4,179 s before the threading change, same output)
 
 ### video against WaveRep on Linux
-WaveRep's released network through this engine (macOS scores, mean frame logit above 0), against Veracity on Linux, on the 1,756 clips Linux could read:
-set                       AI / real   veracity on Linux   WaveRep
+WaveRep's released network through this engine (macOS scores, mean frame logit above 0), against Tintype on Linux, on the 1,756 clips Linux could read:
+set                       AI / real   tintype on Linux   WaveRep
                                       precision / recall (real flagged)
 ComGenVid                 300 /   0   1.000 / 0.907 (-)          1.000 / 0.817 (-)
 GenVideo-val              360 / 300   0.994 / 0.939 (2 of 300)   0.991 / 0.911 (3 of 300)
@@ -197,15 +197,15 @@ AIGVDBench                496 / 300   0.998 / 0.966 (1 of 300)   0.982 / 0.970 (
 all                      1156 / 600   0.997 / 0.942 (3 of 600)   0.989 / 0.912 (12 of 600)
 
 WaveRep as its authors ship it (PyTorch 2.15 on the CPU, OpenCV 5.0 reader, 504 px crop, first 64 frames), run on Linux
-on the 130-clip sample above (77 AI, 53 real), between two Veracity passes over the same clips:
-veracity, 130 clips, pass 1: 265.722809439 s
+on the 130-clip sample above (77 AI, 53 real), between two Tintype passes over the same clips:
+tintype, 130 clips, pass 1: 265.722809439 s
 waverep as released, 130 clips, whole process: 3426.910492857 s
 scored 130 clips in 3425.0s: 0.038 clips/s end-to-end (26347 ms/clip), model time 3413.5s
-veracity, 130 clips, pass 2: 211.327052247 s
-veracity: 2.0 and 1.6 s per clip (the two passes give the same output); WaveRep as released: 26.4 s per clip
+tintype, 130 clips, pass 2: 211.327052247 s
+tintype: 2.0 and 1.6 s per clip (the two passes give the same output); WaveRep as released: 26.4 s per clip
 WaveRep as released on Linux, all 130: precision 0.986, recall 0.909 (70 of 77 AI found, 1 of 53 real flagged)
 the Rust port's macOS scores, same 130: precision 1.000, recall 0.909 (70 of 77, 0 of 53); verdicts that differ 1
   (a real clip at 0.515 on Linux against 0.490), largest difference in probability 0.080
-on the 127 clips Veracity can read on Linux: veracity 1.000 / 0.948 (73 of 77 AI found, 0 of 50 real flagged),
+on the 127 clips Tintype can read on Linux: tintype 1.000 / 0.948 (73 of 77 AI found, 0 of 50 real flagged),
   WaveRep as released 0.986 / 0.909 (70 of 77, 1 of 50). The other 3 are real clips; WaveRep passes all three.
 WaveRep as released was not run on the whole blind video batch on Linux (about 15 hours at this rate).

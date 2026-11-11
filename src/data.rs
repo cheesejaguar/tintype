@@ -152,7 +152,7 @@ pub fn spawn_loader(items: Arc<Vec<Item>>, sampler: Arc<Sampler>, cfg: AugConfig
         std::thread::spawn(move || {
             let mut rng = Rng::new(seed.wrapping_mul(0x9E37_79B9).wrapping_add(t as u64 + 1));
             let n = (cfg.size * cfg.size * 3) as usize;
-            let tmp = std::env::temp_dir().join("veracity-loader");
+            let tmp = std::env::temp_dir().join("tintype-loader");
             let _ = std::fs::create_dir_all(&tmp);
             loop {
                 let label = rng.below(2);

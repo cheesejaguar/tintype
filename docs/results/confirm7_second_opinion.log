@@ -33,17 +33,17 @@ classic-stylegan         300   292 | 0.964 / 0.970 /  11 | 0.982 / 0.927 /   5 |
 classic-stylegan2        300   282 | 0.961 / 0.980 /  12 | 0.985 / 0.860 /   4 | 0.971 / 0.993 /   9
 sofake-ood              2217  1525 | 0.981 / 0.421 /  18 | 0.985 / 0.836 /  28 | 0.985 / 0.839 /  29
 pooled commfor          P=0.9451 R=0.7889 real flagged 564 found 9707
-pooled veracity         P=0.9884 R=0.8970 real flagged 130 found 11038
-pooled veracity-second  P=0.9722 R=0.9349 real flagged 329 found 11504
+pooled tintype         P=0.9884 R=0.8970 real flagged 130 found 11038
+pooled tintype-second  P=0.9722 R=0.9349 real flagged 329 found 11504
 photos 23052; probability changed by the second stage on 11067 (48.0%)
-veracity {'both': 12, 'rhi': 13, 'req': 1, 'rlo': 16, 'phi': 23, 'peq': 2, 'plo': 5} of 30
-veracity-second {'both': 26, 'rhi': 19, 'req': 10, 'rlo': 1, 'phi': 25, 'peq': 2, 'plo': 3} of 30
+tintype {'both': 12, 'rhi': 13, 'req': 1, 'rlo': 16, 'phi': 23, 'peq': 2, 'plo': 5} of 30
+tintype-second {'both': 26, 'rhi': 19, 'req': 10, 'rlo': 1, 'phi': 25, 'peq': 2, 'plo': 3} of 30
 
 # Timing: 2,096 photos, every eleventh of the batch, decode to verdict, two rounds (load averages in brackets)
 # 'auto' is the Apple GPU engine at 16 bits; 'as released' is the authors' PyTorch pipeline (mps = Metal, 32-bit)
-### veracity default auto (2.32 4.58 6.57)
+### tintype default auto (2.32 4.58 6.57)
 scored 2096 images (0 unreadable) in 3.7s: 563.4 img/s end-to-end, 671.9 img/s model-only, 1.68 views per image
-### veracity + second opinion auto (2.32 4.58 6.57)
+### tintype + second opinion auto (2.32 4.58 6.57)
 scored 2096 images (0 unreadable, 1007 given a second opinion) in 7.3s: 287.7 img/s end-to-end, 355.1 img/s model-only, 1.68 views per image
 ### commfor through this engine auto (2.19 4.48 6.51)
 scored 2096 images (0 unreadable) in 7.1s: 294.8 img/s end-to-end, 367.1 img/s model-only, 1.00 views per image
@@ -51,17 +51,17 @@ scored 2096 images (0 unreadable) in 7.1s: 294.8 img/s end-to-end, 367.1 img/s m
 scored 2096 images (0 unreadable) in 18.7s: 112.2 img/s end-to-end, 121.7 img/s model-only, 1.00 views per image
 ### commfor as released mps (3.60 4.64 6.51)
 scored 2096 images (0 unreadable) in 25.5s: 82.2 img/s end-to-end, 89.8 img/s model-only
-### veracity default cpu (2.85 4.37 6.35)
+### tintype default cpu (2.85 4.37 6.35)
 scored 2096 images (0 unreadable) in 26.8s: 78.2 img/s end-to-end, 79.6 img/s model-only, 1.68 views per image
-### veracity + second opinion cpu (3.63 4.41 6.30)
+### tintype + second opinion cpu (3.63 4.41 6.30)
 scored 2096 images (0 unreadable, 1007 given a second opinion) in 51.7s: 40.6 img/s end-to-end, 41.5 img/s model-only, 1.68 views per image
 ### commfor through this engine cpu (7.15 5.21 6.48)
 scored 2096 images (0 unreadable) in 50.6s: 41.5 img/s end-to-end, 42.7 img/s model-only, 1.00 views per image
 ### commfor as released cpu (7.48 5.56 6.53)
 scored 2096 images (0 unreadable) in 81.5s: 25.7 img/s end-to-end, 26.5 img/s model-only
-### veracity default auto (6.10 5.76 6.52)
+### tintype default auto (6.10 5.76 6.52)
 scored 2096 images (0 unreadable) in 4.0s: 529.8 img/s end-to-end, 648.8 img/s model-only, 1.68 views per image
-### veracity + second opinion auto (5.86 5.71 6.50)
+### tintype + second opinion auto (5.86 5.71 6.50)
 scored 2096 images (0 unreadable, 1007 given a second opinion) in 7.5s: 281.1 img/s end-to-end, 353.8 img/s model-only, 1.68 views per image
 ### commfor through this engine auto (5.64 5.67 6.48)
 scored 2096 images (0 unreadable) in 7.2s: 290.7 img/s end-to-end, 367.8 img/s model-only, 1.00 views per image
@@ -69,9 +69,9 @@ scored 2096 images (0 unreadable) in 7.2s: 290.7 img/s end-to-end, 367.8 img/s m
 scored 2096 images (0 unreadable) in 18.8s: 111.7 img/s end-to-end, 121.1 img/s model-only, 1.00 views per image
 ### commfor as released mps (4.88 5.51 6.40)
 scored 2096 images (0 unreadable) in 25.7s: 81.5 img/s end-to-end, 89.3 img/s model-only
-### veracity default cpu (4.47 5.37 6.32)
+### tintype default cpu (4.47 5.37 6.32)
 scored 2096 images (0 unreadable) in 27.4s: 76.5 img/s end-to-end, 77.8 img/s model-only, 1.68 views per image
-### veracity + second opinion cpu (4.66 5.37 6.29)
+### tintype + second opinion cpu (4.66 5.37 6.29)
 scored 2096 images (0 unreadable, 1007 given a second opinion) in 53.3s: 39.3 img/s end-to-end, 40.4 img/s model-only, 1.68 views per image
 ### commfor through this engine cpu (6.44 5.76 6.38)
 scored 2096 images (0 unreadable) in 53.9s: 38.9 img/s end-to-end, 40.0 img/s model-only, 1.00 views per image

@@ -1,6 +1,6 @@
 //! Pure-Rust video reading: an MP4/MOV sample-table parser feeding the
 //! `rust_h264` and `rust_h265` decoders. This is the video decoder on
-//! platforms without AVFoundation; on macOS `VERACITY_DECODER=rust` selects
+//! platforms without AVFoundation; on macOS `TINTYPE_DECODER=rust` selects
 //! it in place of the system decoder.
 //!
 //! It reads progressive MP4 and MOV files with one H.264 or HEVC video track
@@ -782,11 +782,11 @@ mod tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod against_system_decoder {
-    /// Needs a real clip: `VERACITY_TEST_VIDEO=clip.mp4 cargo test --release -- --ignored`.
+    /// Needs a real clip: `TINTYPE_TEST_VIDEO=clip.mp4 cargo test --release -- --ignored`.
     #[test]
     #[ignore]
     fn frames_match_the_system_decoder() {
-        let path = std::path::PathBuf::from(std::env::var("VERACITY_TEST_VIDEO").expect("set VERACITY_TEST_VIDEO"));
+        let path = std::path::PathBuf::from(std::env::var("TINTYPE_TEST_VIDEO").expect("set TINTYPE_TEST_VIDEO"));
         let c = crate::avf::compare_with_pure_rust(&path, 120).unwrap();
         assert!(c.frames > 0, "{c:?}");
         assert_eq!((c.identical, c.produced.0), (c.frames, c.produced.1), "{c:?}");

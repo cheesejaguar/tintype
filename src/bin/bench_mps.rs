@@ -1,13 +1,13 @@
 #[cfg(target_os = "macos")]
 use std::time::Instant;
 #[cfg(target_os = "macos")]
-use veracity::mps::{Graph, Precision};
+use tintype::mps::{Graph, Precision};
 #[cfg(target_os = "macos")]
-use veracity::mps_vit::{build_head, build_vit, Frozen};
+use tintype::mps_vit::{build_head, build_vit, Frozen};
 #[cfg(target_os = "macos")]
-use veracity::vit::VitConfig;
+use tintype::vit::VitConfig;
 #[cfg(target_os = "macos")]
-use veracity::weights::Weights;
+use tintype::weights::Weights;
 
 #[cfg(not(target_os = "macos"))]
 fn main() {

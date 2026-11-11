@@ -6,6 +6,6 @@
 /baselines
 *.ckpt
 *.safetensors
-!/models/veracity.safetensors
-!/models/veracity-video.safetensors
+!/models/tintype.safetensors
+!/models/tintype-video.safetensors
 .DS_Store

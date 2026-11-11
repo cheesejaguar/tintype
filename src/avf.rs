@@ -99,7 +99,7 @@ fn retagged_copy(path: &Path) -> Result<Option<TempCopy>> {
     use std::os::unix::fs::FileExt;
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let Some(at) = hev1_entry_offset(path)? else { return Ok(None) };
-    let tmp = TempCopy(std::env::temp_dir().join(format!("veracity-{}-{}.mp4", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))));
+    let tmp = TempCopy(std::env::temp_dir().join(format!("tintype-{}-{}.mp4", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))));
     std::fs::copy(path, &tmp.0)?;
     std::fs::OpenOptions::new().write(true).open(&tmp.0)?.write_all_at(b"hvc1", at)?;
     Ok(Some(tmp))

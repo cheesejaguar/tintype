@@ -2,11 +2,11 @@
 #[cfg(target_os = "macos")]
 use std::time::Instant;
 #[cfg(target_os = "macos")]
-use veracity::trainer::{OptConfig, Trainer};
+use tintype::trainer::{OptConfig, Trainer};
 #[cfg(target_os = "macos")]
-use veracity::vit::VitConfig;
+use tintype::vit::VitConfig;
 #[cfg(target_os = "macos")]
-use veracity::weights::Weights;
+use tintype::weights::Weights;
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
@@ -19,7 +19,7 @@ fn main() -> anyhow::Result<()> {
     let (path, res, bs) = (&a[1], a[2].parse::<usize>()?, a[3].parse::<usize>()?);
     let w = Weights::load(path, "vit.")?;
     let mut t = Trainer::new(&w, VitConfig::small(res), bs, OptConfig::default())?;
-    let mut rng = veracity::rng::Rng::new(1);
+    let mut rng = tintype::rng::Rng::new(1);
     let x: Vec<f32> = (0..bs * 3 * res * res).map(|_| rng.range(-1.0, 1.0)).collect();
     let y: Vec<f32> = (0..bs).map(|i| (i % 2) as f32).collect();
     let l0 = t.logits(&x);

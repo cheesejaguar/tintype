@@ -1,10 +1,10 @@
 Third blind photo batch (16,324 photos, 19 sets): where the per-set recall gap to Community Forensics comes from.
 Computed after the batch was scored, from the stored scores (macOS GPU); a description, not a tuned setting.
-Community Forensics at its shipped threshold; Veracity scored on all six views (no early exit) so that the
+Community Forensics at its shipped threshold; Tintype scored on all six views (no early exit) so that the
 threshold can be moved.
 
-### by set: ranking quality (AUC), and recall when Veracity may flag no more real photos than Community Forensics does
-set                       AUC CF   AUC Ver   CF: real flagged, recall   Veracity default recall Veracity recall at CF's false positives
+### by set: ranking quality (AUC), and recall when Tintype may flag no more real photos than Community Forensics does
+set                       AUC CF   AUC Ver   CF: real flagged, recall   Tintype default recall Tintype recall at CF's false positives
 aigibench-BLIP            1.0000    1.0000    18 of  400, 1.000          1.000                   1.000
 aigibench-GLIDE           0.9988    0.9988    23 of  387, 0.997          0.970                   0.995
 aigibench-IP-Adapter      0.9772    0.9949    16 of  368, 0.885          0.873                   0.985
@@ -25,7 +25,7 @@ classic-stylegan          0.9946    0.9861    11 of  299, 0.963          0.923  
 classic-stylegan2         0.9969    0.9898    18 of  286, 0.990          0.836                   0.970
 sofake-ood                0.9025    0.9804    20 of 1361, 0.401          0.855                   0.813
 
-at Community Forensics' own false-positive count on each set, Veracity's recall is higher on 5 sets, equal on 4, lower on 10
+at Community Forensics' own false-positive count on each set, Tintype's recall is higher on 5 sets, equal on 4, lower on 10
 (lower by at most 0.023; Community Forensics is at 1.000 recall on 9 sets, where it can be equalled but not beaten)
 
 ### one threshold for every set, moved down from the shipped one (logit 0)
@@ -43,5 +43,5 @@ threshold  precision  recall  real flagged   sets with recall above CF / equal /
    -2.50   0.932      0.987     618           8 /  7 /  3 /  2
    -3.00   0.906      0.992     884           8 /  8 /  0 /  0
 
-No single threshold puts Veracity at or above Community Forensics on both precision and recall on more than 6 of the 19 sets.
-At the threshold where Veracity flags about as many real photos as Community Forensics (-1.25), it finds 0.963 of the AI photos to 0.818.
+No single threshold puts Tintype at or above Community Forensics on both precision and recall on more than 6 of the 19 sets.
+At the threshold where Tintype flags about as many real photos as Community Forensics (-1.25), it finds 0.963 of the AI photos to 0.818.

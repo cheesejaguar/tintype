@@ -11,7 +11,7 @@ pub struct RemoteFile {
     pub size: u64,
 }
 
-const UA: &str = "veracity-fetch";
+const UA: &str = "tintype-fetch";
 
 /// `*`, `?` and `[a-z0-9]` classes; everything else is literal.
 pub fn glob_match(pat: &str, s: &str) -> bool {
