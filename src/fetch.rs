@@ -191,6 +191,120 @@ pub fn hf_download_files(repo: &str, files: &[RemoteFile], out: &Path, conns: us
     }
 }
 
+/// A remote file read through HTTP range requests, so that a zip archive can
+/// be listed and selected members extracted without downloading all of it.
+/// The tail (where a zip keeps its directory) is fetched once and kept.
+pub struct RemoteFileReader {
+    url: String,
+    size: u64,
+    pos: u64,
+    tail_start: u64,
+    tail: Vec<u8>,
+    window_start: u64,
+    window: Vec<u8>,
+}
+
+impl RemoteFileReader {
+    const TAIL: u64 = 8 << 20;
+    const AHEAD: u64 = 1 << 20;
+
+    pub fn open(url: &str) -> Result<Self> {
+        let size = remote_size(url)?;
+        let tail_start = size.saturating_sub(Self::TAIL);
+        let tail = Self::range(url, tail_start, size - 1)?;
+        Ok(Self { url: url.to_string(), size, pos: 0, tail_start, tail, window_start: 0, window: Vec::new() })
+    }
+
+    fn range(url: &str, start: u64, end: u64) -> Result<Vec<u8>> {
+        let mut last = None;
+        for attempt in 0..10u64 {
+            let r = (|| -> Result<Vec<u8>> {
+                let resp = ureq::get(url).header("User-Agent", UA).header("Range", format!("bytes={start}-{end}")).call()?;
+                let mut v = Vec::with_capacity((end + 1 - start) as usize);
+                resp.into_body().into_reader().read_to_end(&mut v)?;
+                if v.len() as u64 != end + 1 - start {
+                    bail!("short read: {} of {} bytes", v.len(), end + 1 - start);
+                }
+                Ok(v)
+            })();
+            match r {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    // A rate limit (HTTP 429) needs a real pause; anything else a short one.
+                    let limited = e.to_string().contains("429");
+                    last = Some(e);
+                    std::thread::sleep(if limited { std::time::Duration::from_secs(40 * (attempt + 1)) } else { std::time::Duration::from_millis(500 << attempt) });
+                }
+            }
+        }
+        Err(last.unwrap())
+    }
+}
+
+impl Read for RemoteFileReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if self.pos >= self.size || out.is_empty() {
+            return Ok(0);
+        }
+        let (src, base) = if self.pos >= self.tail_start {
+            (&self.tail, self.tail_start)
+        } else {
+            if self.pos < self.window_start || self.pos >= self.window_start + self.window.len() as u64 {
+                let end = (self.pos + (out.len() as u64).max(Self::AHEAD)).min(self.tail_start) - 1;
+                self.window = Self::range(&self.url, self.pos, end).map_err(std::io::Error::other)?;
+                self.window_start = self.pos;
+            }
+            (&self.window, self.window_start)
+        };
+        let at = (self.pos - base) as usize;
+        let n = out.len().min(src.len() - at);
+        out[..n].copy_from_slice(&src[at..at + n]);
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl std::io::Seek for RemoteFileReader {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        let p = match to {
+            std::io::SeekFrom::Start(p) => p as i128,
+            std::io::SeekFrom::End(d) => self.size as i128 + d as i128,
+            std::io::SeekFrom::Current(d) => self.pos as i128 + d as i128,
+        };
+        if p < 0 {
+            return Err(std::io::Error::other("seek before the start"));
+        }
+        self.pos = p as u64;
+        Ok(self.pos)
+    }
+}
+
+/// Extract the selected members of a remote zip into `out` without
+/// downloading the rest of it; returns their names.
+pub fn unpack_remote_zip(url: &str, out: &Path, sel: &Select, conns: usize) -> Result<Vec<String>> {
+    use rayon::prelude::*;
+    std::fs::create_dir_all(out)?;
+    let names: Vec<String> = zip::ZipArchive::new(RemoteFileReader::open(url)?)?.file_names().filter_map(|s| s.ok().map(|c| c.to_string())).collect();
+    let picked = choose(names, sel);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(conns.clamp(1, 16)).build()?;
+    // Each worker reads through its own connection and its own copy of the directory.
+    pool.install(|| {
+        picked.par_chunks(picked.len().div_ceil(conns.clamp(1, 16)).max(1)).try_for_each(|part| -> Result<()> {
+            let mut zip = zip::ZipArchive::new(RemoteFileReader::open(url)?)?;
+            for n in part {
+                let Some(dest) = target(out, n, sel.flatten) else { continue };
+                if let Some(p) = dest.parent() {
+                    std::fs::create_dir_all(p)?;
+                }
+                let mut f = zip.by_name(n)?;
+                std::io::copy(&mut f, &mut File::create(&dest)?)?;
+            }
+            Ok(())
+        })
+    })?;
+    Ok(picked)
+}
+
 /// Which archive members to extract.
 #[derive(Clone, Debug, Default)]
 pub struct Select {

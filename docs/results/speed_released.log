@@ -1,0 +1,35 @@
+### veracity default gpu
+scored 1000 images (0 unreadable) in 5.6s: 178.3 img/s end-to-end, 181.8 img/s model-only
+### veracity fast gpu
+scored 1000 images (0 unreadable) in 2.2s: 459.8 img/s end-to-end, 477.3 img/s model-only
+### commfor authors pipeline mps fp32
+scored 1000 images (0 unreadable) in 14.8s: 67.4 img/s end-to-end, 87.3 img/s model-only
+### commfor authors pipeline mps fp32 (again)
+scored 1000 images (0 unreadable) in 16.5s: 60.8 img/s end-to-end, 75.9 img/s model-only
+### swinv2 authors pipeline mps fp32
+scored 1000 images (0 unreadable) in 116.3s: 8.6 img/s end-to-end, 19.8 img/s model-only
+### veracity default gpu (again)
+scored 1000 images (0 unreadable) in 7.2s: 138.7 img/s end-to-end, 142.0 img/s model-only
+### latency veracity default gpu
+single-image latency over 200 images: median 11.4 ms, p90 19.6 ms, mean 14.0 ms
+### latency veracity fast gpu
+single-image latency over 200 images: median 8.1 ms, p90 16.0 ms, mean 10.5 ms
+### latency commfor authors pipeline mps
+single-image latency over 200 images: median 19.8 ms, p90 31.5 ms
+### video veracity gpu
+scored 147 clips (0 unreadable) in 13.3s: 11.06 clips/s end-to-end (90.4 ms/clip), model time 13.0s
+### video veracity gpu + second opinion
+scored 147 clips (0 unreadable, 16 given a second opinion) in 32.5s: 4.52 clips/s end-to-end (221.4 ms/clip), model time 32.1s
+### video waverep authors pipeline mps fp32
+scored 147 clips in 594.7s: 0.247 clips/s end-to-end (4045 ms/clip), model time 586.7s
+### video veracity gpu (again)
+scored 147 clips (0 unreadable) in 13.4s: 11.00 clips/s end-to-end (90.9 ms/clip), model time 13.0s
+### veracity default cpu
+scored 1000 images (0 unreadable) in 47.4s: 21.1 img/s end-to-end, 21.1 img/s model-only
+### veracity fast cpu
+scored 1000 images (0 unreadable) in 16.5s: 60.6 img/s end-to-end, 60.9 img/s model-only
+### commfor authors pipeline cpu
+scored 1000 images (0 unreadable) in 39.3s: 25.4 img/s end-to-end, 28.0 img/s model-only
+### video veracity cpu
+scored 147 clips (0 unreadable) in 112.8s: 1.30 clips/s end-to-end (767.7 ms/clip), model time 112.4s
+### done

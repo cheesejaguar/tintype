@@ -7,27 +7,45 @@ run by the same Rust binary.
 
 ## Summary
 
-Results on the two blind batches – data downloaded only after the model, its
-thresholds and the protocol had been written down, and scored once. Each
-system is at its shipped threshold.
+Results on the three blind batches – data downloaded only after the
+configuration under test and the protocol had been written down, and scored
+once. Each system is at its shipped threshold.
 
 | | Veracity | Reference |
 |---|---|---|
-| **Photos**, 6,172 AI and 4,541 real | default profile: precision 0.997, recall 0.865 | Community Forensics: 0.970, 0.637 |
-| | sensitive profile: 0.955, 0.972 | SwinV2 detector: 0.896, 0.918 |
-| **Video**, 1,156 AI and 900 real | 0.997, 0.941 | WaveRep: 0.983, 0.912 |
+| **Photos**, batch 5: 7,079 AI and 6,278 real | default profile: precision 0.980, recall 0.875 | Community Forensics: 0.963, 0.762 |
+| | | SwinV2 detector: 0.838, 0.677 |
+| **Photos**, batch 3: 6,172 AI and 4,541 real | `--strict` (the default at the time): 0.997, 0.865 | Community Forensics: 0.970, 0.637 |
+| | `--sensitive`: 0.955, 0.972 | SwinV2 detector: 0.896, 0.918 |
+| **Video**, batch 4: 1,156 AI and 900 real | 0.997, 0.941 | WaveRep: 0.983, 0.912 |
 | | with the second opinion: 0.997, 0.960 | |
-| **Photo throughput**, GPU, end to end | 178 images/s; 454 with `--fast` | Community Forensics: 59 as released, 100 through this engine; SwinV2 detector: 8.7 and 30 |
-| **Video**, time per clip | 0.09 s; 0.22 s with the second opinion | WaveRep: 3.7 s as released, 1.06 s through this engine at 16 bits |
+| **Photo throughput**, GPU, end to end | 263 images/s; 455 with `--fast` | Community Forensics: 61–67 as released, 100 through this engine; SwinV2 detector: 8.6 and 30 |
+| **Photo throughput**, CPU | 38.8 images/s; 52.6 with `--fast` | Community Forensics: 25.4 as released, 35.0 through this engine |
+| **Video**, time per clip | 0.09 s; 0.26 s with the second opinion | WaveRep: 4.0 s as released, 1.08 s through this engine at 16 bits |
+
+Pooled over each blind batch, the default photo profile is ahead of both
+reference photo detectors on precision and on recall, and the video
+checkpoint is ahead of WaveRep on both.
 
 Where Veracity is not ahead, or the comparison needs a qualifier:
 
-- **SwinV2 detector, recall.** It trades precision for recall, flagging 14% of
-  the real photos in the blind batch. Veracity's default profile is more
-  precise on all five photo sets but finds fewer AI images on three of them
-  (pooled recall 0.865 against 0.918). The sensitive profile is the
-  like-for-like comparison: it is ahead on both measures on all five sets
-  while flagging 6% of real photos.
+- **Older generators, set by set.** Batch 5 is mostly AIGIBench archives of
+  GANs, GLIDE and identity-preserving adapters. On nine of its thirteen sets
+  Community Forensics finds more of the AI images than the default profile
+  (it was trained on thousands of such generators and reaches 0.98–1.00 on
+  the GAN sets, where Veracity reaches 0.73–0.99), and on PhotoMaker both
+  reference detectors do. Veracity's precision is the higher on eleven of the
+  thirteen. The pooled result is carried by So-Fake-OOD – current commercial
+  generators in social-media photos, a third of the batch's AI images – where
+  Community Forensics finds 0.41 and Veracity 0.86.
+- **The default threshold was moved after batch 3.** There the default was
+  what is now `--strict`: more precise than the SwinV2 detector on every set
+  but with lower recall on three of five (pooled 0.865 against 0.918). The
+  1.5% default was then chosen on development data and tested on batch 5.
+  Re-scored on batch 3, which it has seen, it gives 0.988 / 0.932.
+- **Early exit costs a little ranking quality.** Verdicts barely change, but
+  scores of clear images come from fewer views, so AUROC and recall at 1% FPR
+  drop slightly (0.992 to 0.986 on batch 3). `--all-views` restores them.
 - **Video, one set.** On AIGVDBench the video checkpoint alone has higher
   precision than WaveRep (0.998 against 0.982) and marginally lower recall
   (0.966 against 0.970). With the second opinion it is ahead on both on all
@@ -38,10 +56,10 @@ Where Veracity is not ahead, or the comparison needs a qualifier:
   rows labelled "Veracity" use only Veracity's weights.
 - **Speed against a half-precision Community Forensics.** Run through this
   engine at 16 bits – a configuration its authors do not ship – Community
-  Forensics does 255 images/s on the GPU and 36 on the CPU, more than the
-  six-view default profile (178 and 20). The two-view fast profile is faster
-  than Community Forensics in every configuration (454 and 54) and is still
-  ahead of it on precision and recall on every blind photo set.
+  Forensics does 253 images/s on the GPU, close to the default profile's 263.
+  Looking at all six views of every image (`--all-views`) Veracity does 180
+  on the GPU and 19.5 on the CPU, below Community Forensics in the same
+  engine (253 and 35.0).
 - **The first blind video result was not a win.** The phase-3 weights had
   higher recall than WaveRep and lower precision (0.987 / 0.949 against
   0.995 / 0.924). That result is kept below; it is what led to the video
@@ -103,6 +121,10 @@ set, so the data is split by what it was allowed to influence
 4. **Blind video batch** (`confirm4`). The video checkpoint, its threshold,
    the second-opinion rule and the protocol were written down (same document)
    before this data was downloaded. It was scored once.
+5. **Second blind photo batch** (`confirm5`). The photo weights did not
+   change; the default threshold moved from a 0.5% to a 1.5% target and early
+   exit was added, both fitted on development data and written down (same
+   document) before this data was downloaded. It was scored once.
 
 In every table: precision and recall at each system's shipped threshold, with
 95% bootstrap intervals; "Recall at 1% FPR" sets each system's threshold on
@@ -110,7 +132,62 @@ that set's own real items, which removes the choice of threshold.
 
 ## Photos
 
-### Blind batch
+### Blind batch 5: the default profile
+
+Three more shards of So-Fake-OOD and 400 images per class from each of the
+twelve AIGIBench test archives not used before (the five face-swap archives
+are left out: local edits are out of scope).
+
+**Pooled** (7,079 AI, 6,278 real)
+
+| System | Precision | Recall | F1 | False-positive rate | AUROC | Recall at 1% FPR |
+|---|---|---|---|---|---|---|
+| Community Forensics | 0.963 (0.958–0.968) | 0.762 (0.752–0.772) | 0.851 | 3.30% | 0.965 | 0.621 |
+| SwinV2 detector | 0.838 (0.829–0.847) | 0.677 (0.666–0.689) | 0.749 | 14.72% | 0.845 | 0.250 |
+| Veracity | 0.980 (0.977–0.983) | 0.875 (0.867–0.882) | 0.924 | 2.02% | 0.981 | 0.800 |
+| Veracity (strict) | 0.995 (0.993–0.996) | 0.713 (0.703–0.723) | 0.831 | 0.43% | 0.973 | 0.790 |
+| Veracity (fast) | 0.995 (0.993–0.997) | 0.658 (0.646–0.668) | 0.792 | 0.37% | 0.981 | 0.769 |
+| Veracity (sensitive) | 0.940 (0.935–0.946) | 0.957 (0.952–0.962) | 0.949 | 6.85% | 0.985 | 0.794 |
+
+Precision / recall by set:
+
+| Set | Community Forensics | SwinV2 detector | Veracity | `--strict` | `--sensitive` | `--fast` |
+|---|---|---|---|---|---|---|
+| So-Fake-OOD, batch 4 (2,279 AI, 1,479 real) | 0.983 / 0.412 | 0.944 / 0.812 | **0.989 / 0.858** | 0.996 / 0.733 | 0.971 / 0.931 | 0.994 / 0.616 |
+| AIGIBench GLIDE (400 AI, 400 real) | 0.968 / 0.998 | 0.770 / 0.520 | **0.982 / 0.943** | 0.986 / 0.897 | 0.933 / 0.973 | 0.991 / 0.858 |
+| AIGIBench BLIP-Diffusion (400 AI, 400 real) | 0.955 / 1.000 | 0.930 / 0.998 | **0.969 / 1.000** | 1.000 / 0.998 | 0.917 / 1.000 | 1.000 / 0.998 |
+| AIGIBench IP-Adapter (400 AI, 400 real) | 0.955 / 0.905 | 0.793 / 0.660 | **0.968 / 0.843** | 0.995 / 0.540 | 0.919 / 0.968 | 0.990 / 0.258 |
+| AIGIBench InstantID (400 AI, 399 real) | 0.945 / 0.682 | 0.823 / 0.968 | **0.980 / 0.998** | 1.000 / 0.955 | 0.917 / 1.000 | 1.000 / 0.797 |
+| AIGIBench Infinite-ID (400 AI, 400 real) | 0.966 / 0.915 | 0.822 / 0.795 | **0.993 / 0.995** | 0.997 / 0.960 | 0.926 / 1.000 | 1.000 / 0.840 |
+| AIGIBench PhotoMaker (400 AI, 400 real) | 0.939 / 0.657 | 0.748 / 0.570 | **0.972 / 0.517** | 1.000 / 0.260 | 0.920 / 0.777 | 1.000 / 0.275 |
+| AIGIBench ProGAN (400 AI, 400 real) | 0.895 / 1.000 | 0.629 / 0.055 | **0.943 / 0.960** | 0.979 / 0.940 | 0.904 / 0.993 | 0.979 / 0.932 |
+| AIGIBench R3GAN (400 AI, 400 real) | 0.966 / 1.000 | 0.758 / 0.580 | **0.975 / 0.985** | 0.995 / 0.953 | 0.915 / 0.998 | 0.997 / 0.917 |
+| AIGIBench StyleGAN3 (400 AI, 400 real) | 0.990 / 0.980 | 0.663 / 0.300 | **0.980 / 0.730** | 1.000 / 0.412 | 0.960 / 0.950 | 1.000 / 0.370 |
+| AIGIBench StyleGAN-XL (400 AI, 400 real) | 0.959 / 1.000 | 0.815 / 0.795 | **0.973 / 0.892** | 0.996 / 0.573 | 0.928 / 0.995 | 1.000 / 0.590 |
+| AIGIBench StyleSwim (400 AI, 400 real) | 0.969 / 1.000 | 0.747 / 0.552 | **0.979 / 0.938** | 0.991 / 0.555 | 0.930 / 0.998 | 0.993 / 0.700 |
+| AIGIBench WFIR (400 AI, 400 real) | 0.998 / 1.000 | 0.637 / 0.570 | **0.997 / 0.792** | 1.000 / 0.400 | 0.959 / 0.985 | 1.000 / 0.593 |
+
+- Against the SwinV2 detector the default profile is ahead on both measures
+  on twelve of the thirteen sets; on PhotoMaker the SwinV2 detector finds
+  more (0.570 against 0.517) at much lower precision.
+- Against Community Forensics it is ahead on both on three sets (So-Fake-OOD,
+  InstantID, Infinite-ID), level on recall on BLIP-Diffusion, and behind on
+  recall on the other nine: GLIDE, IP-Adapter, PhotoMaker and all six GAN
+  sets. Its precision is the higher on eleven sets, the lower on StyleGAN3 and
+  WFIR.
+- `--sensitive` closes most of that recall gap (0.95–1.00 on the GAN sets) at
+  4–10% false positives.
+
+The images averaged 2.8 views each. Per-set tables with intervals, AUROC and
+recall at 1% FPR are in [results/confirm5.md](results/confirm5.md).
+
+### Blind batch 3: the strict and sensitive profiles
+
+This batch was scored when the default threshold was the 0.5% target. The
+rows labelled "Veracity" below are therefore what is now `--strict`, looking
+at all six views of every image. The current default, re-scored on this batch
+after the fact, gives precision 0.988 and recall 0.932 pooled
+([results/confirm3_new_default.md](results/confirm3_new_default.md)).
 
 **AIGIBench DALL·E 3** (1000 AI, 1000 real)
 
@@ -216,7 +293,19 @@ The second table is the share of real photos flagged.
 
 Pooled results on the three earlier suites, with the released weights. The
 thresholds were fitted with these sets' real photos in the calibration data.
-Per-set tables are in [DEV_RESULTS.md](DEV_RESULTS.md).
+Per-set tables are in [DEV_RESULTS.md](DEV_RESULTS.md). As for batch 3, the
+rows labelled "Veracity" are the 0.5% profile, now `--strict`. The current
+default on the same three suites (tables in `results/*_new_default.md`):
+
+| Suite | Community Forensics | SwinV2 detector | Veracity, current default |
+|---|---|---|---|
+| Benchmark sets | 0.971 / 0.568 | 0.937 / 0.769 | 0.983 / 0.797 |
+| Confirmation batch 1 | 0.984 / 0.620 | 0.924 / 0.834 | 0.979 / 0.823 |
+| Confirmation batch 2 | 0.974 / 0.612 | 0.825 / 0.925 | 0.991 / 0.945 |
+
+On confirmation batch 1 the current default is behind Community Forensics on
+precision (0.979 against 0.984) and just behind the SwinV2 detector on recall
+(0.823 against 0.834); AIGIBench SocialRF is the set responsible.
 
 **Benchmark sets (plan `benchmarks`), pooled** (14635 AI, 11005 real)
 
@@ -419,46 +508,56 @@ video checkpoint 0.158.
 
 ## Speed
 
-Same machine, idle. "As released" rows are the authors' own PyTorch pipelines
-(PyTorch 2.15, Metal backend, 32-bit floats); the other reference rows are the
-Rust ports, which share Veracity's engine and so isolate the cost of the
-model and its preprocessing.
+Same machine, idle, final build ([results/speed_final.log](results/speed_final.log)).
+"As released" rows are the authors' own PyTorch pipelines on the same files
+(PyTorch 2.15, Metal backend, 32-bit floats;
+[results/speed_released.log](results/speed_released.log)); the other
+reference rows are the Rust ports, which share Veracity's engine and so
+isolate the cost of the model and its preprocessing. The SwinV2 port and the
+32-bit WaveRep port were timed in the earlier pass
+([results/speed.log](results/speed.log)); nothing in them changed since.
 
 **Photos** – 1,000 files drawn from the test sets (mixed JPEG and PNG, up to
 4K), decode to verdict.
 
-| System | GPU, images/s | CPU, images/s | Median latency, one image |
+| System | GPU, images/s | CPU, images/s | Median latency, one image, GPU |
 |---|---|---|---|
-| **Veracity** (six views) | **178** | **20.0** | **10.7 ms** |
-| **Veracity `--fast`** (two views) | **454** | **53.6** | **8.3 ms** |
-| Community Forensics, as released | 59 | 18.4 | 19.6 ms |
-| Community Forensics, Rust port, 32-bit | 100 | 36.1 | 18.2 ms |
-| Community Forensics, Rust port, 16-bit (not a released configuration) | 255 | – | – |
-| SwinV2 detector, as released | 8.7 | – | – |
+| **Veracity** (default: early exit, 3.0 views per image here) | **263** | **38.8** | **10.9 ms** |
+| Veracity `--strict` / `--sensitive` (early exit) | 292 / 282 | 39.0 / – | – |
+| **Veracity `--fast`** (two views) | **455** | **52.6** | **8.3 ms** |
+| Veracity `--all-views` (six views of every image) | 180 | 19.5 | 10.9 ms |
+| Community Forensics, as released | 61–67 | 25.4 | 19.8 ms |
+| Community Forensics, Rust port, 32-bit | 100 | 35.0 | 18.1 ms |
+| Community Forensics, Rust port, 16-bit (not a released configuration) | 253 | – | – |
+| SwinV2 detector, as released | 8.6 | – | – |
 | SwinV2 detector, Rust port, 32-bit | 30 | – | 39.4 ms |
 
-Veracity's GPU engine runs at 16 bits; the CPU engine at 32. The default
-profile pushes about twice as many tokens through the same size of network as
-Community Forensics does (six 224 px views against one 384 px view), so on
-equal engines it is the slower of the two and the fast profile the faster.
-Against the reference detectors as their authors ship them, both profiles
-are faster on the GPU and on the CPU.
+Veracity's GPU engine runs at 16 bits; the CPU engine at 32. Six 224 px views
+push about twice as many tokens through the same size of network as
+Community Forensics' one 384 px view, so with every view looked at Veracity
+is the slower of the two on equal engines. Early exit halves the work: the
+default profile is then faster than Community Forensics in every
+configuration measured, by a wide margin against the released pipeline (4×
+on the GPU, 1.5× on the CPU) and a narrow one against the Rust port (263
+against 253 at 16 bits on the GPU, 38.8 against 35.0 on the CPU). How many
+views an image needs depends on the image: batches of obvious images run
+faster than this, batches of borderline ones slower. For one image at a
+time on the GPU all six views go in a single batch, so latency is the same
+with and without early exit; on the CPU the median is 49 ms against 61 ms
+for all views and 67 ms for the Community Forensics port.
 
 **Video** – 147 clips, every fourteenth of the blind batch.
 
 | System | Seconds per clip | Clips/s |
 |---|---|---|
-| **Veracity** (GPU, 16 frames × 6 views) | **0.091** | **11.0** |
-| **Veracity + second opinion** (GPU; 11% of these clips took the second stage) | **0.22** | **4.5** |
-| Veracity (CPU) | 0.77 | 1.3 |
+| **Veracity** (GPU, 16 frames × 6 views) | **0.089** | **11.2** |
+| **Veracity + second opinion** (GPU; 11% of these clips took the second stage) | **0.26** | **3.9** |
+| Veracity (CPU) | 0.76 | 1.3 |
+| WaveRep, as released | 4.05 | 0.25 |
 | WaveRep, Rust port, 32-bit (the released precision) | 3.72 | 0.27 |
-| WaveRep, Rust port, 16-bit | 1.06 | 0.95 |
-| WaveRep, as released (measured on a different 40-clip sample) | 3.76 | 0.27 |
+| WaveRep, Rust port, 16-bit | 1.08 | 0.92 |
 
-Over the whole blind batch (2,056 clips) Veracity took 0.091 s per clip and
-0.227 s with the second opinion, 13% of clips taking the second stage. Running
-the second-opinion mode end to end gave the same verdict as the evaluation on
-every clip.
+Video frames always get all six views; early exit applies to photos only.
 
 ## Reproduce
 
@@ -466,6 +565,7 @@ every clip.
 veracity data baselines
 veracity data confirm3 && veracity evaluate confirm3 --baselines
 veracity data confirm4 && veracity evaluate confirm4 --baselines
+veracity data confirm5 && veracity evaluate confirm5 --baselines
 veracity data benchmarks && veracity evaluate benchmarks --baselines
 ```
 
