@@ -1,0 +1,40 @@
+### r1 gpu veracity phase-6 default
+scored 1000 images (0 unreadable) in 5.1s: 197.1 img/s end-to-end, 225.0 img/s model-only, 2.79 views per image
+### r1 gpu veracity phase-3 default
+scored 1000 images (0 unreadable) in 5.9s: 168.7 img/s end-to-end, 187.8 img/s model-only, 3.00 views per image
+### r1 gpu commfor port f16
+scored 1000 images (0 unreadable) in 6.0s: 167.6 img/s end-to-end, 191.0 img/s model-only, 1.00 views per image
+### r1 gpu commfor authors pipeline
+scored 1000 images (0 unreadable) in 20.1s: 49.8 img/s end-to-end, 64.7 img/s model-only
+### r2 gpu veracity phase-6 default
+scored 1000 images (0 unreadable) in 5.1s: 196.2 img/s end-to-end, 219.2 img/s model-only, 2.79 views per image
+### r2 gpu veracity phase-3 default
+scored 1000 images (0 unreadable) in 6.0s: 165.8 img/s end-to-end, 183.0 img/s model-only, 3.00 views per image
+### r2 gpu commfor port f16
+scored 1000 images (0 unreadable) in 6.2s: 160.7 img/s end-to-end, 182.4 img/s model-only, 1.00 views per image
+### r2 gpu commfor authors pipeline
+scored 1000 images (0 unreadable) in 20.2s: 49.6 img/s end-to-end, 64.3 img/s model-only
+### r3 gpu veracity phase-6 default
+scored 1000 images (0 unreadable) in 5.1s: 195.6 img/s end-to-end, 218.5 img/s model-only, 2.79 views per image
+### r3 gpu veracity phase-3 default
+scored 1000 images (0 unreadable) in 6.0s: 166.5 img/s end-to-end, 184.2 img/s model-only, 3.00 views per image
+### r3 gpu commfor port f16
+scored 1000 images (0 unreadable) in 6.0s: 166.5 img/s end-to-end, 189.1 img/s model-only, 1.00 views per image
+### r3 gpu commfor authors pipeline
+scored 1000 images (0 unreadable) in 20.1s: 49.7 img/s end-to-end, 64.0 img/s model-only
+### r1 cpu veracity phase-6 default
+scored 1000 images (0 unreadable) in 33.0s: 30.3 img/s end-to-end, 30.9 img/s model-only, 2.78 views per image
+### r1 cpu veracity phase-3 default
+scored 1000 images (0 unreadable) in 35.1s: 28.5 img/s end-to-end, 29.0 img/s model-only, 2.99 views per image
+### r1 cpu commfor port
+scored 1000 images (0 unreadable) in 39.4s: 25.4 img/s end-to-end, 25.9 img/s model-only, 1.00 views per image
+### r1 cpu commfor authors pipeline
+scored 1000 images (0 unreadable) in 54.5s: 18.4 img/s end-to-end, 20.1 img/s model-only
+### r2 cpu veracity phase-6 default
+scored 1000 images (0 unreadable) in 33.0s: 30.3 img/s end-to-end, 30.8 img/s model-only, 2.78 views per image
+### r2 cpu veracity phase-3 default
+scored 1000 images (0 unreadable) in 34.9s: 28.7 img/s end-to-end, 29.2 img/s model-only, 2.99 views per image
+### r2 cpu commfor port
+scored 1000 images (0 unreadable) in 38.9s: 25.7 img/s end-to-end, 26.2 img/s model-only, 1.00 views per image
+### r2 cpu commfor authors pipeline
+scored 1000 images (0 unreadable) in 54.7s: 18.3 img/s end-to-end, 20.1 img/s model-only

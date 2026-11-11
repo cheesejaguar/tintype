@@ -646,11 +646,23 @@ video checkpoint 0.158.
 ## Speed
 
 Same machine, idle, final build ([results/speed_final.log](results/speed_final.log)).
-The photo rows were measured with the phase-3 weights. The phase-6 weights
-are the same network and stop after 2.8 views per image on these files where
-the phase-3 weights needed 3.0, so their cost is the same or slightly lower;
-they could not be re-timed on an idle machine (a pass with the machine in
-use for other things gave 204 images/s on the GPU and 31 on the CPU).
+The photo rows in the table were measured with the phase-3 weights. The
+phase-6 weights were timed later, with the machine in use for other things,
+in a pass that alternated them with the phase-3 weights and Community
+Forensics on the same files three times on the GPU and twice on the CPU
+([results/speed_interleaved.log](results/speed_interleaved.log)); every
+figure repeated within 3%:
+
+| Same pass, machine under load | GPU, images/s | CPU, images/s |
+|---|---|---|
+| **Veracity, phase-6 weights** (default; 2.8 views per image here) | **196** | **30.3** |
+| Veracity, phase-3 weights (default; 3.0 views per image) | 167 | 28.6 |
+| Community Forensics, Rust port (16-bit on the GPU, 32-bit on the CPU) | 165 | 25.5 |
+| Community Forensics, as released | 50 | 18.4 |
+
+The absolute numbers are lower than on the idle machine; the order is the
+same. The retrained weights are a little faster than the ones they replace
+and faster than Community Forensics in every configuration measured.
 "As released" rows are the authors' own PyTorch pipelines on the same files
 (PyTorch 2.15, Metal backend, 32-bit floats;
 [results/speed_released.log](results/speed_released.log)); the other

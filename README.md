@@ -49,9 +49,11 @@ What that table does not show:
   threshold was loosened (the stricter setting is now `--strict`); after the
   second, the photo weights were retrained with older generators added. Each
   change was fixed in writing before the next batch was fetched.
-- Photo speeds were measured with the previous photo weights on an idle
-  machine. The current weights are the same network and need slightly fewer
-  views per image, but have not been timed on an idle machine.
+- Photo speeds in the table were measured with the previous photo weights on
+  an idle machine. Timed side by side later, under load, the current weights
+  were faster than the previous ones (196 against 167 images/s on the GPU,
+  30.3 against 28.6 on the CPU) and than Community Forensics in the same pass
+  (165 and 25.5 through this engine, 50 and 18.4 as released).
 - `--second-opinion` leans on WaveRep's own released network for the clips
   Veracity's video model is unsure about. The plain "Veracity" video row uses
   only Veracity's weights; on one of the three video sets its recall is a
