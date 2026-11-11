@@ -500,21 +500,6 @@ pub fn evaluate(suite_name: &str, weights: &Path, video_weights: &Path, tag: &st
     Ok(())
 }
 
-/// Video sets scored before the fourth confirmation batch; their real clips
-/// calibrate the video checkpoint.
-pub const DEV_VIDEO_MANIFESTS: [&str; 10] = [
-    "data/vstore/vdev/manifest.tsv",
-    "data/vstore/wasitai/manifest.tsv",
-    "data/vstore/comgenvid/manifest.tsv",
-    "data/vstore/genvideo-val/manifest.tsv",
-    "data/fresh/video/manifest.tsv",
-    "data/fresh/comgenvid/manifest.tsv",
-    "data/fresh/genvideo-val/manifest.tsv",
-    "data/fresh4/video/manifest.tsv",
-    "data/fresh4/comgenvid/manifest.tsv",
-    "data/fresh4/genvideo-val/manifest.tsv",
-];
-
 fn standard_spec(size: u32) -> ModelSpec {
     ModelSpec {
         img: size as usize,
@@ -567,7 +552,7 @@ pub fn finalize_video(checkpoint: &Path, weights: &Path, scores: &Path, video_fp
     let train: Vec<&str> = crate::plans::TRAIN_VIDEO_MANIFESTS.iter().chain(crate::plans::PHASE4_VIDEO_MANIFESTS.iter()).copied().collect();
     write_val_split(&train, true, &vv)?;
     let mut videos = vec![vv];
-    videos.extend(DEV_VIDEO_MANIFESTS.iter().map(PathBuf::from).filter(|p| p.exists()));
+    videos.extend(crate::plans::DEV_VIDEO_MANIFESTS.iter().map(PathBuf::from).filter(|p| p.exists()));
     let cv = scores.join("calib_videos_phase4.tsv");
     score_videos(weights, &System::Veracity { profile: Photo::Default }, &videos, &cv, device, 64, None, None, None)?;
     calibrate(weights, &[cv], video_fpr, "video", Rule::Balanced(100))

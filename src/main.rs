@@ -431,6 +431,8 @@ fn main() -> Result<()> {
                     .iter()
                     .map(|r| r.as_ref().map(|fr| (veracity::video::aggregate(&fr.iter().map(|v| v.iter().sum::<f32>() / v.len() as f32).collect::<Vec<f32>>()), fr.len())))
                     .collect();
+                // Only the second-opinion stage, which is macOS-only, changes these.
+                #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
                 let mut probs: Vec<Option<f32>> = clips.iter().map(|c| c.map(|(z, _)| det.probability(&[z]))).collect();
                 if let Some(w2) = &second_opinion {
                     let band = det.spec.video.as_ref().and_then(|v| v.second_opinion).ok_or_else(|| anyhow::anyhow!("{} has no second-opinion band in its video profile", video_weights.display()))?;

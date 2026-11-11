@@ -140,8 +140,9 @@ cargo build --release
 Needs a Rust toolchain. The trained weights are `models/veracity.safetensors`
 for photos and `models/veracity-video.safetensors` for video (87 MB each),
 each with its run spec in a `.json` beside it. Video, training and the
-evaluation commands need macOS on Apple Silicon; `detect --device cpu` on
-photos builds and runs anywhere.
+evaluation commands need macOS on Apple Silicon. `detect --device cpu` on
+photos is written to build anywhere: the crate type-checks for x86-64 Linux,
+but it has only been built and run on macOS.
 
 ## Use
 
