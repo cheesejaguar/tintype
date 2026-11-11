@@ -16,6 +16,8 @@ gemm = "0.19"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 parquet = { version = "60.1.0", default-features = false, features = ["snap", "zstd", "lz4", "flate2", "brotli", "flate2-rust_backend"] }
 rayon = "1.12.0"
+rust_h264 = "0.6.1"
+rust_h265 = "0.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tar = "0.4.46"

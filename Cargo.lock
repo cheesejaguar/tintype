@@ -2009,6 +2009,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust_h264"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49a852e1544c48fba7d072620420c602f195092e3774655584ef5e4e6fd056a9"
+
+[[package]]
+name = "rust_h265"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673f6ab280648836c8a4b2bdaf4877532b2715e3fdcf6e37a2f46ebed41c8cfd"
+
+[[package]]
 name = "rustix"
 version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2536,6 +2548,8 @@ dependencies = [
  "objc2-metal-performance-shaders-graph",
  "parquet",
  "rayon",
+ "rust_h264",
+ "rust_h265",
  "serde",
  "serde_json",
  "tar",

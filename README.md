@@ -136,8 +136,10 @@ set share of real items, averaged over real sources, scores above 50%:
 
 Images are decoded and resized in Rust (`image`, `zune-jpeg`,
 `fast_image_resize`) on all cores and fed to the engine through a bounded
-queue. Video is decoded in-process through AVFoundation, with the YCbCr→RGB
-conversion done in Rust; no external tool is called anywhere.
+queue. Video is decoded in-process: by AVFoundation on macOS and by a
+pure-Rust reader elsewhere (an MP4/MOV parser written for this project
+feeding the `rust_h264` and `rust_h265` decoders). The YCbCr→RGB conversion
+is done in Rust either way, and no external tool is called anywhere.
 
 ## Install
 
@@ -147,13 +149,13 @@ cargo build --release
 
 Needs a Rust toolchain. The trained weights are `models/veracity.safetensors`
 for photos and `models/veracity-video.safetensors` for video (87 MB each),
-each with its run spec in a `.json` beside it. Video, training and the
-evaluation commands need macOS on Apple Silicon. Photo detection also runs on
-Linux (`detect` uses the CPU engine there): built and run on aarch64 Ubuntu
-and, under translation, as an x86-64 binary, with the same verdict as macOS
-on every one of 738 test photos. It is slower there than on a Mac –
-10–18 images/s on eight virtual cores, against 7–12 for the Community
-Forensics network through the same engine
+each with its run spec in a `.json` beside it. The
+GPU engine, training and the evaluation commands need macOS on Apple Silicon.
+`detect` also runs on Linux, on the CPU engine, for photos and for video:
+built and run on aarch64 Ubuntu (and, for photos, as an x86-64 binary under
+translation), with the same verdict as macOS on every one of 738 test photos
+and 127 test clips. It is slower there than on a Mac – 10–18 photos/s and
+about 3 s per clip on eight virtual cores
 ([docs/results/linux.log](docs/results/linux.log)).
 
 ## Use
@@ -243,9 +245,13 @@ veracity evaluate confirm4 --baselines
 - Older generators are a relative weak spot: on StyleGAN3 and
   thispersondoesnotexist-style faces the default profile finds 73–79%, where
   a detector trained on thousands of such generators finds nearly all.
-- The GPU engine, training, all video decoding and the second-opinion stage
-  are Apple-only; on Linux only photos can be checked. Video is read by the system decoder: MP4 and MOV with H.264
-  or HEVC work, AVI and WebM do not.
+- The GPU engine, training and the second-opinion stage are Apple-only.
+- Video containers and codecs: on macOS the system decoder reads MP4 and MOV
+  with H.264, HEVC or MPEG-4 Part 2; AVI and WebM do not work. On Linux the
+  pure-Rust reader takes MP4 and MOV with H.264 or HEVC in 4:2:0 only – not
+  lossless H.264, MPEG-4 Part 2 or fragmented files – and such clips are
+  reported as unreadable. `VERACITY_DECODER=rust` selects that reader on
+  macOS too.
 
 ## Licence
 

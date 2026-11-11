@@ -725,27 +725,56 @@ for all views and 67 ms for the Community Forensics port.
 
 Video frames always get all six views; early exit applies to photos only.
 
-**Photos on Linux** – everything above was measured on macOS. On Linux only
-photo detection runs, on the CPU engine with pure-Rust matrix kernels in
-place of Accelerate. In an aarch64 Ubuntu virtual machine on the same Mac
-(8 of its 12 cores), on 738 photos from the second blind batch
+**On Linux** – everything above was measured on macOS. On Linux `detect`
+runs on the CPU engine, with pure-Rust matrix kernels in place of Accelerate
+and a pure-Rust video reader in place of the system decoder. In an aarch64
+Ubuntu virtual machine on the same Mac (8 of its 12 cores), on 738 photos
+from the second blind photo batch and 130 clips from the blind video batch
 ([results/linux.log](results/linux.log)):
 
 | | Linux VM |
 |---|---|
-| Verdicts that differ from macOS, default profile and all six views | 0 of 738 (largest difference in probability 0.00001) |
+| Photo verdicts that differ from macOS, default profile and all six views | 0 of 738 (largest difference in probability 0.00001) |
 | The same for an x86-64 Linux binary, run under translation | 0 of 738 |
+| Clip verdicts that differ from macOS | 0 of 127 (largest difference in probability 0.014) |
+| Clips Linux could not read | 3 of 130 (lossless H.264) |
 | **Veracity**, default, 320 photos of at most 1 megapixel | **12 images/s** (10–18 over four passes) |
 | Community Forensics network, Rust port, same files | 9 images/s (7–12) |
 | Veracity `--fast` / `--all-views` | 15 / 5 images/s |
 | **Veracity**, default, all 738 photos (up to 4K) | **11 images/s** (10–11 over three passes) |
 | Community Forensics network, Rust port, same files | 8 images/s (7–8) |
+| Veracity, video | 2.7 s per clip |
 
 Timings in a virtual machine vary a good deal from pass to pass; within each
-pass Veracity's default was the faster of the two, by 1.2–1.5×. This engine
-replaced a generic one that managed 7 images/s on the first row. Community
-Forensics' own PyTorch pipeline was not timed on Linux, so nothing here says
-how the two released programs compare there.
+pass Veracity's default was the faster of the two photo detectors, by
+1.2–1.5×. The CPU engine replaced a generic one that managed 7 images/s on
+the first photo row. Neither reference detector's own PyTorch pipeline was
+timed on Linux, and WaveRep was not run there at all, so nothing here says
+how the released programs compare on that system.
+
+**The pure-Rust video reader against the system decoder**, on macOS, where
+both can be run on the same files (`check-videos --compare-decoders`). Over
+the whole blind video batch, 2,056 clips:
+
+| | |
+|---|---|
+| Clips both read | 1,751 (5 more timed out in the system decoder under load) |
+| Frames compared, every frame of every clip | 215,090 |
+| Frames identical, sample for sample and in colour tags and time | 214,848 |
+| Frames that differ | 242, all in two 10-bit HEVC clips, by at most 20 levels |
+| Clips whose reported duration differs | 20, by at most 0.47 s |
+| Clips the pure-Rust reader cannot decode | 300: the real clips of one set, which are lossless H.264 |
+
+On the 10-bit clips the pure-Rust decoder's output equals FFmpeg's sample
+for sample (checked on one of them, FFmpeg used only as a referee); the
+system decoder is the one that deviates. Scoring the batch through the
+pure-Rust reader on the GPU engine gave the same verdict as the system
+decoder on all 1,756 clips it read, and the same precision and recall on
+each of the three sets (0.998 / 0.966, 1.000 / 0.903 with that set's real
+clips missing, 0.994 / 0.939). Two more differences showed up on other
+material: where a file begins with an empty edit the system decoder emits a
+blank first frame that the pure-Rust reader does not, and MPEG-4 Part 2
+clips are read by the system decoder only.
 
 ## Reproduce
 

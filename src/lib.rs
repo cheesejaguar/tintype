@@ -15,6 +15,8 @@ pub mod video;
 pub mod cpu_vit;
 pub mod fetch;
 pub mod avf;
+pub mod yuv;
+pub mod swdec;
 pub mod swin;
 pub mod plans;
 pub mod eval;
