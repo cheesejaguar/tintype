@@ -1,5 +1,7 @@
 # Linux (aarch64 Ubuntu 26.04 VM on the same Mac, 8 vCPUs, CPU engine) after the speed changes.
 # Run by the companion session; raw logs, with the VM's home directory written as ~.
+# Commit ids below are the ones in use when the runs were made. The history was rewritten once before
+# publication (author address only, no content): 63c20e9 is now a56fa23, 6cde2b7 is a23df1d, f520640 is 66425c6.
 
 ## Run 13a: scratch merge of the speed work and the Linux work (same code as commit 63c20e9) against the Linux branch before it (f520640); build, tests, blind photo batch 6
 77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881  ~/tintype-combined/models/tintype-video.safetensors
