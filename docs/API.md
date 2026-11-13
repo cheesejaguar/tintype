@@ -9,7 +9,7 @@ tintype serve --bind 127.0.0.1:8080
 curl --fail-with-body http://127.0.0.1:8080/healthz
 ```
 
-The address defaults to `127.0.0.1:8080`. `GET /healthz` reports `{"status":"ok","version":"0.1.0"}` when the model worker is ready. `HEAD /healthz` returns the same status and headers with an empty body. Health requests need no credentials.
+The address defaults to `127.0.0.1:8080`. When the model worker is ready, `GET /healthz` returns JSON with `status` set to `"ok"` and `version` set to the running Tintype version. `HEAD /healthz` returns the same status and headers with an empty body. Health requests need no credentials.
 
 `--device auto` uses Apple Metal when available and the CPU elsewhere. Use `--device cpu` to select the CPU explicitly. `--weights` and `--video-weights` select model files. The [distribution guide](DISTRIBUTION.md) covers containers, model discovery, and the licences for bundled and separately supplied weights.
 
