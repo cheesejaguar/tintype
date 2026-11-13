@@ -169,6 +169,30 @@ python3 scripts/evaluate-ntire.py test_images.zip test_labels.csv ntire-test \
   --split public-test --tintype target/release/tintype --commfor baselines/commfor-384.safetensors
 ```
 
+### NTIRE threshold transfer and artifact diagnostics
+
+We set each Tintype cutoff using only authentic hard-validation scores. We sorted the scores from highest to lowest and took the first score outside the 1% false-positive allowance. An image flags only when its score strictly exceeds that cutoff. The table applies those cutoffs unchanged to the corresponding public-test cohort. Each calibration cohort flags 0.96% of its authentic images.
+
+| Calibration and public-test cohort | Cutoff | Public-test recall | Public-test false positives |
+|---|---:|---:|---:|
+| Clean | 0.941085 | 218 / 650 (33.54%) | 10 / 600 (1.67%) |
+| Distorted | 0.996498 | 31 / 650 (4.77%) | 13 / 600 (2.17%) |
+| Pooled | 0.994595 | 102 / 1,300 (7.85%) | 19 / 1,200 (1.58%) |
+
+The clean cutoff applied to public distorted files flags 63 of 600 authentic images (10.50%). A stricter cutoff reduces false alarms, but the distorted score ranking remains weak. At the threshold chosen directly on the public distorted authentic scores, 14 of 650 generated images score above the 1% false-positive operating point. This public-cohort operating point describes ranking performance on that cohort.
+
+Of the 155 public-test false positives on distorted inputs at the shipped cutoff, 110 occur in 182 authentic images that include JPEG AI, Cheng2020 learned compression or WMForger. That is 60.4%, compared with 45 of 418 (10.8%) for the other authentic distorted files. The same grouping shows a smaller gap in hard validation, where only JPEG AI appears among those three operations. Operations can co-occur, and the grouping is descriptive. Short-side resolution was a weaker separator on public distorted files. Tintype flagged 82 of 291 authentic files below 512 px (28.2%) and 73 of 309 at or above 512 px (23.6%). All 5,000 final files have identical JPEG quantization tables and 4:2:0 subsampling. Those metadata fields cannot identify this prior processing.
+
+We also disabled early exit on hard validation, so the model scored all six views per image. Clean recall at 1% FPR rose from 51.8% to 60.5%, and clean AUROC rose from 0.938 to 0.955. On distorted files recall rose from 5.4% to 7.5%, and AUROC rose from 0.734 to 0.739. At the shipped cutoff the all-views profile found 263 generated distorted images and flagged 106 authentic ones, compared with 272 and 103 using early exit. The CPU run averaged 14.4 images/s with all views. [All-views scores](results/ntire-2026-hard-validation/all-views-scores.tsv.gz).
+
+The shipped cutoff stays unchanged. The distorted results point to ranking robustness and calibration across processing histories. [Diagnostic counts](results/ntire-2026-hard-validation/transfer-diagnostics.txt).
+
+With Pillow installed, reproduce the diagnostic counts from the four pinned organizer files and the archived detector scores.
+
+```bash
+python3 scripts/diagnose-ntire.py /path/to/ntire-archives
+```
+
 ### Comparisons still open
 
 - B-Free's authors report strong results with same-format controls and post-processing. Pangram Image 1.0 is a commercial comparison for the newest image generators. Establishing a broader image rank requires scores on identical inputs and at matched operating points. [B-Free](https://arxiv.org/abs/2412.17671) · [Pangram Image 1.0](https://www.pangram.com/blog/introducing-pangram-image-1-0).
