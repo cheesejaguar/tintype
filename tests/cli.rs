@@ -194,3 +194,17 @@ fn mixed_detection_preserves_input_order_and_describes_video_coverage() {
     assert_eq!(rows[1]["kind"], "image");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn an_empty_model_dir_variable_counts_as_unset() {
+    // PowerShell can leave a variable defined but empty; the lookup must then
+    // fall through to the checkout's models/ directory instead of failing.
+    let o = Command::new(env!("CARGO_BIN_EXE_tintype"))
+        .args(["demo", "--device", "cpu", "--json"])
+        .env("TINTYPE_MODEL_DIR", "")
+        .current_dir(common::repo())
+        .output()
+        .expect("running the tintype binary");
+    assert!(o.status.success(), "status {:?}, stderr: {}", o.status, String::from_utf8_lossy(&o.stderr));
+    assert_eq!(json_lines(&o).len(), 1);
+}

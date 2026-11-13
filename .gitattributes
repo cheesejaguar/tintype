@@ -1,0 +1,4 @@
+# Check out text files with LF on every platform. Tintype verifies its model
+# specs (models/*.json) against SHA-256 digests compiled into the binary, so a
+# CRLF conversion on Windows would make the bundled models fail verification.
+* text=auto eol=lf

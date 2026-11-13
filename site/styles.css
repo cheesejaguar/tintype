@@ -156,6 +156,41 @@ code { font-family: var(--mono); }
 .command-install button:hover { background: var(--accent-hover); }
 .command-install button:focus-visible { outline-color: white; }
 
+.install-tabs {
+  display: flex;
+  gap: 1.4rem;
+  margin-bottom: .6rem;
+}
+
+.install-tabs[hidden] { display: none; }
+
+.install-tabs button {
+  padding: .3rem 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--secondary);
+  font: .85rem/1.5 var(--mono);
+  cursor: pointer;
+}
+
+.install-tabs button:hover { color: var(--ink); }
+
+.install-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+
+.install-label {
+  margin-bottom: .4rem;
+  color: var(--secondary);
+  font: .8rem/1.5 var(--mono);
+}
+
+.install-panel + .install-panel { margin-top: .9rem; }
+.install.tabbed .install-label { display: none; }
+.install.tabbed .install-panel + .install-panel { margin-top: 0; }
+
 .install-meta {
   display: flex;
   flex-wrap: wrap;

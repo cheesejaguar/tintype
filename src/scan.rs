@@ -125,7 +125,9 @@ pub fn resolve_weights(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = explicit {
         return Ok(path);
     }
-    if let Some(dir) = std::env::var_os("TINTYPE_MODEL_DIR") {
+    // An empty value counts as unset, as PowerShell and some service managers
+    // define variables with empty values rather than removing them.
+    if let Some(dir) = std::env::var_os("TINTYPE_MODEL_DIR").filter(|d| !d.is_empty()) {
         let path = PathBuf::from(dir).join("tintype.safetensors");
         ensure!(
             path.is_file(),

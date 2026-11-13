@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#f6f3eb">
   <title>Tintype — Detect AI in photos and video</title>
-  <meta name="description" content="Run Tintype on your own machine or server. Detect AI-generated images and video from the command line, in bulk, or over HTTP.">
+  <meta name="description" content="Run Tintype on your own machine or server, on macOS, Linux or Windows. Detect AI-generated images and video from the command line, in bulk, or over HTTP.">
   <link rel="canonical" href="https://cheesejaguar.github.io/tintype/">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Tintype — Detect AI in photos and video">
@@ -39,16 +39,33 @@
         <h1 id="headline">Detect AI in<br class="wide-break"> photos and<br class="wide-break"> video.</h1>
         <p class="hero-description">Run Tintype on your own machine or server. Scan a file, process a folder, or call the API.</p>
 
-        <div class="command command-install" id="install">
-          <code id="install-command">curl -fsSL https://cheesejaguar.github.io/tintype/install.sh | sh</code>
-          <button type="button" data-copy="install-command" aria-label="Copy install command" hidden>Copy</button>
+        <div class="install" id="install">
+          <div class="install-tabs" aria-label="Choose your system" hidden>
+            <button type="button" id="tab-unix" aria-controls="panel-unix">macOS · Linux</button>
+            <button type="button" id="tab-windows" aria-controls="panel-windows">Windows</button>
+          </div>
+          <div class="install-panel" id="panel-unix">
+            <p class="install-label">macOS · Linux, in a terminal</p>
+            <div class="command command-install">
+              <code id="install-command">curl -fsSL https://cheesejaguar.github.io/tintype/install.sh | sh</code>
+              <button type="button" data-copy="install-command" aria-label="Copy macOS and Linux install command" hidden>Copy</button>
+            </div>
+          </div>
+          <div class="install-panel" id="panel-windows">
+            <p class="install-label">Windows, in PowerShell</p>
+            <div class="command command-install">
+              <code id="install-command-windows">irm https://cheesejaguar.github.io/tintype/install.ps1 | iex</code>
+              <button type="button" data-copy="install-command-windows" aria-label="Copy Windows install command" hidden>Copy</button>
+            </div>
+          </div>
         </div>
         <p class="install-meta">
-          <span>macOS · Linux</span>
-          <a href="https://github.com/cheesejaguar/tintype/blob/main/scripts/install.sh">View installer</a>
+          <span>macOS · Linux · Windows</span>
+          <a href="https://github.com/cheesejaguar/tintype/blob/main/scripts/install.sh">install.sh</a>
+          <a href="https://github.com/cheesejaguar/tintype/blob/main/scripts/install.ps1">install.ps1</a>
           <a href="https://github.com/cheesejaguar/tintype/releases/latest">Downloads</a>
         </p>
-        <p class="install-note">Apple silicon macOS · x86-64 and ARM64 glibc Linux. Bundled weights are <a href="https://github.com/cheesejaguar/tintype/blob/main/models/LICENSE.md">noncommercial</a>.</p>
+        <p class="install-note">Apple silicon macOS · x86-64, x86 and ARM64 glibc Linux · x86-64 and x86 Windows 10 or later. Bundled weights are <a href="https://github.com/cheesejaguar/tintype/blob/main/models/LICENSE.md">noncommercial</a>.</p>
       </div>
 
       <figure class="contact-print">
@@ -140,7 +157,7 @@
           <div>
             <h3>Try the sample</h3>
             <p>Compare the same built-in image under two profiles. Scores summarize model evidence. Sensitive mode catches more generated images and flags more real ones.</p>
-            <p>If your shell can’t find Tintype, run <code>export PATH="$HOME/.local/bin:$PATH"</code> first.</p>
+            <p>If your shell can’t find Tintype, run <code>export PATH="$HOME/.local/bin:$PATH"</code> first. On Windows, open a new terminal after installing.</p>
           </div>
           <div class="command">
             <code id="sample-command">tintype demo --device cpu
@@ -186,7 +203,7 @@ target/release/tintype provenance provenance-original.png \
         <div class="workflow" id="api">
           <div>
             <h3>Serve an HTTP API</h3>
-            <p>Start the server, then send a file from a second terminal. The API also accepts multipart batches.</p>
+            <p>Start the server, then send a file from a second terminal. The API also accepts multipart batches. In Windows PowerShell, type <code>curl.exe</code>.</p>
             <a class="text-link" href="https://github.com/cheesejaguar/tintype/blob/main/docs/API.md">API reference <span aria-hidden="true">↗</span></a>
           </div>
           <div class="api-commands">
