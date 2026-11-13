@@ -1,0 +1,30 @@
+{
+  "model": "nakas/gpttrace-img-flag-pec-v3-onnx",
+  "model_revision": "197d072c7ff2e41d53f5e23b57e16c9e0d9ba042",
+  "weights_sha256": "9245bf6420ddfa22fa0cd34753c32e38d08fe649eafcf1e3cff84b24d5f473ce",
+  "config_sha256": "ea7393da661319ae410ac835097d4af4adb8d783d919864e74ce98fb54c780e3",
+  "paired_input_table_sha256": "a8b513e745794d09b2e9de76537f3080bf36d60e49d0b6915d43153b2e64fb8f",
+  "platform": "macOS-27.2-arm64-arm-64bit",
+  "machine_model": "Mac18,5",
+  "python": "3.12.16",
+  "pillow": "13.0.0",
+  "numpy": "2.5.4",
+  "onnxruntime": "1.32.0",
+  "providers": [
+    "CoreMLExecutionProvider",
+    "CPUExecutionProvider"
+  ],
+  "coreml_options": {
+    "ModelFormat": "MLProgram",
+    "RequireStaticInputShapes": "1"
+  },
+  "intra_op_threads": 8,
+  "score": "sigmoid(mean of two view logits minus 3.562)",
+  "parity_max_abs_raw_logit_delta": 4.220008850097656e-05,
+  "parity_coverage": "first 32 original images in released archive order, all generated",
+  "scored": 4076,
+  "paired_images": 2038,
+  "mixed_parity_max_abs_raw_logit_delta": 5.3882598876953125e-05,
+  "mixed_parity_coverage": "12 authentic and 12 generated IDs selected by smallest SHA-256 of each ID within its class, both original and JPEG",
+  "gpttrace_logit_archive_sha256": "e74739e313d8f30f7a38f9170ff392decf48ab42945b6ebc393d4e2428d39a3c"
+}

@@ -132,7 +132,8 @@ scoring. The archived scores reproduce both comparisons.
 
 **External image benchmarks.** After the same JPEG re-encode on 2,038
 Arena images, Tintype reached 73.1% recall at 1% false positives and
-Community Forensics reached 23.7%. On the distorted NTIRE 2026 public
+Community Forensics reached 23.7%. GPTTrace reached 76.7% on the same
+JPEGs. On the distorted NTIRE 2026 public
 test, Tintype reached 2.2% at that budget. At the shipped cutoff it flagged
 155 of the 600 authentic distorted inputs.
 [Arena](docs/EVIDENCE.md#ai-detector-arena-v01) · [NTIRE](docs/EVIDENCE.md#cvpr-2026-ntire-public-test)
