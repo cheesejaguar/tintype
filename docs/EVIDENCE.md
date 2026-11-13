@@ -127,6 +127,49 @@ The originals have a format imbalance between labels. The runner counts formats 
 
 ## External comparisons
 
-- The CVPR 2026 NTIRE challenge measures clean and distorted images separately. Its labeled hard validation set can support a reproducible distortion benchmark. An official challenge ranking requires scoring the challenge test set with its evaluator. [Validation archive](https://huggingface.co/datasets/deepfakesMSU/NTIRE-RobustAIGenDetection-val/tree/main) · [Challenge protocol and results](https://arxiv.org/abs/2604.11487).
+### CVPR 2026 NTIRE Hard Validation
+
+We scored all 2,500 JPEGs in the challenge organizers' hard validation archive using Tintype's default photo checkpoint and the Community Forensics 384-pixel reference on macOS 27.2 CPU. Both systems scored every file. The clean and distorted cohorts each contain 625 generated images and 625 authentic images. The organizers applied transformations including downscaling, JPEG recompression, noise, crops, and watermark attacks to the distorted cohort. The public labels specify the distortion operations. [Validation archive](https://huggingface.co/datasets/deepfakesMSU/NTIRE-RobustAIGenDetection-val/tree/e067bdd40b973d7daff741de20b86bf551760d3f) · [Challenge protocol](https://arxiv.org/abs/2604.11487).
+
+| Hard-validation cohort | Tintype recall at 1% FPR | Community Forensics recall at 1% FPR | Tintype AUROC | Community Forensics AUROC |
+|---|---:|---:|---:|---:|
+| Clean | 51.8% | 47.0% | 0.938 | 0.880 |
+| Distorted | 5.4% | 3.8% | 0.734 | 0.641 |
+
+At the shipped threshold, Tintype flagged 103 of 625 authentic distorted images (16.48%) and found 43.5% of the generated distorted images. Community Forensics flagged 74 of 625 (11.84%) and found 23.4%. At Tintype's 103-false-positive budget Community Forensics found 32.5%. Strong distortions substantially lowered recall at a low false-positive budget for both systems. This is an author-run comparison on the released validation split. [Full tables](results/ntire-2026-hard-validation/report.md) · [Per-file scores](results/ntire-2026-hard-validation/scores.tsv.gz).
+
+To reproduce the hard-validation run on macOS, download the two files from the pinned revision and use the baseline checkpoint from `tintype data baselines`. The runner checks both dataset digests and all model digests, then requires one score from each detector for every labeled image.
+
+```bash
+ntire_hard=https://huggingface.co/datasets/deepfakesMSU/NTIRE-RobustAIGenDetection-val/resolve/e067bdd40b973d7daff741de20b86bf551760d3f
+curl -fLO "$ntire_hard/val_images_hard.zip"
+curl -fLO "$ntire_hard/val_hard_labels.csv"
+python3 scripts/evaluate-ntire.py val_images_hard.zip val_hard_labels.csv ntire-hard \
+  --tintype target/release/tintype --commfor baselines/commfor-384.safetensors
+```
+
+### CVPR 2026 NTIRE Public Test
+
+The same two checkpoints scored all 2,500 JPEGs on the organizers' public test split after the challenge ended. Each cohort has 650 generated and 600 authentic images. Both released splits contain unique image bytes and share no exact image duplicates. [Public test archive and labels](https://huggingface.co/datasets/deepfakesMSU/NTIRE-RobustAIGenDetection-test-public/tree/7446d42c0ce38305cedc12e1a8ae7925ce2133dd).
+
+| Public-test cohort | Tintype recall at 1% FPR | Community Forensics recall at 1% FPR | Tintype AUROC | Community Forensics AUROC |
+|---|---:|---:|---:|---:|
+| Clean | 22.9% | 15.4% | 0.870 | 0.773 |
+| Distorted | 2.2% | 0.8% | 0.636 | 0.577 |
+
+At the shipped threshold on distorted files, Tintype found 44.8% of generated images and flagged 155 of 600 authentic images (25.83%). Community Forensics found 22.8% and flagged 111 of 600 (18.50%). At Tintype's false-positive count, Community Forensics found 34.0%. [Full tables](results/ntire-2026-public-test/report.md) · [Per-file scores](results/ntire-2026-public-test/scores.tsv.gz).
+
+The challenge's nine reported entrants scored between 0.9132 and 0.9978 AUROC on clean public images and between 0.8302 and 0.9738 on distorted public images. Tintype's default score fell below that range on both cohorts. The official ranking uses both the public and hidden split. These after-challenge results cover the public split. [Challenge results, Table 3](https://arxiv.org/html/2604.11487v1#S4).
+
+```bash
+ntire_test=https://huggingface.co/datasets/deepfakesMSU/NTIRE-RobustAIGenDetection-test-public/resolve/7446d42c0ce38305cedc12e1a8ae7925ce2133dd
+curl -fLO "$ntire_test/test_images.zip"
+curl -fLO "$ntire_test/test_labels.csv"
+python3 scripts/evaluate-ntire.py test_images.zip test_labels.csv ntire-test \
+  --split public-test --tintype target/release/tintype --commfor baselines/commfor-384.safetensors
+```
+
+### Comparisons still open
+
 - B-Free's authors report strong results with same-format controls and post-processing. Pangram Image 1.0 is a commercial comparison for the newest image generators. Establishing a broader image rank requires scores on identical inputs and at matched operating points. [B-Free](https://arxiv.org/abs/2412.17671) · [Pangram Image 1.0](https://www.pangram.com/blog/introducing-pangram-image-1-0).
 - DF26 uses controlled-access, format-normalized talking-head footage from recent video generators. VidAudit provides controls for duration, codec and real-source confounds in video benchmarks. A wider video comparison should include current systems such as NVIDIA Synthetic Video Detector and Pangram's video detector, which uses Image Flash 1.0, on the same held-out clips. [DF26](https://huggingface.co/datasets/DF26/DF26) · [VidAudit](https://arxiv.org/abs/2606.31004) · [NVIDIA model card](https://build.nvidia.com/nvidia/synthetic-video-detector/modelcard) · [Pangram video detector](https://www.pangram.com/video-detector).
