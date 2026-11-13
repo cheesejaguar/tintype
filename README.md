@@ -62,7 +62,7 @@ tintype serve --bind 127.0.0.1:8080
 
 The recursive scanner streams JSON Lines and keeps its models loaded across
 chunks. The server keeps models loaded across requests. See the
-[HTTP API](docs/API.md) and the [agent skill](skills/tintype/SKILL.md).
+[HTTP API](docs/API.md), [Linux container images](docs/DISTRIBUTION.md#published-images), and [agent skill](skills/tintype/SKILL.md).
 
 Install the skill for a supported coding agent after installing the CLI.
 

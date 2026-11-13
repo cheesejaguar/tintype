@@ -64,10 +64,7 @@ health checks, and server options.
 The [container workflow](../.github/workflows/containers.yml) publishes
 versioned Linux AMD64 and ARM64 images to GitHub Container Registry. The
 code-only image takes your models from a read-only mount. The bundled image
-includes the noncommercial Tintype checkpoints.
-
-After the selected release tag has been published to the registry, use it
-in either command.
+includes the noncommercial Tintype checkpoints. Both v0.1.0 images support anonymous pulls.
 
 ```sh
 export TINTYPE_API_TOKEN="$(openssl rand -hex 32)"
@@ -78,7 +75,7 @@ docker run --rm --init -e TINTYPE_API_TOKEN -p 127.0.0.1:8080:8080 \
 ```
 
 The workflow summary records both index digests for pinning deployments.
-To check image provenance, authenticate to the registry and run
+To check image provenance, run
 `gh attestation verify oci://ghcr.io/cheesejaguar/tintype@sha256:DIGEST --repo cheesejaguar/tintype`
 with the digest from that summary.
 
@@ -113,9 +110,7 @@ pushing the tested images, verifying their platform indexes, and attesting
 the two index digests. It uses the repository's GitHub Actions token with
 package write access.
 
-GitHub creates new packages with private visibility. For anonymous pulls,
-open Package settings for both `tintype` and `tintype-bundled`, choose
-**Change visibility** under **Danger Zone**, and set each package to
-**Public**. GitHub treats that visibility change as permanent. Verify the
-published manifests without a logged-in registry client before announcing
-them. [GitHub package settings](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#configuring-visibility-of-packages-for-your-personal-account).
+Verify the published manifests and layers with an anonymous registry
+client before announcing a version. If anonymous pulls fail for a new
+package you intend to distribute publicly, check its visibility in Package
+settings. [GitHub package settings](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#configuring-visibility-of-packages-for-your-personal-account).
