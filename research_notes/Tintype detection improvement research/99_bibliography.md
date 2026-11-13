@@ -1,8 +1,8 @@
-# Master bibliography: Tintype detection-improvement research notes (01–08)
+# Master bibliography: Tintype detection-improvement research notes (01–09) and verification
 
-**Distinct academic papers, reports and benchmarks: 231.** That is 219 with an arXiv ID plus 12 cited only by venue, DOI or proceedings link. Software, project pages, model cards, blogs, review or aggregator sites, and challenge web pages are not counted. They are listed separately at the end.
+**Distinct academic papers, reports and benchmarks: 267.** That is 253 with an arXiv ID plus 14 cited only by venue, DOI, proceedings link or institutional record. Rows 1–231 come from notes 01–08 (219 arXiv + 12), rows 232–258 from the gap-fill note 09 (26 arXiv + 1), and rows 259–267 from the adversarial verification of the draft report (8 arXiv + 1). Updated 2026-11-13. Software, project pages, model cards, blogs, review or aggregator sites, and challenge web pages are not counted. They are listed separately at the end.
 
-Compiled 2026-11-13 from `01_low_level_forensic_signals.md` through `08_calibration_openset_evaluation.md`. Entries cited under different names were merged into one row each. For example, B-Free is cited in 7 notes (as "B-Free", "[P5]", "#13", "1.9", and as "Guillaro et al."). Aligned Datasets is also called "AlignedForensics" and "On the effectiveness of dataset alignment". Deepfake-Eval-2024 is cited in 4 notes, and Chameleon is merged with AIDE. Entries are sorted by topic area, then by year.
+Compiled 2026-11-13 from `01_low_level_forensic_signals.md` through `08_calibration_openset_evaluation.md`. Rows 232–267 (sections R and S) were added afterwards from `09_gap_fill.md` and the verification pass. Entries cited under different names were merged into one row each. For example, B-Free is cited in 7 notes (as "B-Free", "[P5]", "#13", "1.9", and as "Guillaro et al."). Aligned Datasets is also called "AlignedForensics" and "On the effectiveness of dataset alignment". Deepfake-Eval-2024 is cited in 4 notes, and Chameleon is merged with AIDE. Entries are sorted by topic area, then by year.
 
 ## How to read this
 
@@ -383,17 +383,68 @@ Naming caveat: in 02, "DINOv3 paper" always means **Huang et al., "Rethinking Cr
 | 229 | DRAGON | Bertazzini et al. | arXiv | 2025 | [arXiv 2505.11257](https://arxiv.org/abs/2505.11257) | 08[u] | OK |
 | 230 | "How well are open sourced AI-generated image detection models out-of-the-box…" ("Out-of-the-box benchmark") | S. Ren et al. | arXiv | 2026 | [arXiv 2602.07814](https://arxiv.org/abs/2602.07814) | 07[ctx], 08[u] | OK |
 | 231 | "The Synthetic Media Shift…" (Community Notes in-the-wild study) | Chrysidis et al. | arXiv | 2026 | arXiv 2604.15372 | 02[u] | OK |
+## R. Added by the completeness critic (note 09, gap fill)
+
+Tags follow note 09: u = full text or HTML read on 2026-11-13; abs = abstract only, no full-text figures; snip = search-result snippet of the primary page; ctx = context only. "Check" for these rows means the critic confirmed the ID is absent from rows 1–231 with `grep` and looked it up on its arXiv abstract page.
+
+| # | Paper | First author et al. | Venue | Year | Link (as given) | Cited in [tag] | Check |
+|---|---|---|---|---|---|---|---|
+| 232 | D³QE: "Discrete Distribution Discrepancy-aware Quantization Error for AR-generated image detection" (ARForensics benchmark) | Y. Zhang et al. | ICCV | 2025 | [arXiv 2510.05891](https://arxiv.org/abs/2510.05891) | 09[u] | OK |
+| 233 | PRADA: "Probability-Ratio-Based Attribution and Detection of AR-generated images" | S. Damm, J. Ricker, H. Petzka & A. Fischer | CVPR Findings | 2026 | [arXiv 2511.20068](https://arxiv.org/abs/2511.20068) | 09[u] | OK |
+| 234 | "Exploiting the Final Component of Generator Architectures for AI-Generated Image Detection" | Y. Liu et al. | arXiv | 2026 | [arXiv 2601.20461](https://arxiv.org/abs/2601.20461) | 09[abs] | OK |
+| 235 | GPT-ImgEval | Z. Yan et al. | arXiv | 2025 | [arXiv 2504.02782](https://arxiv.org/html/2504.02782v3) | 09[u] | OK |
+| 236 | "A Benchmark Dataset for MLLM-Generated Image Detection: GPT Image2 & Nano Banana2" | Z. Zhang et al. | arXiv | 2026 | [arXiv 2608.01258](https://arxiv.org/abs/2608.01258) | 09[u] | OK |
+| 237 | "Guess the Unified Model: How Much Can We Recover from Generated Images?" | J. Cekinmez et al. | arXiv | 2026 | [arXiv 2605.25254](https://arxiv.org/abs/2605.25254) | 09[abs] | OK |
+| 238 | OMAT / GenImage++: "Breaking Latent Prior Bias in Detectors" | Y. Zhou et al. | arXiv | 2025 | [arXiv 2506.00874](https://arxiv.org/html/2506.00874v1) | 09[u] | OK |
+| 239 | INP-X: "AI-Generated Image Detectors Exploit Global Artifacts: Evidence from Inpainting Exchange" | E. Nebioglu, E. Bilgiç & A. Popescu | WACV | 2027 | [arXiv 2602.00192](https://arxiv.org/abs/2602.00192) | 09[u], verifier R4 | OK |
+| 240 | "Detecting Localized Deepfakes: How Well Do Synthetic Image Detectors Handle Inpainting?" | S. Pandolfini et al. | arXiv | 2025 | [arXiv 2512.16688](https://arxiv.org/abs/2512.16688) | 09[abs] | OK |
+| 241 | UniAIDet | authors not retrieved | arXiv | 2025 | [arXiv 2510.23023](https://arxiv.org/html/2510.23023v1) | 09[snip] | OK |
+| 242 | "Adversarial Magnification to Deceive Deepfake Detection through Super Resolution" | D. A. Coccomini et al. | arXiv | 2024 | [arXiv 2407.02670](https://arxiv.org/html/2407.02670) | 09[u] | OK |
+| 243 | "Apple's Synthetic Defocus Noise Pattern: Characterization and Forensic Applications" | authors not retrieved | arXiv | 2025 | [arXiv 2505.07380](https://arxiv.org/abs/2505.07380) | 09[snip, ctx] | OK |
+| 244 | TextFake: "Benchmarking AI-Generated Image Detection on Text-Rich Images" | Y. Zhang et al. | arXiv | 2026 | [arXiv 2606.01050](https://arxiv.org/abs/2606.01050) | 09[abs] | OK |
+| 245 | AIGDoc: "Beyond Natural Images: Rethinking AI-Generated Image Detection in Documents" | Z. Fu et al. | arXiv | 2026 | [arXiv 2609.14352](https://arxiv.org/abs/2609.14352) | 09[abs] | OK |
+| 246 | TextRich: "A Multi-Domain Benchmark for Detecting AI-Generated Text-Rich Images from GPT-Image-2" | Y. Wang et al. | arXiv | 2026 | [arXiv 2606.19259](https://arxiv.org/abs/2606.19259) | 09[abs] | OK |
+| 247 | WiSE-FT: "Robust fine-tuning of zero-shot models" | M. Wortsman et al. | CVPR | 2022 | [arXiv 2109.01903](https://arxiv.org/abs/2109.01903) | 09[u] | OK |
+| 248 | "Model soups: averaging weights of multiple fine-tuned models…" | M. Wortsman et al. | ICML | 2022 | [arXiv 2203.05482](https://arxiv.org/abs/2203.05482) | 09[u] | OK |
+| 249 | R²M: "Real-Aware Residual Model Merging for Robust and Generalizable Deepfake Detection" | J. Park et al. | ECCV | 2026 | [arXiv 2509.24367](https://arxiv.org/abs/2509.24367) | 09[u] | OK |
+| 250 | RobustSora: "De-Watermarked Benchmark for Robust AI-Generated Video Detection" | Z. Wang, X. Liu & L. Sun | arXiv | 2025 | [arXiv 2512.10248](https://arxiv.org/abs/2512.10248) | 09[u] | OK |
+| 251 | RA-Bench: "Can We Defend Against AI-Generated Video Attacks on Real-World Crisis Events?" | S. Liang et al. | arXiv | 2026 | [arXiv 2608.14391](https://arxiv.org/abs/2608.14391) | 09[abs] | OK |
+| 252 | "Will Large-scale Generative Models Corrupt Future Datasets?" | R. Hataya, H. Bao & H. Arai | ICCV | 2023 | [arXiv 2211.08095](https://arxiv.org/abs/2211.08095) | 09[u] | OK |
+| 253 | "Forensic Self-Descriptions Are All You Need for Zero-Shot Detection, Open-Set Source Attribution, and Clustering of AI-generated Images" | T. D. Nguyen, A. Azizpour & M. C. Stamm | CVPR | 2025 | [arXiv 2503.21003](https://arxiv.org/html/2503.21003v1) | 09[u] | OK |
+| 254 | "Certifiably Robust Synthetic Image Detectors" | K. Zeng, M. Barni & B. Tondi | EUSIPCO | 2025 | DOI 10.23919/eusipco63237.2025.11226152; [Siena repository](https://usiena-air.unisi.it/handle/11365/1315942) | 09[snip] | n/c (no arXiv ID) |
+| 255 | "Certifiably Robust Image Watermark" | Z. Jiang et al. | ECCV | 2024 | [arXiv 2407.04086](https://arxiv.org/abs/2407.04086) | 09[abs] | OK |
+| 256 | "Certified Adversarial Robustness via Randomized Smoothing" | J. Cohen, E. Rosenfeld & J. Z. Kolter | ICML | 2019 | [arXiv 1902.02918](https://arxiv.org/abs/1902.02918) | 09[ctx] | OK |
+| 257 | "AI-Generated Images: What Humans and Machines See When They Look at the Same Image" | S. Poletti et al. | arXiv (Springer CCIS) | 2026 | [arXiv 2605.06143](https://arxiv.org/abs/2605.06143) | 09[abs] | OK |
+| 258 | GenImage: "A Million-Scale Benchmark for Detecting AI-Generated Image" | M. Zhu et al. | NeurIPS D&B | 2023 | [arXiv 2306.08571](https://arxiv.org/html/2306.08571v2) | 09[u] | OK |
+
+## S. Added during adversarial verification of the draft
+
+These were introduced by the evidence-lens verifiers as corrections or counter-evidence. "ver" = cited by a verifier; the verifier's reading depth is given in brackets. The arXiv IDs of rows 259–266 were looked up in the arXiv API (export.arxiv.org) on 2026-11-13 and the returned titles and authors match.
+
+| # | Paper | First author et al. | Venue | Year | Link (as given) | Cited in [tag] | Check |
+|---|---|---|---|---|---|---|---|
+| 259 | "Conformal prediction beyond exchangeability" | R. F. Barber, E. J. Candès, A. Ramdas & R. J. Tibshirani | Annals of Statistics | 2023 | [arXiv 2202.13415](https://arxiv.org/abs/2202.13415) | ver R2 [ctx; replaces the RAW citation] | OK |
+| 260 | "Conformal Prediction Under Covariate Shift" | R. J. Tibshirani, R. F. Barber, E. J. Candès & A. Ramdas | NeurIPS | 2019 | [arXiv 1904.06019](https://arxiv.org/abs/1904.06019) | ver R2 [ctx] | OK |
+| 261 | "The limits of distribution-free conditional predictive inference" | R. F. Barber et al. | Information and Inference | 2021 | [arXiv 1903.04684](https://arxiv.org/abs/1903.04684) | ver R2 [ctx] | OK |
+| 262 | CoReD: "Generalizing Fake Media Detection with Continual Representation using Distillation" | M. Kim, S. Tariq & S. S. Woo | ACM MM | 2021 | [arXiv 2107.02408](https://arxiv.org/abs/2107.02408) | ver R7 [abs] | OK |
+| 263 | LiteUpdate: "A Lightweight Framework for Updating AI-Generated Image Detectors" | J. Lu et al. | arXiv | 2025 | [arXiv 2511.07192](https://arxiv.org/html/2511.07192v1) | ver R10 [HTML] | OK |
+| 264 | "Defensive Quantization: When Efficiency Meets Robustness" | J. Lin, C. Gan & S. Han | ICLR | 2019 | [arXiv 1904.08444](https://arxiv.org/abs/1904.08444) | ver R9 [abs] | OK |
+| 265 | "Understanding vision transformer robustness through the lens of out-of-distribution detection" | J. Kuang & A. Wong | arXiv | 2026 | [arXiv 2602.01459](https://arxiv.org/abs/2602.01459) | ver R9 [ctx; 4-bit only] | OK |
+| 266 | "Generalizable Detection of AI Generated Images with Large Models and Fuzzy Decision Tree" | F. Wu et al. | arXiv | 2026 | [arXiv 2603.28508](https://arxiv.org/abs/2603.28508) | ver R3 [ctx; numbers not checked] | OK |
+| 267 | CAID: "Benchmark dataset and framework for continual AI-generated image detection" | authors not retrieved | (HIT scholar record) | 2025–26 | [HIT scholar page](https://scholar.hit.edu.cn/en/publications/benchmark-dataset-and-framework-for-continual-ai-generated-image-/) | ver R7 [snip; numbers not verified] | n/c (no arXiv ID) |
+
 ### Count reconciliation
 
-- I extracted 219 distinct arXiv IDs from the eight notes. All 219 resolve on arXiv, and each maps to exactly one row above. For SPSL, the ID in the note (2103.01412) is wrong and the row gives the corrected ID 2103.01856.
-- 12 papers are cited without an arXiv ID: BiHPF (#7), LGrad (#10), Synthbuster (#11), Frequency Masking (#16), DRCT (#21), TechRxiv MLLM face study (#56), Breaking Semantic Artifacts (#60), OST (#71), DACOM (#97), MDPI score-fusion (#133), Tao et al. IJCAI 2025 (#141) and DFD-HR (#150).
-- 219 + 12 = **231 distinct academic papers, reports and benchmarks**, numbered 1–231 above. BusterX and BusterX++ are counted separately. So are the two Cakiroglu et al. 2026 papers (corpus identity; codec/anytime) and the two Corvi et al. 2023 papers.
+- Rows 1–231 come from notes 01–08. I extracted 219 distinct arXiv IDs from those notes; all 219 resolve on arXiv and each maps to exactly one row. For SPSL, the ID in the note (2103.01412) is wrong and the row gives the corrected ID 2103.01856. 12 of those papers are cited without an arXiv ID: BiHPF (#7), LGrad (#10), Synthbuster (#11), Frequency Masking (#16), DRCT (#21), TechRxiv MLLM face study (#56), Breaking Semantic Artifacts (#60), OST (#71), DACOM (#97), MDPI score-fusion (#133), Tao et al. IJCAI 2025 (#141) and DFD-HR (#150).
+- Rows 232–258 come from the gap-fill note (09): 26 with arXiv IDs plus Zeng et al. (EUSIPCO, DOI only, #254). Each ID was grepped against rows 1–231 before it was added; none duplicates an earlier row.
+- Rows 259–267 were introduced by the adversarial verifiers: 8 with arXiv IDs, title-checked on export.arxiv.org on 2026-11-13, plus the CAID record (#267, no arXiv ID). None duplicates an earlier row. DACOM (#97), DF40 and HEDGE, which the verifiers also cited, were already listed and are not double-counted.
+- Total: 219 + 26 + 8 = **253 with an arXiv ID**, and 12 + 1 + 1 = **14 without**, for **267 distinct academic papers, reports and benchmarks**. BusterX and BusterX++ are counted separately, as are the two Cakiroglu et al. 2026 papers, the two Corvi et al. 2023 papers, and the two Wortsman et al. 2022 papers (WiSE-FT, model soups).
 
 ---
 
 ## Mentioned without any citation (not counted)
 
-Named in the notes with no title, authors or link: GenD (08, face-deepfake baseline), ForAda (DFD-HR context), Over-Coherence and FVMD (05, video baselines), the "Where did I come from? Origin attribution" paper (08, flagged as not located), "The Adversarial AI-Art" benchmark (08, not verified), C2PA, Tree-Ring and Stable Signature (08, as provenance or watermark schemes), FaceForensics++, Celeb-DF and DFDC (06, as datasets), Meta's DINOv3 backbone paper (never cited directly), and the Davodi et al. content-matched cohort (Tintype repo evidence).
+Named in the notes with no title, authors or link: GenD (08, face-deepfake baseline), ForAda (DFD-HR context), Over-Coherence and FVMD (05, video baselines), the "Where did I come from? Origin attribution" paper (08, flagged as not located), "The Adversarial AI-Art" benchmark (08, not verified), C2PA, Tree-Ring and Stable Signature (08, as provenance or watermark schemes), FaceForensics++, Celeb-DF and DFDC (06, as datasets), Meta's DINOv3 backbone paper (never cited directly), and the Davodi et al. content-matched cohort (Tintype repo evidence). Added after verification: "Three Forensic Cues for JPEG AI Images" (2025; seen only in a search listing, not verified), DFIL and SUR-LID (continual deepfake methods cited only through DECODE's table), and a CHI 2026 workshop study of explanation reliance (Zenodo record 19700249, named in note 09).
 
 ## Non-academic sources: software, project pages, model cards, blogs, reviews and challenge pages (not counted)
 
