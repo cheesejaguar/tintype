@@ -68,7 +68,8 @@ def download(url, destination):
     print(f"Downloading {url}", file=sys.stderr)
     subprocess.run(
         ["curl", "--fail", "--location", "--silent", "--show-error", "--retry", "3",
-         "--connect-timeout", "20", "--max-time", "1200", "--output", str(destination), url],
+         "--connect-timeout", "20", "--max-time", "1200", "--retry-max-time", "1200",
+         "--output", str(destination), url],
         check=True,
     )
 
@@ -144,7 +145,9 @@ def prepare_media(archive_path, scratch, expected_counts=True):
             if path.is_absolute() or ".." in path.parts or "\\" in filename or not path.name:
                 raise ValueError(f"invalid image filename for {image_id}: {filename!r}")
             candidates = members.get(path.as_posix())
-            if len(path.parts) == 1:
+            if not candidates and path.parts[0] == "images":
+                candidates = members.get(PurePosixPath(*path.parts[1:]).as_posix())
+            elif len(path.parts) == 1:
                 candidates = members.get(f"{class_name}/{category}/{path.name}", candidates)
             if not candidates:
                 missing.append((image_id, label, filename))
@@ -189,7 +192,7 @@ def write_tsv(path, rows):
 def normalize(items, scratch, jobs):
     def one(item):
         try:
-            encode_jpeg(scratch / item.original, scratch / item.jpeg, quality=4)
+            encode_jpeg(scratch / item.original, scratch / item.jpeg, quality=4, autorotate=False)
         except ValueError as error:
             return item.jpeg, str(error)
         return None
@@ -277,7 +280,7 @@ def emit_report(output, scratch, binary, paired, scores):
     counts = Counter(item.label for item in paired)
     text = ("# AI Detector Arena v0.1\n\n"
             "Author-run evaluation on an external benchmark. Original and normalized rows use the same paired inputs.\n\n"
-            f"Paired coverage: {len(paired)} images ({counts[1]} generated, {counts[0]} authentic). "
+            f"Paired coverage is {len(paired)} images ({counts[1]} generated, {counts[0]} authentic). "
             "See `run.json` and `errors.tsv` for source coverage and exclusions.\n\n"
             "Normalization uses a same-dimension 4:2:0 JPEG re-encode at FFmpeg MJPEG q4 for both classes. "
             "It retains traces of previous compression. Recall at 1% FPR is an empirical ranking comparison "
@@ -328,6 +331,7 @@ def evaluate(args):
 
         paired = [item for item in items if all(item.path(variant) in table
                   for variant in VARIANTS for table in scores.values())]
+        paired_ids = {item.id for item in paired}
         write_tsv(output / "errors.tsv", [
             ("id", "variant", "stage", "reason"),
             *((image_id, "original", "metadata", f"missing archive member {filename}") for image_id, _, filename in missing),
@@ -339,7 +343,7 @@ def evaluate(args):
         write_tsv(output / "inputs.tsv", [
             ("id", "label", "generator", "category", "member", "original_sha256", "jpeg_sha256", "paired"),
             *((item.id, item.label, item.generator, item.category, item.member, item.sha256,
-               file_digest(scratch / item.jpeg) if item.jpeg not in encode_errors else "", int(item in paired)) for item in items),
+               file_digest(scratch / item.jpeg) if item.jpeg not in encode_errors else "", int(item.id in paired_ids)) for item in items),
         ])
         run = {
             "archive_url": ARENA_URL, "archive_sha256": ARENA_SHA256,
@@ -348,7 +352,7 @@ def evaluate(args):
             "archive_counts": {"generated": sum(item.label for item in items), "authentic": sum(not item.label for item in items)},
             "original_formats": {f"{label}:{kind}": count for (label, kind), count in formats.items()},
             "metadata_paths_missing": len(missing), "paired_images": len(paired),
-            "normalization": {"encoder": "mjpeg", "quality": 4, "pixel_format": "yuvj420p", "resize": False},
+            "normalization": {"encoder": "mjpeg", "quality": 4, "pixel_format": "yuvj420p", "resize": False, "autorotate": False},
             "jpeg_encode_failures": len(encode_errors),
             "detector_failures": {name: len(failures) for name, failures in errors.items()},
             "device": args.device, "platform": platform.platform(), "ffmpeg": ffmpeg_version,

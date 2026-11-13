@@ -81,9 +81,23 @@ tintype report --markdown --system Tintype=/tmp/tintype-jpeg-stress/tintype.tsv 
   --system 'Community Forensics=/tmp/tintype-jpeg-stress/commfor.tsv'
 ```
 
+## AI Detector Arena v0.1
+
+The Arena runner evaluates the externally curated dataset with Tintype's released photo checkpoint. Its original and normalized tables use the same image IDs, and optional Community Forensics scores use those same inputs. The runner verifies the published archive SHA-256 and uses the label metadata inside it. If the archive omits the CSV, it retrieves a fixed GitHub revision and verifies the Git blob ID. The released photo weights, model spec and optional Community Forensics checkpoint are verified before scoring. [Arena release record](https://github.com/AI-Detect-Arena/benchmark-dataset/blob/3014b54eec9d44c7ef60b4c7e0cda6aeb4735d5b/RELEASE_v0.1.md).
+
+```bash
+cargo build --release --locked --bin tintype
+python3 scripts/evaluate-arena.py arena-results --tintype target/release/tintype
+# On macOS, include the pinned Community Forensics reference.
+python3 scripts/evaluate-arena.py arena-head-to-head --tintype target/release/tintype --with-commfor
+```
+
+The runner requires Python 3.9 or later, FFmpeg and curl. `--archive` accepts a previously downloaded copy of the pinned ZIP. `--commfor` accepts a local copy of the pinned baseline checkpoint on macOS. `report.md` contains the metrics, `run.json` records hashes, counts, and encoder version, `inputs.tsv` pairs the original and JPEG hashes, `errors.tsv` lists exclusions, and `scores.tsv.gz` contains the per-file scores. The runner drops an input from both variants if either detector could not score it in either variant. `scripts/report-archive.py` can regenerate the tables from `scores.tsv.gz`.
+
+The originals have a format imbalance between labels. The runner counts formats from file signatures, including JPEG data stored under `.png` names. It re-encodes both classes to 4:2:0 JPEG at FFmpeg MJPEG q4 with stored dimensions and orientation, and with source metadata removed. That controls the output format and encoder. Earlier compression, image sources, and content differences remain. The public repository CSV lists 1,032 authentic images while the release lists 1,020. The runner reports the actual archive membership and any missing metadata paths. Results from this runner are author-run comparisons and the official leaderboard uses its own submissions.
+
 ## External comparisons
 
 - The CVPR 2026 NTIRE challenge measures clean and distorted images separately. Its labeled hard validation set can support a reproducible distortion benchmark. An official challenge ranking requires scoring the challenge test set with its evaluator. [Validation archive](https://huggingface.co/datasets/deepfakesMSU/NTIRE-RobustAIGenDetection-val/tree/main) · [Challenge protocol and results](https://arxiv.org/abs/2604.11487).
-- AI Detector Arena v0.1 lists 2,038 images across 17 generators. The full release has a published SHA-256. The GitHub sample has only one generated image per category, all from FLUX.2 Flex, and 30 authentic images. At that size a single false positive moves the rate by 3.3 percentage points. [Full benchmark release](https://github.com/AI-Detect-Arena/benchmark-dataset/blob/main/RELEASE_v0.1.md).
 - B-Free's authors report strong results with same-format controls and post-processing. Pangram Image 1.0 is a commercial comparison for the newest image generators. Establishing a broader image rank requires scores on identical inputs and at matched operating points. [B-Free](https://arxiv.org/abs/2412.17671) · [Pangram Image 1.0](https://www.pangram.com/blog/introducing-pangram-image-1-0).
 - DF26 uses controlled-access, format-normalized talking-head footage from recent video generators. VidAudit provides controls for duration, codec and real-source confounds in video benchmarks. A wider video comparison should include current systems such as NVIDIA Synthetic Video Detector and Pangram's video detector, which uses Image Flash 1.0, on the same held-out clips. [DF26](https://huggingface.co/datasets/DF26/DF26) · [VidAudit](https://arxiv.org/abs/2606.31004) · [NVIDIA model card](https://build.nvidia.com/nvidia/synthetic-video-detector/modelcard) · [Pangram video detector](https://www.pangram.com/video-detector).
