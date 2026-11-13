@@ -224,6 +224,7 @@ def tintype_scores(binary, weights, device, paths, scratch):
         for line in result.stdout.splitlines():
             row = json.loads(line)
             record(scores, errors, row["path"], row.get("score"), row.get("error"))
+        print(f"Tintype scored {len(scores) + len(errors)}/{len(paths)} inputs", file=sys.stderr)
     require_coverage(paths, scores, errors)
     return scores, errors
 
@@ -322,11 +323,13 @@ def evaluate(args):
         items, missing, formats, metadata_source, metadata_sha256 = prepare_media(archive, scratch)
         print(f"Prepared {len(items)} Arena originals", file=sys.stderr)
         encode_errors = normalize(items, scratch, args.jobs)
+        print(f"Prepared {len(items) - len(encode_errors)} Arena JPEG copies", file=sys.stderr)
         expected = {item.path(variant): (item, variant) for variant in VARIANTS for item in items
                     if item.path(variant) not in encode_errors}
         scores, errors = {}, {}
         scores["tintype"], errors["tintype"] = tintype_scores(binary, weights, args.device, list(expected), scratch)
         if commfor:
+            print(f"Scoring {len(expected)} inputs with Community Forensics", file=sys.stderr)
             scores["commfor"], errors["commfor"] = commfor_scores(binary, commfor, args.device, expected, scratch)
 
         paired = [item for item in items if all(item.path(variant) in table
