@@ -45,6 +45,6 @@ The original without configured trust anchors reports `valid-untrusted`. The ori
 
 ## Scope
 
-The verifier uses the [CAI Rust SDK](https://github.com/contentauth/c2pa-rs), licensed MIT or Apache-2.0, with Rust-native crypto and HTTP features disabled. It reads the original file stream, skips external manifests and sidecars, and leaves live revocation checks disabled. It uses embedded revocation and timestamp information where supported by the validator and local trust policy. The command accepts regular files up to 512 MiB and caps decompressed manifests at 8 MiB.
+The verifier uses the [CAI Rust SDK](https://github.com/contentauth/c2pa-rs), licensed MIT or Apache-2.0, with Rust-native crypto and HTTP features disabled. It reads the original file stream, skips external manifests and sidecars, and leaves live revocation checks disabled. It uses embedded revocation and timestamp information where supported by the validator and local trust policy. The command reads embedded credentials in JPEG, PNG, WebP, GIF, TIFF (including DNG, ARW and NEF), JPEG XL containers, AVIF, HEIC/HEIF, MP4, MOV, M4V, and AVI. It accepts regular files up to 512 MiB and caps decompressed manifests at 8 MiB.
 
 The CLI command adds no credential parsing to the HTTP request path. It handles claims in the active manifest. Keep the original file to retain any credential that an editor or service may remove.

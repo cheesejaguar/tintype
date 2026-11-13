@@ -55,3 +55,27 @@ fn reports_tampered_and_missing_credentials() {
     let report = inspect(Path::new("site/assets/demo.png"), &[]);
     assert_eq!(report["status"], "absent");
 }
+
+#[test]
+fn accepts_png_bytes_without_a_png_extension_and_rejects_a_detached_store() {
+    use std::io::Write;
+
+    let image = include_bytes!("fixtures/provenance/signed-generated.png");
+    let mut renamed = tempfile::NamedTempFile::new().unwrap();
+    renamed.write_all(image).unwrap();
+    let report = inspect(renamed.path(), &["--trust-anchors", ROOT]);
+    assert_eq!(report["status"], "trusted");
+
+    let mut cursor = 8;
+    while &image[cursor + 4..cursor + 8] != b"caBX" {
+        let size = u32::from_be_bytes(image[cursor..cursor + 4].try_into().unwrap());
+        cursor += size as usize + 12;
+    }
+    let size = u32::from_be_bytes(image[cursor..cursor + 4].try_into().unwrap());
+    let mut detached = tempfile::Builder::new().suffix(".png").tempfile().unwrap();
+    detached
+        .write_all(&image[cursor + 8..cursor + 8 + size as usize])
+        .unwrap();
+    let report = inspect(detached.path(), &["--trust-anchors", ROOT]);
+    assert_eq!(report["status"], "unsupported");
+}
