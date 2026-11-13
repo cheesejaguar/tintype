@@ -6,6 +6,7 @@ Use [Tintype’s GitHub Pages site](https://cheesejaguar.github.io/tintype/) as 
 
 ```sh
 curl -fsSL https://cheesejaguar.github.io/tintype/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 tintype demo --device cpu
 tintype demo --device cpu --sensitive
 ```

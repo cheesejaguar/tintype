@@ -324,6 +324,7 @@ code { font-family: var(--mono); }
 .workflow:first-child { padding-top: 0; }
 .workflow:last-child { padding-bottom: 0; border-bottom: 0; }
 .workflow p { margin-top: .3rem; font-size: .9rem; line-height: 1.45; }
+.workflow p code { overflow-wrap: anywhere; }
 .workflow .text-link { margin-top: .5rem; font-size: .9rem; }
 .api-commands { display: grid; gap: .4rem; min-width: 0; }
 
