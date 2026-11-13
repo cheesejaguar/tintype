@@ -26,6 +26,8 @@ and paths alike; nothing else in them was changed.
 | `confirm7.md` | Fourth blind photo batch (photo second opinion; default profile alongside) |
 | `confirm4-scores.tsv.gz`, `confirm7-scores.tsv.gz` | Per-file detector scores for the release comparison, validated against the frozen video and photo manifests |
 | `frontier-jpeg-stress-scores.tsv.gz` | Paired originals and two JPEG transforms scored by Tintype and Community Forensics on the frontier photo development set |
+| `ntire-2026-hard-validation/` | Both detectors' full scores and tables for the organizers' 2,500 released hard-validation images |
+| `ntire-2026-public-test/` | Both detectors' full scores and tables for the organizers' 2,500 released public test images |
 | `confirm7_second_opinion.log` | That batch set by set against Community Forensics, the timing of the mode on a sample of it, and the check of a real two-stage run against the score-file arithmetic |
 | `linux.log` | Photo and video detection built, tested and run in an aarch64 Linux virtual machine: a sample first, then both whole blind batches next to Community Forensics as released – agreement with macOS, precision, recall and timings |
 | `linux_after_speed.log` | The Linux runs after the speed changes: the build with them against the build before on both blind batches, and the photo second opinion on blind batches 6 and 7 next to Community Forensics as released |
