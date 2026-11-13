@@ -14,6 +14,7 @@ IDENTITY = ["path", "label", "generator", "dataset"]
 NAMES = {
     "tintype": "Tintype",
     "commfor": "Community Forensics",
+    "gpttrace": "GPTTrace PE-Core-L",
     "swinv2": "SwinV2 detector",
     "waverep": "WaveRep",
     "tintype-second": "Tintype + second opinion",
