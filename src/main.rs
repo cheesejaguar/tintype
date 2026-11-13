@@ -6,6 +6,8 @@ use tintype::detector::Detector;
 use tintype::detector::{Device, ModelSpec};
 use tintype::ingest;
 
+#[cfg(feature = "provenance")]
+mod provenance;
 mod scan;
 use scan::ScanOptions;
 
@@ -42,6 +44,9 @@ enum Cmd {
     },
     /// Score the included labeled sample offline.
     Demo(scan::DemoOptions),
+    /// Verify embedded C2PA Content Credentials offline.
+    #[cfg(feature = "provenance")]
+    Provenance(provenance::ProvenanceArgs),
     /// Start the versioned HTTP API for photos and video.
     Serve(tintype::server::ServeArgs),
     /// Score every image in a manifest: `path label generator dataset prob logits...`.
@@ -474,6 +479,8 @@ fn main() -> Result<()> {
         }
         Cmd::Batch { paths, options } => scan::batch(paths, options),
         Cmd::Demo(options) => scan::demo(options),
+        #[cfg(feature = "provenance")]
+        Cmd::Provenance(args) => provenance::run(args),
         Cmd::Serve(args) => tintype::server::run(args, scan::resolve_weights),
         Cmd::InitTraining { backbone, sha256, out } => {
             tintype::training_init::initialize(&backbone, &sha256, &out)

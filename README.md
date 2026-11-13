@@ -70,6 +70,25 @@ Install the skill for a supported coding agent after installing the CLI.
 npx skills add cheesejaguar/tintype --skill tintype
 ```
 
+
+### Inspect an embedded Content Credential
+
+The optional source build can check embedded C2PA credentials offline.
+[Download the signed original](docs/assets/provenance-original.png) and save
+it as `provenance-original.png` in the checkout directory.
+
+```sh
+cargo build --release --locked --bin tintype --features provenance
+target/release/tintype provenance provenance-original.png --json
+```
+
+The command reports whether it could verify the credential and what the
+active manifest declares about creation. Supply local signer and timestamp
+trust lists to verify the signer. The original contains an AI-generation
+declaration. The resized demo copy has no embedded credential. See the
+[provenance guide](docs/PROVENANCE.md) for trusted verification and the paired
+pixel scores.
+
 ## 📊 Results
 
 Tintype is compared with released open-weight detectors:

@@ -148,6 +148,21 @@ tintype demo --device cpu --sensitive</code>
             <button type="button" data-copy="sample-command" aria-label="Copy sample commands" hidden>Copy</button>
           </div>
         </div>
+        <div class="workflow" id="provenance">
+          <div>
+            <h3>Verify the signed original</h3>
+            <p>The original of the image above carries a trusted AI-generation declaration when checked with the official C2PA trust lists. The resized copy has no embedded credential.</p>
+            <p>Build from source with the optional feature. Save the <a href="https://raw.githubusercontent.com/cheesejaguar/tintype/main/docs/assets/provenance-original.png">signed original</a> and the two <a href="https://github.com/c2pa-org/conformance-public/tree/main/trust-list">C2PA PEM bundles</a> in the checkout directory.</p>
+            <a class="text-link" href="https://github.com/cheesejaguar/tintype/blob/main/docs/PROVENANCE.md">Provenance guide <span aria-hidden="true">↗</span></a>
+          </div>
+          <div class="command">
+            <code id="provenance-command">cargo build --release --locked --bin tintype --features provenance
+target/release/tintype provenance provenance-original.png \
+  --trust-anchors C2PA-TRUST-LIST.pem \
+  --tsa-anchors C2PA-TSA-TRUST-LIST.pem --json</code>
+            <button type="button" data-copy="provenance-command" aria-label="Copy provenance commands" hidden>Copy</button>
+          </div>
+        </div>
         <div class="workflow">
           <div>
             <h3>Scan one file</h3>
