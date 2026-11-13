@@ -59,6 +59,29 @@ The container runs as UID and GID 65532. Mounted weights and their sidecars
 must be readable by that user. See the [HTTP API](API.md) for upload limits,
 health checks, and server options.
 
+### Published images
+
+The [container workflow](../.github/workflows/containers.yml) publishes
+versioned Linux AMD64 and ARM64 images to GitHub Container Registry. The
+code-only image takes your models from a read-only mount. The bundled image
+includes the noncommercial Tintype checkpoints.
+
+After the selected release tag has been published to the registry, use it
+in either command.
+
+```sh
+export TINTYPE_API_TOKEN="$(openssl rand -hex 32)"
+docker run --rm --init -e TINTYPE_API_TOKEN -p 127.0.0.1:8080:8080 \
+  -v "$PWD/my-models:/models:ro" ghcr.io/cheesejaguar/tintype:v0.1.0
+docker run --rm --init -e TINTYPE_API_TOKEN -p 127.0.0.1:8080:8080 \
+  ghcr.io/cheesejaguar/tintype-bundled:v0.1.0
+```
+
+The workflow summary records both index digests for pinning deployments.
+To check image provenance, authenticate to the registry and run
+`gh attestation verify oci://ghcr.io/cheesejaguar/tintype@sha256:DIGEST --repo cheesejaguar/tintype`
+with the digest from that summary.
+
 ## Release workflow
 
 The tag must match the version reported by `tintype --version`. The
@@ -73,3 +96,26 @@ site and the checked-in installer once a stable release carries all installer
 assets. Publishing the draft triggers the first deployment. In repository Settings → Pages, set
 the source to **GitHub Actions**. After deployment, verify the site and
 the exact public install command from a clean directory.
+
+### Publish release containers
+
+After publishing a stable GitHub Release, dispatch the container workflow
+from the default branch.
+
+```sh
+gh workflow run containers.yml -f tag=v0.1.0 -F publish=false
+gh workflow run containers.yml -f tag=v0.1.0 -F publish=true
+```
+
+The first dispatch verifies the signed release archives and smoke-tests both
+images on both native architectures. The second repeats those checks before
+pushing the tested images, verifying their platform indexes, and attesting
+the two index digests. It uses the repository's GitHub Actions token with
+package write access.
+
+GitHub creates new packages with private visibility. For anonymous pulls,
+open Package settings for both `tintype` and `tintype-bundled`, choose
+**Change visibility** under **Danger Zone**, and set each package to
+**Public**. GitHub treats that visibility change as permanent. Verify the
+published manifests without a logged-in registry client before announcing
+them. [GitHub package settings](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#configuring-visibility-of-packages-for-your-personal-account).
