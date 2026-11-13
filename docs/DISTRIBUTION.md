@@ -40,6 +40,8 @@ the same directory. Use `--video-weights` to select a different video
 checkpoint. The [code and model licences](../models/LICENSE.md) cover
 different parts of the distribution. The bundled checkpoints are
 noncommercial. Commercial deployments require weights licensed for that use.
+See [training separate checkpoints](TRAINING.md) for the native initializer
+and calibration workflow.
 
 ## Containers
 
