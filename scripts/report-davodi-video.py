@@ -35,7 +35,7 @@ def write_archive(path, rows):
     path.write_bytes(gzip.compress(content.encode(), mtime=0))
 
 
-def report(system, table, groups, expected):
+def report(system, table, groups, expected, allowed_false_flags):
     values = {name: float(score) for name, (score, _) in table.items()}
     authentic = {scene: members["pixabay"] for scene, members in groups.items()}
     generated = sorted(set(values) - set(authentic.values()))
@@ -45,6 +45,10 @@ def report(system, table, groups, expected):
         (values[fake] > values[real]) + .5 * (values[fake] == values[real])
         for fake in generated for real in authentic.values()
     ) / (len(authentic) * len(generated))
+    authentic_scores = sorted((values[name] for name in authentic.values()), reverse=True)
+    matched_cutoff = authentic_scores[allowed_false_flags] if allowed_false_flags < len(authentic) else -math.inf
+    matched_fake = sum(values[name] > matched_cutoff for name in generated)
+    matched_real = sum(values[name] > matched_cutoff for name in authentic.values())
     margins = defaultdict(list)
     for name in generated:
         source = expected[name]["generator"]
@@ -58,6 +62,11 @@ def report(system, table, groups, expected):
         f"{system}: {fake_flags}/{len(generated)} AI flagged, "
         f"{real_flags}/{len(authentic)} real flagged, AUROC {auc:.4f}, "
         f"matched ranking {wins} wins/{ties} ties/{losses} losses"
+    )
+    print(
+        f"  At most {allowed_false_flags}/{len(authentic)} authentic flags in this cohort: "
+        f"{matched_fake}/{len(generated)} AI flagged, {matched_real}/{len(authentic)} real flagged "
+        f"(score > {matched_cutoff:.6f})"
     )
     for source, diffs in sorted(margins.items()):
         flags = sum(values[name] > .5 for name in generated if expected[name]["generator"] == source)
@@ -94,8 +103,10 @@ def main():
     if args.waverep:
         scores["WaveRep"] = read_scores(args.waverep, expected, "WaveRep")
     print(f"Matched coverage {len(groups)}/24 scenes, {len(expected)} clips")
+    real_scores = (float(scores["Tintype"][members["pixabay"]][0]) for members in groups.values())
+    allowed = sum(score > .5 for score in real_scores)
     for system, table in scores.items():
-        report(system, table, groups, expected)
+        report(system, table, groups, expected, allowed)
 
     rows = [("path", "label", "generator", "dataset", *(name.lower() for name in scores))]
     raw = [("path", "label", "generator", "dataset", "detector", "score", "frame_logits")]
