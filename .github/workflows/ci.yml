@@ -42,6 +42,19 @@ jobs:
           scripts/pack-models.sh dist
           scripts/checksums.sh dist
           scripts/test-install.sh dist
+  provenance:
+    name: Offline Content Credentials (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-22.04, ubuntu-22.04-arm]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo +stable test --release --locked --features provenance --test provenance
   container:
     runs-on: ubuntu-24.04
     steps:

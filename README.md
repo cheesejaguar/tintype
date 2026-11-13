@@ -70,15 +70,34 @@ Install the skill for a supported coding agent after installing the CLI.
 npx skills add cheesejaguar/tintype --skill tintype
 ```
 
+
+### Inspect an embedded Content Credential
+
+The optional source build can check embedded C2PA credentials offline.
+[Download the signed original](docs/assets/provenance-original.png) and save
+it as `provenance-original.png` in the checkout directory.
+
+```sh
+cargo build --release --locked --bin tintype --features provenance
+target/release/tintype provenance provenance-original.png --json
+```
+
+The command reports whether it could verify the credential and what the
+active manifest declares about creation. Supply local signer and timestamp
+trust lists to verify the signer. The original contains an AI-generation
+declaration. The resized demo copy has no embedded credential. See the
+[provenance guide](docs/PROVENANCE.md) for trusted verification and the paired
+pixel scores.
+
 ## 📊 Results
 
 Tintype is compared with released open-weight detectors:
 [Community Forensics](https://github.com/JeongsooP/Community-Forensics) for
 photos and
 [WaveRep](https://github.com/grip-unina/WaveRep-SyntheticVideoDetection) for
-video. Every number here is from a *blind batch*: test data downloaded only
-after the configuration under test and the protocol had been written down and
-committed, and scored once. Each system runs at its shipped threshold.
+video. The charts and default-threshold table below use *blind batches*
+scored after the configuration and protocol were committed. Each system
+runs at its shipped threshold.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/errors-dark.svg">
@@ -110,6 +129,19 @@ On the 2,281 JPEGs in the So-Fake-OOD social-media subset, Tintype reached
 and **28.8%** for Community Forensics. The JPEG filter was applied after
 scoring. The archived scores reproduce both comparisons.
 [Evidence and score archives](docs/EVIDENCE.md)
+
+**External image benchmarks.** After the same JPEG re-encode on 2,038
+Arena images, Tintype reached 73.1% recall at 1% false positives and
+Community Forensics reached 23.7%. On the distorted NTIRE 2026 public
+test, Tintype reached 2.2% at that budget. At the shipped cutoff it flagged
+155 of the 600 authentic distorted inputs.
+[Arena](docs/EVIDENCE.md#ai-detector-arena-v01) · [NTIRE](docs/EVIDENCE.md#cvpr-2026-ntire-public-test)
+
+**Content-matched video.** On 20 scenes with four current generators,
+Tintype flagged 72 of 80 generated clips and 3 of 20 authentic clips.
+The tested 64-frame WaveRep reference flagged 34 generated and 4 authentic
+clips at its shipped cutoff. Both systems used the same normalized clips.
+[Methods and scores](docs/EVIDENCE.md#content-matched-generated-video-clips)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/speed-dark.svg">
@@ -154,8 +186,7 @@ matter:
 - **Video, one set.** On one of the three video sets the plain video model's
   recall is a hair below WaveRep's (0.966 against 0.970), with higher
   precision.
-- **This is not an independent benchmark, and not a state-of-the-art
-  claim.** The author chose the test sets; several share generator families
+- **Scope of the blind batches.** The author chose those test sets; several share generator families
   with the training data (through other collections, never the same files);
   and other released detectors – B-Free, GAPL, PGC among them – have not been
   run on them. What the numbers support is "competitive with the released
