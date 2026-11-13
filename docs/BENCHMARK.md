@@ -5,6 +5,9 @@ Everything was measured on one machine (Apple M6, 32 GB, macOS 27.2) in
 November 2026, and every system – Tintype and the reference detectors – was
 run by the same Rust binary.
 
+The [detection evidence](EVIDENCE.md) gives comparisons at a common false-positive
+rate, archived scores that reproduce the headline tables, and paired JPEG tests.
+
 ## Summary
 
 Results on the five blind batches – data downloaded only after the

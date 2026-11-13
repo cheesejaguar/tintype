@@ -128,7 +128,7 @@ pub fn uniform(r: &mut impl Source, n: usize, max_seconds: f64, path: &Path) -> 
 /// frame `from` gives an empty list when `from > 0`.
 pub fn uniform_range(r: &mut impl Source, n: usize, max_seconds: f64, from: usize, to: usize, path: &Path) -> Result<Vec<Rgb>> {
     let to = to.min(n);
-    let span = if r.duration() > 0.0 { r.duration().min(max_seconds) } else { max_seconds };
+    let span = crate::video::span(r.duration(), max_seconds);
     let mut out: Vec<Rgb> = Vec::with_capacity(to.saturating_sub(from));
     // Index of the next of the `n` targets.
     let mut k = 0;

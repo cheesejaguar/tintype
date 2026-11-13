@@ -1,0 +1,66 @@
+name: GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - site/**
+      - scripts/install.sh
+      - .github/workflows/pages.yml
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    outputs:
+      release: ${{ steps.release.outputs.available }}
+    steps:
+      - name: Check for a published installer bundle
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          release=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName // empty')
+          available=false
+          if [ -n "$release" ]; then
+            available=$(gh release view "$release" --json assets --jq '
+              [.assets[].name] | contains([
+                "SHA256SUMS", "tintype-models.tar.gz", "tintype-macos-arm64.tar.gz",
+                "tintype-linux-x86_64.tar.gz", "tintype-linux-arm64.tar.gz"
+              ])')
+          fi
+          echo "available=$available" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
+          persist-credentials: false
+      - run: |
+          cp scripts/install.sh site/install.sh
+          sh -n site/install.sh
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+  deploy:
+    needs: build
+    if: needs.build.outputs.release == 'true' && (github.ref == 'refs/heads/main' || (github.event_name == 'release' && !github.event.release.prerelease))
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@v4

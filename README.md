@@ -7,11 +7,11 @@
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust&logoColor=white)](Cargo.toml)
 [![Code: MIT or Apache-2.0](https://img.shields.io/badge/code-MIT%20OR%20Apache--2.0-2a78d6)](#-licence)
 [![Weights: CC BY-NC-SA 4.0](https://img.shields.io/badge/weights-CC%20BY--NC--SA%204.0-eb6834)](models/LICENSE.md)
-[![Platforms: macOS and Linux](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-52514e)](#-install)
+[![Platforms: macOS and Linux](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-52514e)](#-build-from-source)
 [![Model: ViT-S/16, 22M parameters](https://img.shields.io/badge/model-ViT--S%2F16%20%C2%B7%2022M%20params-1baf7a)](#-how-it-works)
 [![GitHub stars](https://img.shields.io/github/stars/cheesejaguar/tintype?style=flat&color=898781)](https://github.com/cheesejaguar/tintype/stargazers)
 
-[Quick start](#-quick-start) · [Results](#-results) · [How it works](#-how-it-works) · [Use](#-use) · [Limits](#%EF%B8%8F-limits) · [Benchmark](docs/BENCHMARK.md)
+[Website](https://cheesejaguar.github.io/tintype/) · [Quick start](#-quick-start) · [Results](#-results) · [How it works](#-how-it-works) · [Use](#-use) · [Limits](#%EF%B8%8F-limits) · [Benchmark](docs/BENCHMARK.md)
 
 </div>
 
@@ -24,9 +24,12 @@ tintype detect holiday.jpg clip.mp4
 ```
 
 ```
-AI-GENERATED    98.7%  holiday.jpg
-likely real      2.1%  clip.mp4
+AI-GENERATED   0.987  holiday.jpg
+likely real    0.021  clip.mp4  [looked at 0–13.1 s of 44.3 s, 8 frames]
 ```
+
+The number is a detection score between 0 and 1, flagged above 0.5. It is
+not a probability that the file is AI-generated ([why](#-reading-the-output)).
 
 | 📷 Photos | 🎬 Video | ⚡ Speed |
 |:---:|:---:|:---:|
@@ -40,17 +43,36 @@ kind.
 ## 🚀 Quick start
 
 ```bash
-git clone https://github.com/cheesejaguar/tintype && cd tintype
-cargo build --release
-./target/release/tintype detect path/to/photo.jpg path/to/clip.mp4
+curl -fsSL https://cheesejaguar.github.io/tintype/install.sh | sh
+tintype demo
+tintype detect photo.jpg clip.mp4
 ```
 
-The trained weights ship in the repository (two 87 MB checkpoints, one for
-photos and one for video), so there is nothing else to download.
+The demo scores one bundled image with a known AI-generated label.
+`tintype demo --sensitive` runs the same bytes with a lower threshold.
+
+The installer runs on Apple silicon macOS and glibc Linux (x86-64 or ARM64).
+Detection runs on your machine. See [installation and deployment](docs/DISTRIBUTION.md)
+for release archives, source builds, model paths and code-only installation.
+
+```bash
+tintype batch ./media --json > detections.jsonl
+tintype serve --bind 127.0.0.1:8080
+```
+
+The recursive scanner streams JSON Lines and keeps its models loaded across
+chunks. The server keeps models loaded across requests. See the
+[HTTP API](docs/API.md) and the [agent skill](skills/tintype/SKILL.md).
+
+Install the skill for a supported coding agent after installing the CLI.
+
+```sh
+npx skills add cheesejaguar/tintype --skill tintype
+```
 
 ## 📊 Results
 
-Tintype is compared with the strongest open detectors that ship weights:
+Tintype is compared with released open-weight detectors:
 [Community Forensics](https://github.com/JeongsooP/Community-Forensics) for
 photos and
 [WaveRep](https://github.com/grip-unina/WaveRep-SyntheticVideoDetection) for
@@ -74,6 +96,20 @@ committed, and scored once. Each system runs at its shipped threshold.
 | Tintype | **0.997** | 0.941 |
 | Tintype `--second-opinion` | **0.997** | **0.960** |
 | WaveRep | 0.983 | 0.912 |
+
+At a common false-positive budget of 1%, Tintype recovered **88.5%** of AI
+images in the 23,052-photo batch, compared with **63.1%** for Community
+Forensics and **33.8%** for the SwinV2 detector. The 2,056-clip batch yielded
+**96.1%** recall for Tintype and **87.4%** for WaveRep at the same 1% budget.
+These operating points were measured retrospectively. The shipped thresholds
+flagged 1.21% of real photos and 0.33% of real clips on the respective batches.
+[Photo results](docs/results/confirm7.md) · [Video results](docs/results/confirm4.md)
+
+On the 2,281 JPEGs in the So-Fake-OOD social-media subset, Tintype reached
+**77.0%** recall at 1% false positives, compared with **46.7%** for SwinV2
+and **28.8%** for Community Forensics. The JPEG filter was applied after
+scoring. The archived scores reproduce both comparisons.
+[Evidence and score archives](docs/EVIDENCE.md)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/speed-dark.svg">
@@ -118,6 +154,14 @@ matter:
 - **Video, one set.** On one of the three video sets the plain video model's
   recall is a hair below WaveRep's (0.966 against 0.970), with higher
   precision.
+- **This is not an independent benchmark, and not a state-of-the-art
+  claim.** The author chose the test sets; several share generator families
+  with the training data (through other collections, never the same files);
+  and other released detectors – B-Free, GAPL, PGC among them – have not been
+  run on them. What the numbers support is "competitive with the released
+  baselines it was tested against, on these documented tests", and much less
+  on media that has been through a messenger or social app (see
+  [Limits](#%EF%B8%8F-limits)).
 
 <details>
 <summary><b>Recall on each of the 30 photo sets</b></summary>
@@ -224,13 +268,13 @@ and resolution, so bitrate cannot stand in for the label.
 ### 🎚️ Four operating points
 
 Each is calibrated on held-out real media so that a set share of real items,
-averaged over real sources, scores above 50%. Precision and recall are from
+averaged over real sources, scores above 0.5. Precision and recall are from
 the newest blind photo batch.
 
 | | Views | Calibrated false-positive rate | Precision / recall | Use |
 |---|---|---|---|---|
 | default | up to 6 | 1.5% (photos), 0.5% (video) | 0.988 / 0.897 | The balance |
-| `--strict` | up to 6 | 0.5% | 0.995 / 0.824 | A positive verdict that has to stand on its own |
+| `--strict` | up to 6 | 0.5% | 0.995 / 0.824 | Review queues where false alarms are costly |
 | `--sensitive` | up to 6 | 5% | 0.963 / 0.960 | Triage, where a missed fake costs more than a false alarm |
 | `--fast` | 2 | 0.5% | 0.995 / 0.767 | Bulk scanning at the highest throughput |
 
@@ -244,20 +288,22 @@ the newest blind photo batch.
 
 Images are decoded and resized in Rust (`image`, `zune-jpeg`,
 `fast_image_resize`) on all cores and fed to the engine through a bounded
-queue. Video is decoded in-process: by AVFoundation on macOS and by a
-pure-Rust reader elsewhere (an MP4/MOV parser written for this project
+queue. Video is decoded in-process by AVFoundation on macOS, with a pure-Rust
+fallback that also runs on Linux (an MP4/MOV parser written for this project
 feeding the `rust_h264` and `rust_h265` decoders). The YCbCr→RGB conversion
 is done in Rust either way.
 
-## 📦 Install
+## 📦 Build from source
 
 ```bash
-cargo build --release
+git clone https://github.com/cheesejaguar/tintype && cd tintype
+cargo build --release --locked --bin tintype
+./target/release/tintype detect photo.jpg clip.mp4
 ```
 
-Needs a Rust toolchain. The trained weights are `models/tintype.safetensors`
-for photos and `models/tintype-video.safetensors` for video (87 MB each),
-each with its run spec in a `.json` beside it.
+A recent stable Rust toolchain builds the executable. The checkout includes
+two 87 MB checkpoints and their JSON specs. Run `tintype verify-models`
+from the checkout to verify their hashes.
 
 | | macOS on Apple Silicon | Linux |
 |---|---|---|
@@ -277,6 +323,7 @@ reader can open
 
 ```bash
 tintype detect *.jpg *.mp4                 # human-readable verdicts
+tintype batch ./media --json               # recursive scan, one JSON row per file
 tintype detect --json suspicious.png       # one JSON object per file
 tintype detect --sensitive inbox/*.webp    # looser threshold
 tintype detect --strict evidence.jpg       # tighter threshold
@@ -291,13 +338,50 @@ The WaveRep weights are its authors' and come under their licence (research
 and other non-profit use); they are downloaded from the authors' site, not
 shipped here. The Community Forensics weights are MIT.
 
-Exit status is 0 whether or not anything is flagged; parse the output.
+### 📖 Reading the output
+
+- **The score is not a probability.** It is the network's evidence passed
+  through the chosen profile's calibration, so the same photo gets a
+  different score under `--strict` than under the default. Above 0.5 is
+  flagged. `--json` also gives the evidence itself (`logit`, the same under
+  every profile), the profile's threshold on it (`threshold_logit`) and the
+  `profile` name.
+- **A flag is evidence, not a finding.** At the error rates measured on the
+  newest blind batch (89.7% of AI photos found, 1.2% of real ones flagged),
+  a stream in which one photo in a hundred is AI-generated would have about
+  43% of its flagged photos be AI-generated – more than half the flags would
+  be on real photos. That is arithmetic, not a measurement of any real
+  stream; it is why a flag should lead to a second look, not an accusation.
+- **Video verdicts say what they rest on.** Sixteen frames are spread over
+  the first 30 seconds of a clip, and a clear clip is decided from the first
+  few of them, so most verdicts rest on the first 13 seconds or less. Each
+  line says how far into the clip the frames went (`analysed_until_s` and
+  `duration_s` in JSON). `--max-seconds 0` spreads the frames over the whole
+  clip and `--all-views` looks at every one of them, at a cost in speed:
+  ```bash
+  tintype detect --max-seconds 0 --all-views --frames 64 long-clip.mp4
+  ```
+  Even so, a few generated seconds inside a long real video can fall between
+  the sampled frames.
+- **`INCONCLUSIVE`** means decoding stopped before the verdict had the frames
+  it needed (a damaged or cut-off file): the score of the frames that were
+  read is shown, with no verdict (`"complete": false` in JSON).
+- **Unreadable files** are listed with the reason, and in JSON as
+  `{"path": …, "error": …}`.
+- **Exit status**: 0 when every file got a result, whether or not anything
+  was flagged; 2 when one or more files could not be read (the others are
+  still reported); 1 for a setup error. Invalid command syntax also exits with status 2. `--fast`, `--sensitive` and
+  `--strict` are photo profiles and are refused for mixed `detect` calls. A mixed `batch` call reports a per-file error for each clip.
 
 ## 🧰 Commands
 
 | Command | Purpose |
 |---|---|
 | `detect` | Verdicts for image and video files |
+| `batch` | Recursive directory scanning with streamed JSON Lines |
+| `serve` | Local or self-hosted HTTP API |
+| `demo` | Score the bundled, labeled sample |
+| `verify-models`, `freeze-set`, `verify-set` | Verify released weights and reproduce the exact evaluation inputs |
 | `data` | Download and prepare a dataset plan |
 | `train` | Fine-tune on image and video manifests |
 | `finalize`, `finalize-video`, `calibrate` | Freeze a checkpoint and fit its operating points |
@@ -310,7 +394,7 @@ Exit status is 0 whether or not anything is flagged; parse the output.
 
 ## 🔁 Reproduce
 
-Everything is a subcommand; there are no scripts.
+The training and benchmark pipeline runs through CLI subcommands.
 
 <details>
 <summary><b>The full sequence, from training data to the blind batches</b></summary>
@@ -360,9 +444,14 @@ tintype evaluate confirm4 --baselines
 ## ⚠️ Limits
 
 - A detector's verdict is evidence, not proof. Precision below 100% means real
-  photos do get flagged; do not act on a single score where the stakes are high.
-- Generators released after the training data was collected (November 2026)
-  will be detected less reliably. Retrain as new generators appear.
+  photos do get flagged, and where AI media is rare most flags can be false
+  ([the arithmetic](#-reading-the-output)); do not act on a single score
+  where the stakes are high.
+- The API is designed for self-hosted deployments. Its application limits
+  bound uploads and queued work. Set process memory limits and an ingress
+  timeout when accepting untrusted media. See the [server guide](docs/API.md).
+- Performance can shift on generators released after the November 2026
+  training cutoff. Evaluate on the generators used in your workflow.
 - Local edits (inpainting a region of a real photo) and face swaps are out of
   scope; the model is trained on fully generated images. On a face-swap
   deepfake set the default profile finds 14%.

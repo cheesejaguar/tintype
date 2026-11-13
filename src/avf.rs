@@ -6,7 +6,7 @@
 use crate::image_io::Rgb;
 use crate::video::VideoInfo;
 use crate::yuv::{self, Source, Yuv};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, ensure, Result};
 use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::AnyObject;
 use objc2_av_foundation::{
@@ -30,16 +30,7 @@ struct Reader {
     info: VideoInfo,
     full_range: bool,
     /// The retagged copy being read, when the original could not be opened as it was.
-    _temp: Option<TempCopy>,
-}
-
-/// A temporary file, removed when dropped.
-struct TempCopy(std::path::PathBuf);
-
-impl Drop for TempCopy {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
+    _temp: Option<tempfile::NamedTempFile>,
 }
 
 /// Byte offset of the sample-entry type in the first sample description that
@@ -48,7 +39,7 @@ fn hev1_entry_offset(path: &Path) -> Result<Option<u64>> {
     use std::io::{Read, Seek, SeekFrom};
     fn walk(f: &mut std::fs::File, start: u64, end: u64, depth: usize) -> Result<Option<u64>> {
         let mut pos = start;
-        while pos + 8 <= end {
+        while end - pos >= 8 {
             let mut h = [0u8; 16];
             f.seek(SeekFrom::Start(pos))?;
             f.read_exact(&mut h[..8])?;
@@ -60,7 +51,7 @@ fn hev1_entry_offset(path: &Path) -> Result<Option<u64>> {
             } else if size == 0 {
                 size = end - pos;
             }
-            if size < header || pos + size > end {
+            if size < header || size > end - pos {
                 break;
             }
             match &h[4..8] {
@@ -71,8 +62,8 @@ fn hev1_entry_offset(path: &Path) -> Result<Option<u64>> {
                 }
                 b"stsd" => {
                     // Version and flags (4 bytes), entry count (4), then each entry: size (4), type (4).
-                    let entry = pos + header + 8;
-                    if entry + 8 <= pos + size {
+                    if size - header >= 16 {
+                        let entry = pos + header + 8;
                         let mut kind = [0u8; 4];
                         f.seek(SeekFrom::Start(entry + 4))?;
                         f.read_exact(&mut kind)?;
@@ -95,20 +86,19 @@ fn hev1_entry_offset(path: &Path) -> Result<Option<u64>> {
 /// AVFoundation opens HEVC only when the sample description is tagged `hvc1`;
 /// many encoders write `hev1` for the same stream. For such a file, a
 /// temporary copy with the four-byte tag changed.
-fn retagged_copy(path: &Path) -> Result<Option<TempCopy>> {
+fn retagged_copy(path: &Path) -> Result<Option<tempfile::NamedTempFile>> {
     use std::os::unix::fs::FileExt;
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let Some(at) = hev1_entry_offset(path)? else { return Ok(None) };
-    let tmp = TempCopy(std::env::temp_dir().join(format!("tintype-{}-{}.mp4", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))));
-    std::fs::copy(path, &tmp.0)?;
-    std::fs::OpenOptions::new().write(true).open(&tmp.0)?.write_all_at(b"hvc1", at)?;
+    let mut tmp = tempfile::Builder::new().prefix("tintype-").suffix(".mp4").tempfile()?;
+    std::io::copy(&mut std::fs::File::open(path)?, tmp.as_file_mut())?;
+    tmp.as_file().write_all_at(b"hvc1", at)?;
     Ok(Some(tmp))
 }
 
 fn open(path: &Path, start: Option<f64>) -> Result<Reader> {
     match retagged_copy(path).unwrap_or(None) {
         Some(tmp) => {
-            let mut r = open_file(&tmp.0, start)?;
+            let mut r = open_file(tmp.path(), start)?;
             r._temp = Some(tmp);
             Ok(r)
         }
@@ -217,18 +207,54 @@ impl Drop for Reader {
 /// Seconds a decode may take before it is abandoned.
 const DEADLINE: u64 = 30;
 
+/// Stalled decodes one process may leave behind before it stops starting more.
+const MAX_STALLED: usize = 8;
+
+/// Decode threads that were given up on and have not come back.
+static STALLED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Run a decode on its own thread and give up after [`DEADLINE`]. On some
 /// files `copyNextSampleBuffer` never returns; the caller then gets an error
-/// (and falls back to another decoder) and the stuck thread is left behind.
+/// and the stuck thread is left behind, since a thread cannot be killed. Such
+/// threads are counted, and once [`MAX_STALLED`] of them are outstanding no
+/// further system decode is started in this process: a batch of files built
+/// to stall the decoder costs a bounded number of threads, not one per file.
 fn with_deadline<T: Send + 'static>(path: &Path, f: impl FnOnce(&Path) -> Result<T> + Send + 'static) -> Result<T> {
+    use std::sync::atomic::Ordering::SeqCst;
+    #[derive(PartialEq)]
+    enum State {
+        Running,
+        Abandoned,
+        Done,
+    }
+    let stalled = STALLED.load(SeqCst);
+    ensure!(stalled < MAX_STALLED, "the system decoder has stalled on {stalled} files in this run; not starting it on {}", path.display());
     let (tx, rx) = std::sync::mpsc::channel();
     let owned = path.to_path_buf();
+    let state = std::sync::Arc::new(std::sync::Mutex::new(State::Running));
+    let theirs = state.clone();
     std::thread::Builder::new().name("avf-decode".into()).spawn(move || {
-        let _ = tx.send(autoreleasepool(|_| f(&owned)));
+        let r = autoreleasepool(|_| f(&owned));
+        let mut s = theirs.lock().unwrap();
+        if *s == State::Abandoned {
+            STALLED.fetch_sub(1, SeqCst);
+        }
+        *s = State::Done;
+        let _ = tx.send(r);
     })?;
     match rx.recv_timeout(std::time::Duration::from_secs(DEADLINE)) {
         Ok(r) => r,
-        Err(_) => bail!("the system decoder stalled on {}", path.display()),
+        Err(_) => {
+            let mut s = state.lock().unwrap();
+            if *s == State::Done {
+                // It finished as the deadline passed: the result is on its way.
+                drop(s);
+                return rx.recv().map_err(|_| anyhow!("the system decoder failed on {}", path.display()))?;
+            }
+            *s = State::Abandoned;
+            STALLED.fetch_add(1, SeqCst);
+            bail!("the system decoder stalled on {}", path.display())
+        }
     }
 }
 

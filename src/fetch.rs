@@ -9,9 +9,60 @@ use std::path::{Path, PathBuf};
 pub struct RemoteFile {
     pub path: String,
     pub size: u64,
+    /// SHA-256 of the contents, where the host publishes one (Hugging Face
+    /// does for every file stored through LFS, which is nearly every data file).
+    pub sha256: Option<String>,
 }
 
 const UA: &str = "tintype-fetch";
+
+/// The commit every Hugging Face dataset repository is read at. Listing and
+/// downloads both go through it, so a plan sees the same files whatever is
+/// pushed upstream later. Each was the head of `main` on 2026-11-11, and each
+/// head predates the first download (2026-11-10); see docs/DATA.md.
+pub const HF_REVISIONS: [(&str, &str); 28] = [
+    ("Rajarshi-Roy-research/Defactify_Image_Dataset", "1c3b714c9691eb6dd11c2c1e92eab1ac29584fa0"),
+    ("bitmind/nano-banana", "9ea8da32a5be03f4946e6cb10c2d2f8e90f0a0a4"),
+    ("ComplexDataLab/OpenFake", "00b2f0ae3f5f7684c4b00f794f4c500076a9355d"),
+    ("Thermostatic/frontier-synthetic-images-2026", "cb1df71639329a7e7b21a75bb6e838f3e38434cf"),
+    ("OwensLab/CommunityForensics-Small", "6c539a534c07917307c381f5af4053c6091b5278"),
+    ("kyoungjunpark/VidGuard-R1-sampled-video-10k", "ade041d82d6130d39de7844a4b9d4076cae2cb81"),
+    ("l8cv/GenBuster-200K-mini", "58af00f022d8272f42de3be912e9a905bf6087d2"),
+    ("AIGVDBench/AIGVDBench", "bf48acaa4920990af3dd2a511ea88e63354df305"),
+    ("kiyoonkim/kinetics-400-targz", "12c9876b9ee78ee75a1bb7229f54b6e5fb1256c8"),
+    ("zengxianyu/open-sora-pexels-subset", "c595493c834ec2c47ceee5d18ecca002aa646540"),
+    ("saberzl/So-Fake-Set", "c041015e5480233431a1857c89753db332c3a4ab"),
+    ("saberzl/So-Fake-OOD", "b4b34d16fda2020c2923a21d431d1ab3acbdbaff"),
+    ("marco-willi/synthbuster-plus", "dbfb72f1ee96e953ee5cff80c58832fe89e1d2b5"),
+    ("HorizonTEL/AIGIBench", "e44ec40efe5117a5ccdaa6ff0e89ed934d03d310"),
+    ("wasitaigeneratedcom/frontier-image-video-bench-2026-10", "e6a8b83d15fab1da958848368fcd07e943afafd0"),
+    ("OmerXYZ/comgenvid", "17f9ab6c548d9a30f5b22c09e17daee74536b653"),
+    ("Rapidata/text-2-video-human-preferences-moonvalley-marey", "3905a1774a6e63f4255f34a683a20e61342e478a"),
+    ("Rapidata/text-2-video-human-preferences-veo3.1", "9b5ffd5a1ce186b746990e554dba2a03ee74434d"),
+    ("Sunain-Labs/sunain-gameplay", "5143e0151144cb4eaba4f58b2bcc594408983292"),
+    ("trojblue/sakugabooru2025", "3b6de544855c3722dca0bc0d9983fc94fed6ccc7"),
+    ("hdong51/Human-Animal-Cartoon", "799cccce4d335a6ff44654ee7d18220802edefb4"),
+    ("TheKernel01/Tiny-GenImage", "89c4fe9efd0ebc7ce5c7641ef57d578ccd639c69"),
+    ("34data/StyleGAN3_1024x1024_images", "c72281e0fb940599eb77b0fcb4e92fbdfde74f36"),
+    ("javi22/this-person-does-not-exist-10k", "c8d08f1b0b8d7416c960aebcc42c0f0048855915"),
+    ("34data/ip-adapter-faceid", "10cfd1e50456cfb44f4acfbc3c05ccba3aba1d16"),
+    ("34data/sd35-ip-adapter-faceid", "3fcbf6ff99cda94e67139daa5f002efd7507645c"),
+    ("mattymchen/celeba-hq", "1bc5dfbeb766d03abeddf5a48b9871479a4395bb"),
+    ("sywang/CNNDetection", "f287cf3c3e92ca2e5451ce200bab8b6f5e0175b2"),
+];
+
+/// The commit every ModelScope dataset repository is read at (the head of
+/// `master` on 2026-11-11; both heads date from 2024 and 2025).
+pub const MODELSCOPE_REVISIONS: [(&str, &str); 2] = [("cccnju/Gen-Video", "4c1cb7ec0f196e4359d764a71f2d36b158b6e877"), ("cccnju/GenVideo-100K", "b31a22ff523263c6915a480966cbab1c87eca345")];
+
+fn revision(table: &[(&str, &'static str)], repo: &str) -> Result<&'static str> {
+    table.iter().find(|(r, _)| *r == repo).map(|(_, c)| *c).ok_or_else(|| anyhow!("{repo} has no pinned revision; add its commit to the revision table in src/fetch.rs"))
+}
+
+/// The pinned commit of a Hugging Face dataset repository.
+pub fn hf_revision(repo: &str) -> Result<&'static str> {
+    revision(&HF_REVISIONS, repo)
+}
 
 /// `*`, `?` and `[a-z0-9]` classes; everything else is literal.
 pub fn glob_match(pat: &str, s: &str) -> bool {
@@ -43,9 +94,10 @@ pub fn glob_match(pat: &str, s: &str) -> bool {
     go(pat.as_bytes(), s.as_bytes())
 }
 
-/// Every file of a Hugging Face dataset repository (paginated tree API).
+/// Every file of a Hugging Face dataset repository at its pinned revision
+/// (paginated tree API).
 pub fn hf_list(repo: &str) -> Result<Vec<RemoteFile>> {
-    let mut url = format!("https://huggingface.co/api/datasets/{repo}/tree/main?recursive=true&limit=1000");
+    let mut url = format!("https://huggingface.co/api/datasets/{repo}/tree/{}?recursive=true&limit=1000", hf_revision(repo)?);
     let mut out = Vec::new();
     loop {
         let mut resp = ureq::get(&url).header("User-Agent", UA).call().with_context(|| format!("listing {repo}"))?;
@@ -59,7 +111,10 @@ pub fn hf_list(repo: &str) -> Result<Vec<RemoteFile>> {
         for e in v.as_array().ok_or_else(|| anyhow!("unexpected listing for {repo}"))? {
             if e["type"] == "file" {
                 let size = e["lfs"]["size"].as_u64().or_else(|| e["size"].as_u64()).unwrap_or(0);
-                out.push(RemoteFile { path: e["path"].as_str().unwrap_or_default().to_string(), size });
+                // An LFS object's id is the SHA-256 of its contents. (The git `oid` of a
+                // file kept in git itself is a SHA-1 of a git blob, not of the file.)
+                let sha256 = e["lfs"]["oid"].as_str().filter(|h| h.len() == 64).map(str::to_string);
+                out.push(RemoteFile { path: e["path"].as_str().unwrap_or_default().to_string(), size, sha256 });
             }
         }
         match next {
@@ -80,12 +135,14 @@ fn encode_path(p: &str) -> String {
         .collect()
 }
 
-pub fn hf_url(repo: &str, path: &str) -> String {
-    format!("https://huggingface.co/datasets/{repo}/resolve/main/{}", encode_path(path))
+/// Download URL of a file of a Hugging Face dataset, at the pinned revision.
+pub fn hf_url(repo: &str, path: &str) -> Result<String> {
+    Ok(format!("https://huggingface.co/datasets/{repo}/resolve/{}/{}", hf_revision(repo)?, encode_path(path)))
 }
 
-pub fn modelscope_url(repo: &str, path: &str) -> String {
-    format!("https://modelscope.cn/datasets/{repo}/resolve/master/{}", encode_path(path))
+/// Download URL of a file of a ModelScope dataset, at the pinned revision.
+pub fn modelscope_url(repo: &str, path: &str) -> Result<String> {
+    Ok(format!("https://modelscope.cn/datasets/{repo}/resolve/{}/{}", revision(&MODELSCOPE_REVISIONS, repo)?, encode_path(path)))
 }
 
 fn remote_size(url: &str) -> Result<u64> {
@@ -130,15 +187,46 @@ fn fetch_range(url: &str, file: &File, start: u64, end: u64) -> Result<()> {
     Err(last.unwrap())
 }
 
+/// What is already on disk at a download's destination.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Cached {
+    /// Absent, or not the expected size.
+    No,
+    /// The expected size and SHA-256.
+    Verified,
+    /// The expected size; no SHA-256 is recorded to check it against.
+    SizeOnly,
+    /// The expected size but another SHA-256 (this one).
+    Corrupt(String),
+}
+
+/// Compare the file at `dest` with what a download should produce.
+pub fn cached(dest: &Path, size: u64, sha256: Option<&str>) -> Result<Cached> {
+    if !dest.metadata().is_ok_and(|m| m.len() == size) {
+        return Ok(Cached::No);
+    }
+    Ok(match sha256 {
+        None => Cached::SizeOnly,
+        Some(want) => match crate::integrity::sha256_file(dest)? {
+            got if got.eq_ignore_ascii_case(want) => Cached::Verified,
+            got => Cached::Corrupt(got),
+        },
+    })
+}
+
 /// Download `url` to `dest` using `conns` parallel ranged requests. A file
-/// that already has the right size is left alone.
-pub fn download(url: &str, dest: &Path, size: Option<u64>, conns: usize) -> Result<()> {
+/// already there is kept when it has the right size and, where `sha256` is
+/// given, the right SHA-256; a download that does not match `sha256` is
+/// discarded and reported as an error.
+pub fn download(url: &str, dest: &Path, size: Option<u64>, sha256: Option<&str>, conns: usize) -> Result<()> {
     let size = match size {
         Some(s) if s > 0 => s,
         _ => remote_size(url)?,
     };
-    if dest.metadata().map(|m| m.len() == size).unwrap_or(false) {
-        return Ok(());
+    match cached(dest, size, sha256)? {
+        Cached::Verified | Cached::SizeOnly => return Ok(()),
+        Cached::Corrupt(got) => eprintln!("{}: has SHA-256 {got}, expected {}; downloading again", dest.display(), sha256.unwrap_or_default()),
+        Cached::No => {}
     }
     if let Some(p) = dest.parent() {
         std::fs::create_dir_all(p)?;
@@ -160,6 +248,14 @@ pub fn download(url: &str, dest: &Path, size: Option<u64>, conns: usize) -> Resu
     if let Some(e) = errs.into_iter().next() {
         return Err(e.context(format!("downloading {url}")));
     }
+    drop(file);
+    if let Some(want) = sha256 {
+        let got = crate::integrity::sha256_file(&tmp)?;
+        if !got.eq_ignore_ascii_case(want) {
+            let _ = std::fs::remove_file(&tmp);
+            bail!("{url}: downloaded {size} bytes with SHA-256 {got}, expected {want}; discarded");
+        }
+    }
     std::fs::rename(&tmp, dest)?;
     Ok(())
 }
@@ -180,7 +276,7 @@ pub fn hf_download_files(repo: &str, files: &[RemoteFile], out: &Path, conns: us
     let small = files.iter().all(|f| f.size < (64 << 20));
     let one = |f: &RemoteFile, c: usize| -> Result<PathBuf> {
         let dest = out.join(&f.path);
-        download(&hf_url(repo, &f.path), &dest, Some(f.size), c)?;
+        download(&hf_url(repo, &f.path)?, &dest, Some(f.size), f.sha256.as_deref(), c)?;
         Ok(dest)
     };
     if small {
@@ -521,6 +617,45 @@ mod tests {
         assert_eq!(choose(names.clone(), &sel), vec!["a/x.mp4", "b/z.MP4"]);
         let sel = Select { contains: "b/".into(), ..Default::default() };
         assert_eq!(choose(names, &sel), vec!["b/z.MP4"]);
+    }
+
+    #[test]
+    fn the_cache_is_trusted_only_with_the_right_hash() {
+        let p = std::env::temp_dir().join(format!("tintype-cached-{}", std::process::id()));
+        std::fs::write(&p, b"abc").unwrap();
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(cached(&p, 3, Some(abc)).unwrap(), Cached::Verified);
+        assert_eq!(cached(&p, 3, Some(&abc.to_uppercase())).unwrap(), Cached::Verified);
+        assert_eq!(cached(&p, 3, None).unwrap(), Cached::SizeOnly);
+        assert_eq!(cached(&p, 4, Some(abc)).unwrap(), Cached::No);
+        // Same size, other bytes: no longer taken for the download.
+        std::fs::write(&p, b"abd").unwrap();
+        assert!(matches!(cached(&p, 3, Some(abc)).unwrap(), Cached::Corrupt(_)));
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(cached(&p, 3, Some(abc)).unwrap(), Cached::No);
+    }
+
+    /// Downloads a 5.8 KB file; run with `cargo test --release -- --ignored`.
+    #[test]
+    #[ignore = "network"]
+    fn downloads_are_checked_against_their_sha256() {
+        let url = "https://huggingface.co/haywoodsloan/ai-image-detector-deploy/resolve/4ae1822603cb1ec980c217cfde1ef1b8e0477a16/training_args.bin";
+        let sha = "96bf2e99106e3c60cff8fa494aeff2efb2392fbb9580502f7fa416fcaadd7456";
+        let dest = std::env::temp_dir().join(format!("tintype-download-{}", std::process::id()));
+        let _ = std::fs::remove_file(&dest);
+        download(url, &dest, None, Some(sha), 1).unwrap();
+        assert_eq!(crate::integrity::sha256_file(&dest).unwrap(), sha);
+        // A cached copy with other bytes is replaced.
+        let mut bytes = std::fs::read(&dest).unwrap();
+        bytes[0] ^= 1;
+        std::fs::write(&dest, &bytes).unwrap();
+        download(url, &dest, None, Some(sha), 1).unwrap();
+        assert_eq!(crate::integrity::sha256_file(&dest).unwrap(), sha);
+        // A download that does not match is refused and leaves nothing behind.
+        let _ = std::fs::remove_file(&dest);
+        let wrong = "0".repeat(64);
+        assert!(download(url, &dest, None, Some(&wrong), 1).is_err());
+        assert!(!dest.exists() && !dest.with_extension("part").exists());
     }
 
     #[test]

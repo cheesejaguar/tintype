@@ -7,6 +7,7 @@ description = "Fast AI-generated image and video detection in pure Rust"
 
 [dependencies]
 anyhow = "1"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "multipart", "tokio"] }
 candle-core = "0.11"
 clap = { version = "4.6.7", features = ["derive"] }
 crossbeam-channel = "0.5.17"
@@ -20,10 +21,17 @@ rust_h264 = "0.6.1"
 rust_h265 = "0.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.11.1"
+subtle = "2.6"
 tar = "0.4.46"
+tempfile = "3.27"
+tokio = { version = "1", features = ["fs", "io-util", "net", "rt", "signal", "sync", "time"] }
 ureq = "3.5.1"
 walkdir = "2.5.0"
 zip = "9.5.0"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 
 # Apple GPU engine (MPSGraph) and system video decoding.
 [target.'cfg(target_os = "macos")'.dependencies]

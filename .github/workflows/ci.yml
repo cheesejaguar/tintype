@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            runner: macos-15
+            platform: macos-arm64
+          - name: macOS ARM64 portable CPU
+            runner: macos-15
+            features: --features portable-cpu
+          - name: Linux x86-64
+            runner: ubuntu-22.04
+            platform: linux-x86_64
+          - name: Linux ARM64
+            runner: ubuntu-22.04-arm
+            platform: linux-arm64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo +stable test --release --locked ${{ matrix.features }}
+      - if: matrix.platform
+        run: |
+          cargo +stable build --release --locked --bin tintype
+          scripts/pack.sh ${{ matrix.platform }} dist
+          scripts/pack-models.sh dist
+          scripts/checksums.sh dist
+          scripts/test-install.sh dist
+  container:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: docker build --target bundled --tag tintype:ci .
+      - name: Smoke test the container
+        run: |
+          docker run --rm tintype:ci demo --device cpu --json | jq -e '.fixture_label == "ai-generated" and (.score | type == "number")'
+          docker run --detach --init --name tintype-ci --env TINTYPE_API_TOKEN=tintype-ci-token -p 127.0.0.1:8080:8080 tintype:ci
+          trap 'docker logs tintype-ci; docker stop tintype-ci' EXIT
+          curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/healthz | jq -e '.status == "ok"'
+          curl --fail --silent --show-error -H 'Authorization: Bearer tintype-ci-token' \
+            -F 'file=@site/assets/demo.png' http://127.0.0.1:8080/v1/detect | jq -e '.kind == "image" and (.score | type == "number")'
