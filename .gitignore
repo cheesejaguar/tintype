@@ -10,3 +10,4 @@
 !/models/tintype-video.safetensors
 .DS_Store
 /dist
+/container-release
