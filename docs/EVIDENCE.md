@@ -197,18 +197,23 @@ python3 scripts/diagnose-ntire.py /path/to/ntire-archives
 
 Davodi, Barrington, Farid and Cooper released 24 scene themes with a Pixabay source and synthetic variants from Seedance Pro 1, Veo 3.1, Sora 2 and Kling 2.6. We recovered the exact listed authentic rendition for 20 themes. The exact files for themes 6, 7 and 16 were unavailable at the tested CDN paths, and theme 24's page and filename list different asset IDs. All variants of those four themes are outside the comparison. The release includes Kling alongside the three generators used in the human study. [Dataset and normalization protocol](https://zenodo.org/records/19463142) · [CVPR workshop paper](https://openaccess.thecvf.com/content/CVPR2026W/APAI/html/Davodi_Perceptual_Judgments_of_Video_Authenticity_An_Examination_of_Viewing_Duration_CVPRW_2026_paper.html).
 
-Each input uses the first four seconds, muted, encoded at 800 pixels wide with aspect ratio preserved, 24 fps, H.264 CRF 18, 4:2:0 and BT.709 tags. All 100 normalized clips have 96 frames. Aspect ratio preservation produced 800 × 452 for Seedance and 800 × 450 for the other clips. Source frame cadence, encoder and compression history can still differ. Tintype uses the shipped video profile and Apple GPU fp16. The shipped score cutoff is 0.5. With 20 authentic inputs, one false alarm changes the observed rate by 5 percentage points.
+Each input uses the first four seconds, muted, encoded at 800 pixels wide with aspect ratio preserved, 24 fps, H.264 CRF 18, 4:2:0 and BT.709 tags. All 100 normalized clips have 96 frames. Aspect ratio preservation produced 800 × 452 for Seedance and 800 × 450 for the other clips. Source frame cadence, encoder and compression history can still differ. Tintype uses its shipped video profile on Apple GPU fp16. We ran the published WaveRep DINOv2 G4 checkpoint through Tintype's reference path on Apple GPU fp32. It scores the first 64 consecutive frames using a 504-pixel center crop with zero padding. Both detectors flag scores above 0.5 at their default operating point. With 20 authentic inputs, one false alarm changes the observed rate by 5 percentage points. [WaveRep checkpoint and method](https://github.com/grip-unina/WaveRep-SyntheticVideoDetection).
 
-On these 20 themes, Tintype flagged 72 of 80 generated clips and 3 of 20 authentic clips at the shipped cutoff. The pooled AUROC was 0.9244. The generated clip scored higher than its authentic counterpart in 74 of 80 pairs, with zero ties.
+| Detector | Generated clips flagged | Authentic clips flagged | Pooled AUROC | Generated clips scoring above their authentic counterpart |
+| --- | ---: | ---: | ---: | ---: |
+| Tintype 0.1.0 | 72/80 | 3/20 | 0.9244 | 74/80 |
+| WaveRep DINOv2 G4 | 34/80 | 4/20 | 0.6925 | 60/80 |
 
-| Generator | Flagged by Tintype | Scored above authentic counterpart |
-| --- | ---: | ---: |
-| Kling 2.6 | 20/20 | 20/20 |
-| Seedance Pro 1 | 17/20 | 18/20 |
-| Sora 2 | 16/20 | 17/20 |
-| Veo 3.1 | 19/20 | 19/20 |
+Neither detector tied any matched pair. With cutoffs selected on this cohort to flag 3 of 20 authentic clips for each detector, Tintype flagged 73 of 80 generated clips and WaveRep flagged 34 of 80. This describes the measured cohort at an equal observed false-positive count. The cutoffs were selected and evaluated on the same clips.
 
-Tintype's authors ran this exploratory evaluation on external media. The cohort represents the themes whose exact authentic rendition was recoverable. Each authentic clip appears in four matched pairs, so those pairs are correlated.
+| Generator | Tintype flagged | WaveRep flagged | Tintype ranked above authentic | WaveRep ranked above authentic |
+| --- | ---: | ---: | ---: | ---: |
+| Kling 2.6 | 20/20 | 11/20 | 20/20 | 18/20 |
+| Seedance Pro 1 | 17/20 | 8/20 | 18/20 | 15/20 |
+| Sora 2 | 16/20 | 4/20 | 17/20 | 11/20 |
+| Veo 3.1 | 19/20 | 11/20 | 19/20 | 16/20 |
+
+Tintype's authors ran this exploratory evaluation on external media. The cohort represents the themes whose exact authentic rendition was recoverable. Each authentic clip appears in four matched pairs, so those pairs are correlated. WaveRep was run in two batches with identical scoring code and checkpoint. The run record lists the binary source for each batch.
 
 [Exact source URLs and hashes](results/davodi-2026-video/inputs.tsv) · [Run parameters](results/davodi-2026-video/run.json) · [Clip scores](results/davodi-2026-video/scores.tsv.gz) · [Frame logits](results/davodi-2026-video/frame-scores.tsv.gz) · [Metric report](results/davodi-2026-video/report.txt).
 
@@ -220,8 +225,11 @@ python3 scripts/prepare-davodi-video.py ForZenodo.zip authentic davodi-clips \
 
 tintype score-video --device gpu --weights models/tintype-video.safetensors \
   --manifest davodi-clips/manifest.tsv --out davodi-clips/tintype.tsv
+tintype score-video --device gpu-f32 --reference waverep --weights baselines/waverep-g4.ckpt \
+  --manifest davodi-clips/manifest.tsv --out davodi-clips/waverep.tsv
 python3 scripts/report-davodi-video.py davodi-clips/inputs.tsv davodi-clips/tintype.tsv \
-  davodi-clips/scores.tsv.gz --frame-rows davodi-clips/frame-scores.tsv.gz
+  davodi-clips/scores.tsv.gz --waverep davodi-clips/waverep.tsv \
+  --frame-rows davodi-clips/frame-scores.tsv.gz
 ```
 
 ### Comparisons still open
