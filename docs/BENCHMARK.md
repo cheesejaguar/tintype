@@ -105,7 +105,7 @@ Where Tintype is not ahead, or the comparison needs a qualifier:
 |---|---|---|
 | **Community Forensics** (CVPR 2025) | ViT-S/16 at 384 px, 21.8 M parameters. Best open detector in the independent out-of-the-box study arXiv 2602.07814. | Official weights `OwensLab/commfor-model-384`, official transform (resize 440, centre crop 384), threshold 0.5, 32-bit floats. |
 | **SwinV2 detector** | `haywoodsloan/ai-image-detector-deploy`, SwinV2-L at 256 px, about 200 M parameters. Best open entry on the WasItAIGenerated frontier leaderboard. | Its own preprocessing (bicubic squash to 256 px), threshold 0.5, 32-bit floats. |
-| **WaveRep** (NeurIPS 2025) | DINOv2 ViT-B/14 on 504 px crops of the first 64 frames. Strongest open video detector that ships weights. | The authors' demo pipeline: mean frame logit above 0. Accuracy runs used 16-bit floats to save time; on 147 clips scored both ways no verdict changed. |
+| **WaveRep** (NeurIPS 2025) | DINOv2 ViT-B/14 on 504 px crops of the first 64 frames. Published synthetic-video reference with released weights. | The authors' demo pipeline: mean frame logit above 0. Accuracy runs used 16-bit floats to save time; on 147 clips scored both ways no verdict changed. |
 
 The three networks and their preprocessing are re-implemented in Rust
 (`tintype score --reference commfor|swinv2`, `tintype score-video
