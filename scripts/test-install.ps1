@@ -39,7 +39,9 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 $saved = @{}
 foreach ($name in 'TINTYPE_MODEL_DIR', 'TINTYPE_VERSION', 'TINTYPE_INSTALL_DIR', 'TINTYPE_PLATFORM', 'TINTYPE_NO_MODELS', 'TINTYPE_NO_MODIFY_PATH') {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-    [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+    # PowerShell passes $null to .NET as an empty string, which leaves the
+    # variable defined, so remove it through the Env: drive instead.
+    Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
 }
 try {
     $dest = Join-Path $stage 'install dir with spaces'
@@ -116,6 +118,12 @@ try {
     }
     Write-Output "Windows installer test passed for $Platform"
 } finally {
-    foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
+    foreach ($name in $saved.Keys) {
+        if ($null -eq $saved[$name]) {
+            Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+        } else {
+            Set-Item -LiteralPath "Env:$name" -Value $saved[$name]
+        }
+    }
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 }
