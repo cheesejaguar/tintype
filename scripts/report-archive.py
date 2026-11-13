@@ -19,6 +19,7 @@ NAMES = {
     "tintype-second": "Tintype + second opinion",
     "tintype-strict": "Tintype (strict)",
     "tintype-fast": "Tintype (fast)",
+    "tintype-all-views": "Tintype (all views)",
     "tintype-sensitive": "Tintype (sensitive)",
 }
 
