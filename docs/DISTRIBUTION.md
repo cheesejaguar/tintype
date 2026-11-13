@@ -81,16 +81,25 @@ with the digest from that summary.
 
 ## Release workflow
 
-The tag must match the version reported by `tintype --version`. The
-[release workflow](../.github/workflows/release.yml) tests the macOS ARM64,
-Linux x86-64, and Linux ARM64 binaries on their native runners. It then
-packages the binaries and a separate shared model archive into a draft
-GitHub Release. Publishing the draft makes that version available to the
-one-line installer. The `releases/latest` redirect selects the stable version.
+1. Merge the version bump in `Cargo.toml` and `Cargo.lock` after native CI
+   passes. Push a `vX.Y.Z` tag on the merged commit. The tag must match the
+   version reported by `tintype --version`.
+2. Wait for the [release workflow](../.github/workflows/release.yml) to pass
+   on macOS ARM64, Linux x86-64, and Linux ARM64 and create the draft.
+   Check for `tintype-macos-arm64.tar.gz`, `tintype-linux-x86_64.tar.gz`,
+   `tintype-linux-arm64.tar.gz`, `tintype-models.tar.gz`, and `SHA256SUMS`.
+   Verify the checksums and the build attestations for the tagged ref.
+   The workflow checks the packaged model digests against the ones compiled
+   into the executable.
+3. Review the release notes and publish the draft as a stable release. With
+   a maintainer's GitHub CLI session, run
+   `gh release edit "$tag" --draft=false --prerelease=false --latest`
+   after setting `tag` to the release tag. Verify that `releases/latest`
+   resolves to the published version.
 
 The [Pages workflow](../.github/workflows/pages.yml) deploys the static
 site and the checked-in installer once a stable release carries all installer
-assets. Publishing the draft triggers the first deployment. In repository Settings → Pages, set
+assets. Publishing the draft triggers the deployment. In repository Settings → Pages, set
 the source to **GitHub Actions**. After deployment, verify the site and
 the exact public install command from a clean directory.
 
