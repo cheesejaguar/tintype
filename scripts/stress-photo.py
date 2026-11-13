@@ -3,9 +3,10 @@
 
 import argparse
 import os
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+from benchmark_images import encode_jpeg
 
 
 def main():
@@ -32,8 +33,8 @@ def main():
     output = args.output.resolve()
     output.mkdir()
     variants = {
-        "jpeg": ["-q:v", "4"],
-        "jpeg-960": ["-vf", "scale='min(960,iw)':'min(960,ih)':force_original_aspect_ratio=decrease", "-q:v", "12"],
+        "jpeg": (4, None),
+        "jpeg-960": (12, "scale='min(960,iw)':'min(960,ih)':force_original_aspect_ratio=decrease"),
     }
     for variant in variants:
         (output / variant).mkdir()
@@ -41,19 +42,9 @@ def main():
     def encode(indexed_row):
         index, (path, label, generator, dataset) = indexed_row
         rendered = {"original": (os.path.relpath(path, output), label, generator, f"{dataset}-original")}
-        for variant, options in variants.items():
+        for variant, (quality, filters) in variants.items():
             target = Path(variant) / f"{index:06d}.jpg"
-            result = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-threads", "1", "-i", str(path),
-                 "-map_metadata", "-1", "-frames:v", "1", "-c:v", "mjpeg", "-threads", "1", "-pix_fmt", "yuvj420p",
-                 *options, str(output / target)],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            if result.returncode or not (output / target).is_file():
-                raise RuntimeError(f"could not encode {path} as {variant}: {result.stderr.strip()}")
+            encode_jpeg(path, output / target, quality, filters)
             rendered[variant] = (str(target), label, generator, f"{dataset}-{variant}")
         return rendered
 
