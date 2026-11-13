@@ -1,0 +1,25 @@
+{
+  "archive_md5": "eb703809083d3c6d54e96eb76bd50f53",
+  "archive_sha256": "6253192806d1dd76f3a9cf61ae8f78ac6d0fd5ece2c535d679ecec9118b5a81b",
+  "codec": "h264",
+  "crf": 18,
+  "duration_seconds": 4,
+  "excluded_scenes": {
+    "16": "exact authentic rendition unavailable",
+    "24": "authentic page and filename disagree on asset ID",
+    "6": "exact authentic rendition unavailable",
+    "7": "exact authentic rendition unavailable"
+  },
+  "ffmpeg": "ffmpeg version 9.0.2 Copyright (c) 2000-2026 the FFmpeg developers",
+  "fps": 24,
+  "metadata_sha256": "781ea4cfae8796d7ac69708eb4f93db41a149ac5ec5f35b7430bac3f502cbaa3",
+  "platform": "macOS-27.2-arm64-arm-64bit",
+  "scenes": 20,
+  "source_doi": "10.5281/zenodo.19463142",
+  "tintype_device": "gpu",
+  "tintype_release": "https://github.com/cheesejaguar/tintype/releases/tag/v0.1.0",
+  "tintype_spec_sha256": "673e9040d941125691bfb80cbcf130e8efe2fdbf26a08f0b947450c4abca4e9c",
+  "tintype_version": "0.1.0",
+  "tintype_weights_sha256": "77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881",
+  "width": 800
+}

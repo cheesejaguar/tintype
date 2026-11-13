@@ -193,6 +193,37 @@ With Pillow installed, reproduce the diagnostic counts from the four pinned orga
 python3 scripts/diagnose-ntire.py /path/to/ntire-archives
 ```
 
+### Content-matched generated video clips
+
+Davodi, Barrington, Farid and Cooper released 24 scene themes with a Pixabay source and synthetic variants from Seedance Pro 1, Veo 3.1, Sora 2 and Kling 2.6. We recovered the exact listed authentic rendition for 20 themes. The exact files for themes 6, 7 and 16 were unavailable at the tested CDN paths, and theme 24's page and filename list different asset IDs. All variants of those four themes are outside the comparison. The release includes Kling alongside the three generators used in the human study. [Dataset and normalization protocol](https://zenodo.org/records/19463142) · [CVPR workshop paper](https://openaccess.thecvf.com/content/CVPR2026W/APAI/html/Davodi_Perceptual_Judgments_of_Video_Authenticity_An_Examination_of_Viewing_Duration_CVPRW_2026_paper.html).
+
+Each input uses the first four seconds, muted, encoded at 800 pixels wide with aspect ratio preserved, 24 fps, H.264 CRF 18, 4:2:0 and BT.709 tags. All 100 normalized clips have 96 frames. Aspect ratio preservation produced 800 × 452 for Seedance and 800 × 450 for the other clips. Source frame cadence, encoder and compression history can still differ. Tintype uses the shipped video profile and Apple GPU fp16. The shipped score cutoff is 0.5. With 20 authentic inputs, one false alarm changes the observed rate by 5 percentage points.
+
+On these 20 themes, Tintype flagged 72 of 80 generated clips and 3 of 20 authentic clips at the shipped cutoff. The pooled AUROC was 0.9244. The generated clip scored higher than its authentic counterpart in 74 of 80 pairs, with zero ties.
+
+| Generator | Flagged by Tintype | Scored above authentic counterpart |
+| --- | ---: | ---: |
+| Kling 2.6 | 20/20 | 20/20 |
+| Seedance Pro 1 | 17/20 | 18/20 |
+| Sora 2 | 16/20 | 17/20 |
+| Veo 3.1 | 19/20 | 19/20 |
+
+Tintype's authors ran this exploratory evaluation on external media. The cohort represents the themes whose exact authentic rendition was recoverable. Each authentic clip appears in four matched pairs, so those pairs are correlated.
+
+[Exact source URLs and hashes](results/davodi-2026-video/inputs.tsv) · [Run parameters](results/davodi-2026-video/run.json) · [Clip scores](results/davodi-2026-video/scores.tsv.gz) · [Frame logits](results/davodi-2026-video/frame-scores.tsv.gz) · [Metric report](results/davodi-2026-video/report.txt).
+
+To recreate the normalized inputs, download the Zenodo ZIP and the 20 authentic clips listed in `inputs.tsv` to an `authentic` directory. Name each authentic clip by its scene number with two digits and an `.mp4` extension. The script verifies the archive and original file SHA-256 values. Use the recorded FFmpeg version for byte-identical transforms.
+
+```bash
+python3 scripts/prepare-davodi-video.py ForZenodo.zip authentic davodi-clips \
+  --source-record docs/results/davodi-2026-video/inputs.tsv
+
+tintype score-video --device gpu --weights models/tintype-video.safetensors \
+  --manifest davodi-clips/manifest.tsv --out davodi-clips/tintype.tsv
+python3 scripts/report-davodi-video.py davodi-clips/inputs.tsv davodi-clips/tintype.tsv \
+  davodi-clips/scores.tsv.gz --frame-rows davodi-clips/frame-scores.tsv.gz
+```
+
 ### Comparisons still open
 
 - B-Free's authors report strong results with same-format controls and post-processing. Pangram Image 1.0 is a commercial comparison for the newest image generators. Establishing a broader image rank requires scores on identical inputs and at matched operating points. [B-Free](https://arxiv.org/abs/2412.17671) · [Pangram Image 1.0](https://www.pangram.com/blog/introducing-pangram-image-1-0).
