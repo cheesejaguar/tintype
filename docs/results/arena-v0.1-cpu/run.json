@@ -1,0 +1,42 @@
+{
+  "announced_counts": {
+    "authentic": 1020,
+    "generated": 1018
+  },
+  "archive_counts": {
+    "authentic": 1020,
+    "generated": 1018
+  },
+  "archive_sha256": "1e62844bba714c2e190792844d4169fa3119fac3c2c143dad1eb8062e20b67e4",
+  "archive_url": "https://aidetectarena-benchmark.nyc3.cdn.digitaloceanspaces.com/datasets-archive/benchmark-v0.1.zip",
+  "community_forensics_sha256": "b89f36275f3bf5e2b040eee36597a8f19db051bff9a473a9cf7b2466284fb387",
+  "detector_failures": {
+    "commfor": 0,
+    "tintype": 0
+  },
+  "device": "cpu",
+  "ffmpeg": "ffmpeg version 9.0.2 Copyright (c) 2000-2026 the FFmpeg developers",
+  "jpeg_encode_failures": 0,
+  "metadata_paths_missing": 12,
+  "metadata_sha256": "7faf67c65a2234f6a2a75e2a70ffcc754e18e8b30b05b5301c63e2cd62407d49",
+  "metadata_source": "archive:benchmark-v0.1/metadata/images_metadata.csv",
+  "normalization": {
+    "autorotate": false,
+    "encoder": "mjpeg",
+    "pixel_format": "yuvj420p",
+    "quality": 4,
+    "resize": false
+  },
+  "original_formats": {
+    "ai:jpg": 537,
+    "ai:png": 421,
+    "ai:unknown": 60,
+    "real:jpg": 1019,
+    "real:png": 1
+  },
+  "paired_images": 2038,
+  "platform": "macOS-27.2-arm64-arm-64bit",
+  "tintype": "tintype 0.1.0",
+  "tintype_sha256": "9dcb21dc9800591ffd758a3c7ca6aa65fa5a9f09a223fecc952f34294ae9aeba",
+  "tintype_spec_sha256": "bfe1366bcfec28d15fb9116cb96c721de52de91d6fa4d98b6da4ec7fe6e62709"
+}

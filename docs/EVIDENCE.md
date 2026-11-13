@@ -83,6 +83,35 @@ tintype report --markdown --system Tintype=/tmp/tintype-jpeg-stress/tintype.tsv 
 
 ## AI Detector Arena v0.1
 
+We ran Tintype v0.1.0 and the Community Forensics 384-pixel reference on all
+**2,038 images** in the pinned Arena release, then scored a same-dimension
+JPEG copy of each image. Both systems scored all original and transformed
+files. The externally curated benchmark has 1,018 generated and 1,020
+authentic images. Tintype used Apple GPU fp16 and the reference used fp32.
+A CPU repeat reproduced all four recall-at-1%-FPR values shown.
+
+| Inputs | Tintype recall at 1% FPR | Community Forensics recall at 1% FPR |
+| --- | ---: | ---: |
+| Original | **88.5%** | 46.3% |
+| Both classes re-encoded to JPEG | **73.1%** | 23.7% |
+
+At the shipped threshold on the normalized set, Tintype found 69.5% of
+generated images and flagged 7 of 1,020 authentic images. Community
+Forensics found 23.9% and flagged 12 authentic images. Seven exact duplicate
+authentic inputs appeared in the archive. Removing the repeated rows
+preserved the displayed recall values at 1% FPR.
+
+[Full result tables](results/arena-v0.1-gpu/report.md) ·
+[Per-file scores](results/arena-v0.1-gpu/scores.tsv.gz) ·
+[Input hashes](results/arena-v0.1-gpu/inputs.tsv.gz) ·
+[Run parameters](results/arena-v0.1-gpu/run.json) ·
+[Metadata paths absent from the ZIP](results/arena-v0.1-gpu/errors.tsv)
+
+[CPU repeat tables](results/arena-v0.1-cpu/report.md) ·
+[CPU scores](results/arena-v0.1-cpu/scores.tsv.gz) ·
+[CPU run parameters](results/arena-v0.1-cpu/run.json). Both runs used the
+same input hashes and had no decode or transform failures.
+
 The Arena runner evaluates the externally curated dataset with Tintype's released photo checkpoint. Its original and normalized tables use the same image IDs, and optional Community Forensics scores use those same inputs. The runner verifies the published archive SHA-256 and uses the label metadata inside it. If the archive omits the CSV, it retrieves a fixed GitHub revision and verifies the Git blob ID. The released photo weights, model spec and optional Community Forensics checkpoint are verified before scoring. [Arena release record](https://github.com/AI-Detect-Arena/benchmark-dataset/blob/3014b54eec9d44c7ef60b4c7e0cda6aeb4735d5b/RELEASE_v0.1.md).
 
 ```bash
