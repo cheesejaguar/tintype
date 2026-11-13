@@ -55,7 +55,7 @@ def input_metadata(archive):
     blob = archive.read(member)
     rows = list(csv.DictReader(io.StringIO(blob.decode("utf-8-sig"), newline="")))
     rows.sort(key=lambda row: int(row["video_number"]))
-    if [int(row["video_number"]) for row in rows] != list(range(1,25)):
+    if [int(row["video_number"]) for row in rows] != list(range(1, 25)):
         raise ValueError("Expected exactly 24 numbered study themes")
     return rows, blob
 
@@ -120,7 +120,10 @@ def main():
             "-c:v", "libx264", "-threads", "1", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(result),
         ], check=True)
         output, _ = validate_media(result, full=True)
-        return (relpath.as_posix(), label, source, scene, origin, source_sha, digest(result),
+        normalized_sha = digest(result)
+        if record and normalized_sha != record["normalized_sha256"]:
+            raise ValueError(f"Normalized SHA-256 mismatch for {result}; verify the FFmpeg build")
+        return (relpath.as_posix(), label, source, scene, origin, source_sha, normalized_sha,
                 stream["width"], stream["height"], stream["avg_frame_rate"], duration, output["height"])
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
