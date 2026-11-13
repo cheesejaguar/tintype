@@ -54,6 +54,8 @@ jobs:
           docker run --rm tintype:ci demo --device cpu --json | jq -e '.fixture_label == "ai-generated" and (.score | type == "number")'
           docker run --detach --init --name tintype-ci --env TINTYPE_API_TOKEN=tintype-ci-token -p 127.0.0.1:8080:8080 tintype:ci
           trap 'docker logs tintype-ci; docker stop tintype-ci' EXIT
-          curl --fail --silent --show-error --retry 20 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/healthz | jq -e '.status == "ok"'
+          curl --fail --silent --show-error --retry 20 --retry-all-errors --retry-delay 1 \
+            --max-time 2 --output health.json http://127.0.0.1:8080/healthz
+          jq -e '.status == "ok"' health.json
           curl --fail --silent --show-error -H 'Authorization: Bearer tintype-ci-token' \
             -F 'file=@site/assets/demo.png' http://127.0.0.1:8080/v1/detect | jq -e '.kind == "image" and (.score | type == "number")'
