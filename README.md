@@ -355,8 +355,9 @@ shipped here. The Community Forensics weights are MIT.
 - **Video verdicts say what they rest on.** Sixteen frames are spread over
   the first 30 seconds of a clip, and a clear clip is decided from the first
   few of them, so most verdicts rest on the first 13 seconds or less. Each
-  line says how far into the clip the frames went (`analysed_until_s` and
-  `duration_s` in JSON). `--max-seconds 0` spreads the frames over the whole
+  line gives the latest sampling target represented in the score
+  (`analysed_until_s`) and the clip's duration (`duration_s` in JSON).
+  The decoder uses the nearest available frame. `--max-seconds 0` spreads the frames over the whole
   clip and `--all-views` looks at every one of them, at a cost in speed:
   ```bash
   tintype detect --max-seconds 0 --all-views --frames 64 long-clip.mp4

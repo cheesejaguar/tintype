@@ -95,7 +95,8 @@ pub struct Coverage {
     pub frames_expected: usize,
     /// The clip's duration in seconds, when the container states it.
     pub duration: Option<f64>,
-    /// Time of the last frame that was scored, in seconds from the start.
+    /// Latest sampling target represented in the score, in seconds from the start.
+    /// A decoder may use the nearest frame to each target.
     pub until: Option<f64>,
     /// False when decoding stopped before the frames the verdict needed had
     /// been scored. A clip that early exit decided, and a clip shorter than
