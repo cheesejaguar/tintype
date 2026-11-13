@@ -1,0 +1,13 @@
+Matched coverage 20/24 scenes, 100 clips
+Tintype: 72/80 AI flagged, 3/20 real flagged, AUROC 0.9244, matched ranking 74 wins/0 ties/6 losses
+  At most 3/20 authentic flags in this cohort: 73/80 AI flagged, 3/20 real flagged (score > 0.360083)
+  kling-2.6: 20/20 flags, matched 20 wins/0 ties
+  seedance-pro-1: 17/20 flags, matched 18 wins/0 ties
+  sora-2: 16/20 flags, matched 17 wins/0 ties
+  veo-3.1: 19/20 flags, matched 19 wins/0 ties
+WaveRep: 34/80 AI flagged, 4/20 real flagged, AUROC 0.6925, matched ranking 60 wins/0 ties/20 losses
+  At most 3/20 authentic flags in this cohort: 34/80 AI flagged, 3/20 real flagged (score > 0.507591)
+  kling-2.6: 11/20 flags, matched 18 wins/0 ties
+  seedance-pro-1: 8/20 flags, matched 15 wins/0 ties
+  sora-2: 4/20 flags, matched 11 wins/0 ties
+  veo-3.1: 11/20 flags, matched 16 wins/0 ties

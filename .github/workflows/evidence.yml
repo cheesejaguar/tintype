@@ -2,12 +2,6 @@ name: External image benchmark
 
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - scripts/evaluate-arena.py
-      - scripts/benchmark_images.py
-      - scripts/stress-photo.py
-      - .github/workflows/evidence.yml
 
 permissions:
   contents: read
@@ -15,7 +9,7 @@ permissions:
 jobs:
   arena:
     runs-on: macos-15
-    timeout-minutes: 35
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:
@@ -24,6 +18,12 @@ jobs:
       - name: Install FFmpeg if needed
         run: command -v ffmpeg || brew install ffmpeg
       - run: cargo +stable build --release --locked --bin tintype
+      - name: Recompute the archived Arena tables
+        run: |
+          python3 scripts/report-archive.py docs/results/arena-v0.1-cpu/scores.tsv.gz \
+            --tintype target/release/tintype > arena-archived.md
+          diff <(grep -E '^\*\*arena-|^\| (Tintype|Community Forensics) \|' docs/results/arena-v0.1-cpu/report.md) \
+               <(grep -E '^\*\*arena-|^\| (Tintype|Community Forensics) \|' arena-archived.md)
       - name: Run AI Detector Arena
         run: |
           python3 scripts/evaluate-arena.py arena-results \

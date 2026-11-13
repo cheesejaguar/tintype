@@ -10,6 +10,7 @@ pub mod detector;
 pub mod metrics;
 pub mod data;
 pub mod train_cmd;
+pub mod training_init;
 pub mod report;
 pub mod video;
 pub mod cpu_vit;

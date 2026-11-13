@@ -9,7 +9,7 @@ tintype serve --bind 127.0.0.1:8080
 curl --fail-with-body http://127.0.0.1:8080/healthz
 ```
 
-The address defaults to `127.0.0.1:8080`. `GET /healthz` reports `{"status":"ok","version":"0.1.0"}` when the model worker is ready. `HEAD /healthz` returns the same status and headers with an empty body. Health requests need no credentials.
+The address defaults to `127.0.0.1:8080`. When the model worker is ready, `GET /healthz` returns JSON with `status` set to `"ok"` and `version` set to the running Tintype version. `HEAD /healthz` returns the same status and headers with an empty body. Health requests need no credentials.
 
 `--device auto` uses Apple Metal when available and the CPU elsewhere. Use `--device cpu` to select the CPU explicitly. `--weights` and `--video-weights` select model files. The [distribution guide](DISTRIBUTION.md) covers containers, model discovery, and the licences for bundled and separately supplied weights.
 
@@ -51,10 +51,11 @@ For video, `profile` is `video`. The response reports `frames`, `frames_expected
 
 ## Detect a batch
 
-Repeat the field `file` up to 16 times. The `results` array follows upload order, including duplicate filenames and per-file errors. A structurally valid batch returns HTTP 200 even if individual files fail. Use the array index to associate results with inputs, and inspect each row before using a score.
+Repeat the field `file` up to 16 times. The `results` array follows upload order, including duplicate filenames and per-file errors. A structurally valid batch returns HTTP 200 even if individual files fail. Use the array index to associate results with inputs, and inspect each row before using a score. For large batches, use HTTP `Expect: 100-continue` so the server can reject unauthorized, oversized, or overloaded requests before the client sends the body.
 
 ```sh
 curl --fail-with-body \
+  -H 'Expect: 100-continue' \
   -F 'file=@photo.jpg' \
   -F 'file=@clip.mp4' \
   http://127.0.0.1:8080/v1/batch
@@ -94,4 +95,15 @@ Inference errors use an `error` object with `code` and `message`. For HTTP 422 o
 
 Images are decoded from memory. Videos are written to a randomly named temporary file while they are scored. The server removes the file on normal completion. Mount a writable temporary directory in read-only deployments and size it for uploads. Uploaded contents are never sent to a model provider.
 
-Media decoding runs in-process. A response deadline bounds the client's wait, and work already executing can continue. For deployments that accept external uploads, run the service with OS or container CPU and memory limits and use a process supervisor. The [distribution guide](DISTRIBUTION.md) includes a non-root container setup.
+Media decoding runs in-process. When an HTTP request times out or disconnects, the worker stops taking on remaining files as it reaches the next cancellation check. Decoder and inference calls already in progress can finish. For deployments that accept external uploads, run the service with OS or container CPU and memory limits and use a process supervisor. The [distribution guide](DISTRIBUTION.md) includes a non-root container setup.
+
+## Measure a local deployment
+
+Run the loopback benchmark from a source checkout after building the binary. It uses the shipped demo PNG and two one-second clips, then verifies overload and clean shutdown.
+
+```sh
+cargo build --release --locked --bin tintype
+python3 scripts/bench-api.py target/release/tintype
+```
+
+On a Mac18,5 with 12 logical CPUs and 32 GiB RAM, the CPU engine with the Rust video decoder measured a median of 88 ms for one 948 KiB PNG and 617 ms for 16 copies, about 26 photos per second. The 1-second H.264 and HEVC test clips took 1.31 s and 1.36 s respectively. A batch of 14 PNGs and both clips took 3.20 s. These measurements include localhost HTTP transfer, multipart parsing, inference, and JSON serialization. The four excess requests in an eight-way 16-photo burst received HTTP 503 in under 2 ms with `Expect: 100-continue`. The other four finished in 0.62–2.45 s. Video latency will depend on resolution, codec, and frame coverage.
