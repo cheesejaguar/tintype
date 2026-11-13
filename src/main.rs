@@ -1,8 +1,13 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use tintype::detector::{Detector, Device, ModelSpec};
+#[cfg(target_os = "macos")]
+use tintype::detector::Detector;
+use tintype::detector::{Device, ModelSpec};
 use tintype::ingest;
+
+mod scan;
+use scan::ScanOptions;
 
 #[derive(Parser)]
 #[command(name = "tintype", version, about = "AI-generated image and video detection")]
@@ -13,47 +18,32 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Decide whether images or videos are AI-generated.
+    /// Scan image and video files.
     Detect {
         /// Image or video files.
         #[arg(required = true)]
         paths: Vec<PathBuf>,
-        /// Photo model weights.
-        #[arg(long, default_value = "models/tintype.safetensors")]
-        weights: PathBuf,
-        /// Video model weights (default: `<weights>-video.safetensors` beside the photo weights, if present).
-        #[arg(long)]
-        video_weights: Option<PathBuf>,
-        /// WaveRep weights (`tintype data baselines` fetches them; research-only licence).
-        /// Videos the video model is unsure about are also scored by that network.
+        #[command(flatten)]
+        options: ScanOptions,
+        /// WaveRep weights for an optional video second opinion (macOS only).
         #[arg(long)]
         second_opinion: Option<PathBuf>,
-        /// Community Forensics weights (384 px; `tintype data baselines` fetches them).
-        /// Photos the default profile does not flag with confidence are also scored by that network.
+        /// Community Forensics 384 px weights for an optional photo second opinion.
         #[arg(long, conflicts_with_all = ["fast", "sensitive", "strict"])]
         photo_second_opinion: Option<PathBuf>,
-        /// Frames analysed per video (default: the model's video profile).
-        #[arg(long)]
-        frames: Option<usize>,
-        /// Two views per image at the strict threshold: the highest throughput, lower recall.
-        #[arg(long)]
-        fast: bool,
-        /// Looser threshold: finds more AI images, flags more real ones.
-        #[arg(long, conflicts_with = "fast")]
-        sensitive: bool,
-        /// Tighter threshold: a positive verdict that stands on its own, at lower recall.
-        #[arg(long, conflicts_with_all = ["fast", "sensitive"])]
-        strict: bool,
-        /// Look at all six views of every image instead of stopping early on clear ones.
-        #[arg(long)]
-        all_views: bool,
-        /// Print one JSON object per file.
-        #[arg(long)]
-        json: bool,
-        /// Engine: auto, gpu (Apple GPU, 16-bit), gpu-f32, or cpu.
-        #[arg(long, default_value = "auto")]
-        device: String,
     },
+    /// Recursively scan directories with bounded memory and stream results.
+    Batch {
+        /// Files or directory roots to scan, in the supplied order.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        #[command(flatten)]
+        options: ScanOptions,
+    },
+    /// Score the included labeled sample offline.
+    Demo(scan::DemoOptions),
+    /// Start the versioned HTTP API for photos and video.
+    Serve(tintype::server::ServeArgs),
     /// Score every image in a manifest: `path label generator dataset prob logits...`.
     Score {
         #[arg(long)]
@@ -321,6 +311,10 @@ enum Cmd {
         /// Resolve and print the downloads without fetching anything.
         #[arg(long)]
         dry_run: bool,
+        /// Resolve the downloads without fetching anything, and compare the
+        /// files already on disk with their pinned SHA-256; fails if any differs.
+        #[arg(long, conflicts_with = "dry_run")]
+        check: bool,
         /// Parallel connections per large file.
         #[arg(long, default_value_t = 12)]
         connections: usize,
@@ -394,6 +388,41 @@ enum Cmd {
         #[arg(long, default_value_t = 3)]
         rows: usize,
     },
+    /// Record a prepared evaluation set: the SHA-256, size and label of every
+    /// file its manifests list, and the SHA-256 of each manifest. Run from the
+    /// directory that holds `data/`.
+    FreezeSet {
+        /// A whole evaluation suite: benchmarks, or confirm1 to confirm7.
+        #[arg(long, required_unless_present = "manifest")]
+        suite: Option<String>,
+        /// Manifests to record (instead of, or as well as, a suite's).
+        #[arg(long)]
+        manifest: Vec<PathBuf>,
+        /// Where to write it; a name ending in `.gz` is compressed.
+        #[arg(long)]
+        out: PathBuf,
+        /// Paths are stored relative to this directory.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Check a local evaluation set against a record written by `freeze-set`:
+    /// every file present with the same bytes, every manifest unchanged.
+    /// Exits with an error listing every difference.
+    VerifySet {
+        /// Records written by `freeze-set`.
+        #[arg(required = true)]
+        frozen: Vec<PathBuf>,
+        /// The directory the paths in the records are relative to.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Check the released model files (weights and specs) against the
+    /// SHA-256 values recorded in the source and in docs/DATA.md.
+    VerifyModels {
+        /// The repository checkout that holds `models/`.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 fn parse_device(s: &str) -> Result<Device> {
@@ -428,107 +457,12 @@ fn load_manifests(ms: &[PathBuf]) -> Result<Vec<ingest::Item>> {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Detect { paths, weights, video_weights, second_opinion, photo_second_opinion, frames, fast, sensitive, strict, all_views, json, device } => {
-            let device = parse_device(&device)?;
-            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
-            let (vids, imgs): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| ingest::is_video(p));
-            let mut rows: Vec<(PathBuf, &str, Option<f32>, usize)> = Vec::new();
-            if !imgs.is_empty() {
-                let mut spec = ModelSpec::load_for(&weights)?;
-                if fast {
-                    Detector::use_fast_profile(&mut spec);
-                }
-                if sensitive {
-                    Detector::use_sensitive_profile(&mut spec);
-                }
-                if strict {
-                    Detector::use_strict_profile(&mut spec);
-                }
-                let exit = spec.early_exit.clone().filter(|_| !fast && !all_views);
-                let band = match &photo_second_opinion {
-                    Some(_) => Some(spec.second_opinion.ok_or_else(|| anyhow::anyhow!("{} has no second-opinion band for photos", weights.display()))?),
-                    None => None,
-                };
-                let batch = 64.min(imgs.len() * spec.views.len());
-                // On the GPU one batch costs about the same whatever is in it: when every
-                // view of every image fits in one, run them all and apply the stopping
-                // rule afterwards (the same verdicts as stopping early).
-                let one_batch = !matches!(device, Device::Cpu) && imgs.len() * spec.views.len() <= 64;
-                let det = Detector::load(&weights, Some(spec), batch, device)?;
-                let (res, _) = match &exit {
-                    Some(e) if one_batch => {
-                        let (all, t) = det.score_files(&imgs, threads);
-                        (all.into_iter().map(|r| r.map(|l| e.looked_at(&l, det.threshold_logit()))).collect(), t)
-                    }
-                    Some(e) => det.score_files_adaptive(&imgs, threads, e),
-                    None => det.score_files(&imgs, threads),
-                };
-                let mut probs: Vec<Option<f32>> = res.iter().map(|r| r.as_ref().map(|l| det.probability(l))).collect();
-                if let (Some(w2), Some(band)) = (&photo_second_opinion, band) {
-                    let first: Vec<Option<f32>> = res.iter().map(|r| r.as_ref().map(|l| det.calibrated_logit(l))).collect();
-                    drop(det); // free the first network before loading the second
-                    for (i, p) in tintype::detector::photo_second_opinion(&band, w2, &imgs, &first, device, threads)?.0 {
-                        probs[i] = Some(p);
-                    }
-                }
-                rows.extend(imgs.iter().zip(probs).map(|(p, pr)| (p.clone(), "image", pr, 1)));
-            }
-            if !vids.is_empty() {
-                let video_weights = video_weights.unwrap_or_else(|| tintype::detector::video_weights_for(&weights));
-                // A second opinion is asked for on the logit of all frames, so it turns
-                // early exit off; so does `--all-views`.
-                let exit = ModelSpec::load_for(&video_weights).ok().and_then(|s| s.video).and_then(|v| v.early_exit).filter(|_| second_opinion.is_none() && !all_views);
-                let mut det = Detector::load(&video_weights, None, if exit.is_some() { 96 } else { 64 }, device)?;
-                let profile_frames = det.use_video_profile();
-                let sampling = tintype::video::Sampling { frames: frames.unwrap_or(profile_frames), ..Default::default() };
-                let (res, _) = match &exit {
-                    Some(e) => det.score_videos_adaptive(&vids, sampling, threads, e),
-                    None => det.score_videos(&vids, sampling, threads),
-                };
-                // Clip logit (mean over frames of the mean over views) and frame count.
-                let clips: Vec<Option<(f32, usize)>> = res
-                    .iter()
-                    .map(|r| r.as_ref().map(|fr| (tintype::video::aggregate(&fr.iter().map(|v| v.iter().sum::<f32>() / v.len() as f32).collect::<Vec<f32>>()), fr.len())))
-                    .collect();
-                // Only the second-opinion stage, which is macOS-only, changes these.
-                #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-                let mut probs: Vec<Option<f32>> = clips.iter().map(|c| c.map(|(z, _)| det.probability(&[z]))).collect();
-                if let Some(w2) = &second_opinion {
-                    let band = det.spec.video.as_ref().and_then(|v| v.second_opinion).ok_or_else(|| anyhow::anyhow!("{} has no second-opinion band in its video profile", video_weights.display()))?;
-                    let pick: Vec<usize> = (0..vids.len()).filter(|&i| clips[i].is_some_and(|(z, _)| band.wanted(z))).collect();
-                    if !pick.is_empty() {
-                        drop(det);
-                        #[cfg(target_os = "macos")]
-                        {
-                            let (z2, _) = tintype::eval::waverep_logits(w2, &pick.iter().map(|&i| vids[i].clone()).collect::<Vec<_>>(), device, 16)?;
-                            for (&i, z2) in pick.iter().zip(z2) {
-                                if let (Some((z1, _)), Some(z2)) = (clips[i], z2) {
-                                    probs[i] = Some(band.probability(z1, z2));
-                                }
-                            }
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        anyhow::bail!("--second-opinion runs on the Apple GPU engine only (weights: {})", w2.display());
-                    }
-                }
-                rows.extend(vids.iter().enumerate().map(|(i, p)| (p.clone(), "video", probs[i], clips[i].map_or(0, |(_, n)| n))));
-            }
-            for (path, kind, prob, n) in rows {
-                // Say why a clip could not be read (on stderr, so the output stays parseable).
-                if prob.is_none() && kind == "video" {
-                    if let Err(e) = tintype::video::frame_at(&path, 0.0) {
-                        eprintln!("{e:#}");
-                    }
-                }
-                match (prob, json) {
-                    (Some(p), true) => println!("{}", serde_json::json!({"path": path, "kind": kind, "ai_probability": p, "verdict": if p > 0.5 { "ai-generated" } else { "likely-real" }, "frames": n})),
-                    (Some(p), false) => println!("{:<14} {:>5.1}%  {}", if p > 0.5 { "AI-GENERATED" } else { "likely real" }, 100.0 * p, path.display()),
-                    (None, true) => println!("{}", serde_json::json!({"path": path, "kind": kind, "error": "could not decode"})),
-                    (None, false) => println!("{:<14} {:>6}  {}", "unreadable", "-", path.display()),
-                }
-            }
-            Ok(())
+        Cmd::Detect { paths, options, second_opinion, photo_second_opinion } => {
+            scan::detect(paths, options, second_opinion, photo_second_opinion)
         }
+        Cmd::Batch { paths, options } => scan::batch(paths, options),
+        Cmd::Demo(options) => scan::demo(options),
+        Cmd::Serve(args) => tintype::server::run(args, scan::resolve_weights),
         #[cfg(target_os = "macos")]
         Cmd::Score { weights, reference, manifest, out, batch, device, views, fast, sensitive, strict, all_views, photo_second_opinion } => {
             tintype::eval::score_images(&weights, &system(&reference, fast, sensitive, strict)?, &manifest, &out, parse_device(&device)?, batch, views.as_deref(), all_views, photo_second_opinion.as_deref()).map(|_| ())
@@ -708,14 +642,14 @@ fn main() -> Result<()> {
             };
             spec.save_for(&weights)
         }
-        Cmd::Data { plan, dry_run, connections } => {
+        Cmd::Data { plan, dry_run, check, connections } => {
             if plan == "list" {
                 for (name, what) in tintype::plans::PLANS {
                     println!("{name:<14} {what}");
                 }
                 return Ok(());
             }
-            tintype::plans::run(&plan, dry_run, connections)
+            tintype::plans::run(&plan, dry_run, check, connections)
         }
         Cmd::Ingest { inputs, out, dataset, image_col, label_col, fake_values, real_values, const_label, gen_col, real_src_col, const_gen, max_per_file } => {
             let spec = ingest::ParquetSpec { image_col, label_col, fake_values, real_values, const_label, gen_col, real_src_col, const_gen, max_per_file };
@@ -823,5 +757,40 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::ParquetInfo { path, rows } => ingest::parquet_info(&path, rows),
+        Cmd::FreezeSet { suite, manifest, out, root } => {
+            use tintype::integrity::Frozen;
+            let mut manifests: Vec<PathBuf> = match &suite {
+                Some(s) => tintype::plans::suite(s)?.iter().map(|set| root.join(set.manifest)).collect(),
+                None => Vec::new(),
+            };
+            manifests.extend(manifest);
+            let frozen = Frozen::build(&manifests, &root)?;
+            frozen.write(&out)?;
+            let bytes: u64 = frozen.rows.iter().map(|r| r.size).sum();
+            println!("{}: {} files ({:.2} GB) from {} manifests", out.display(), frozen.rows.len(), bytes as f64 / 1e9, frozen.manifests.len());
+            Ok(())
+        }
+        Cmd::VerifySet { frozen, root } => {
+            let mut failed = 0;
+            for f in &frozen {
+                let record = tintype::integrity::Frozen::read(f)?;
+                let problems = record.verify(&root);
+                for p in &problems {
+                    println!("{p}");
+                }
+                println!("{}: {} files, {} manifests: {}", f.display(), record.rows.len(), record.manifests.len(), if problems.is_empty() { "identical".to_string() } else { format!("{} differences", problems.len()) });
+                failed += problems.len();
+            }
+            anyhow::ensure!(failed == 0, "{failed} differences from the frozen evaluation sets");
+            Ok(())
+        }
+        Cmd::VerifyModels { root } => {
+            let (lines, ok) = tintype::integrity::check_models(&root);
+            for l in lines {
+                println!("{l}");
+            }
+            anyhow::ensure!(ok, "the model files differ from the released ones");
+            Ok(())
+        }
     }
 }

@@ -9,3 +9,4 @@
 !/models/tintype.safetensors
 !/models/tintype-video.safetensors
 .DS_Store
+/dist

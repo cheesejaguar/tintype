@@ -1,0 +1,14 @@
+**
+!Cargo.toml
+!Cargo.lock
+!Dockerfile
+!LICENSE-APACHE
+!LICENSE-MIT
+!NOTICE.md
+!src/
+!src/**
+!site/
+!site/assets/
+!site/assets/demo.png
+!models/
+!models/**

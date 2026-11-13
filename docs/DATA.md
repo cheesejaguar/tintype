@@ -14,6 +14,43 @@ down to the selection, and writes a `manifest.tsv` per store
 (`path  label  generator  dataset`, label 1 = AI-generated). Image bytes are
 never re-encoded on the way in.
 
+## What is pinned
+
+A plan reads every repository at a fixed commit and checks every file it
+downloads against a recorded SHA-256 where one exists. A file already on disk
+is reused only if its SHA-256 matches; one that does not is downloaded again,
+and a download that does not match is discarded with an error.
+`tintype data <plan> --check` resolves a plan without downloading anything
+and compares whatever of it is already on disk with those digests.
+
+| Source | Revision | SHA-256 per file |
+|---|---|---|
+| 28 Hugging Face datasets ([the table](../src/fetch.rs), `HF_REVISIONS`) | pinned to a commit | yes for every file stored through LFS (all the data files): the digest Hugging Face lists at that commit. Small files kept in git itself (such as the frontier benchmark's `metadata.csv`) are pinned by the commit and checked by size only |
+| AIGIBench and CNNDetection archives that a plan samples by HTTP range requests | pinned to a commit | no: only the chosen members are fetched, so the archive as a whole is never hashed; each member is checked against its zip CRC-32 |
+| GenVideo-Val and GenVideo-100K (ModelScope) | pinned to a commit | yes, the digest ModelScope lists |
+| Community Forensics 224 / 384 and SwinV2 reference weights (Hugging Face) | pinned to a commit | yes, the LFS digest |
+| WaveRep reference weights (GRIP server) | **not pinnable**: one unversioned URL | yes: the digest of the copy the reported numbers used; a different file is refused |
+| RAISE-1k originals (GRIP server, `benchmarks` plan) | **not pinned**: one unversioned URL | **no**: the server publishes none and the copy used was deleted after extraction. On 2026-11-11 the server reported 1,646,333,296 bytes, last modified 2025-12-28 |
+
+**Whether the pins are what was downloaded.** The plans read `main` (and
+ModelScope's `master`) when the data was fetched, between 2026-11-10 and
+2026-11-11 (US Pacific time), going by when each store was created. The pins
+were added on 2026-11-11: each is the commit at the head of the branch that
+day. Every one of those head commits is older than the first download (the
+newest, OpenFake's, is dated 2026-11-05; ModelScope's are from 2024 and
+2025). So unless an upstream history was rewritten in between, the pinned
+commits are the revisions that were downloaded. This rests on those dates,
+not on hashes: most downloads (parquet shards, archives) were deleted once
+their images were extracted. Where the downloaded files are still on disk,
+`--check` confirms it by hash: all 18,813 such files match the pinned
+digests (VidGuard-R1 8,853, the frontier benchmark 3,378, this-person-does-not-exist
+3,000, ComGenVid 1,850, Rapidata 1,492, Sunain gameplay 240), as do the
+four reference weights. None differ.
+
+Pinning does not undo the differences described under the phases below: the
+stores deleted between phases, and the clips the current video decoder cannot
+open.
+
 ## Training
 
 Three phases, each starting from the previous weights.
@@ -278,6 +315,72 @@ SDXL, which that archive shares with others, so that set is AI only.
 - Batch 3 was fetched after several training stores had been deleted. Its
   images were checked against a saved list of those stores' file hashes: no
   matches among 11,730 files.
+
+## Frozen evaluation sets
+
+[docs/manifests](manifests) records every evaluation suite as it was scored:
+the SHA-256, size, label, generator and path of each file, and the SHA-256
+of each manifest. They were written from the data on the machine that
+produced the reported numbers.
+
+| Suite | Record | Files | Size of the files |
+|---|---|---|---|
+| `benchmarks` | [benchmarks.frozen.tsv.gz](manifests/benchmarks.frozen.tsv.gz) | 27,078 | 29.3 GB |
+| `confirm1` | [confirm1.frozen.tsv.gz](manifests/confirm1.frozen.tsv.gz) | 12,192 | 36.5 GB |
+| `confirm2` | [confirm2.frozen.tsv.gz](manifests/confirm2.frozen.tsv.gz) | 8,511 | 10.5 GB |
+| `confirm3` | [confirm3.frozen.tsv.gz](manifests/confirm3.frozen.tsv.gz) | 13,183 | 18.4 GB |
+| `confirm4` | [confirm4.frozen.tsv.gz](manifests/confirm4.frozen.tsv.gz) | 2,056 | 6.5 GB |
+| `confirm5` | [confirm5.frozen.tsv.gz](manifests/confirm5.frozen.tsv.gz) | 13,357 | 11.5 GB |
+| `confirm6` | [confirm6.frozen.tsv.gz](manifests/confirm6.frozen.tsv.gz) | 16,324 | 11.3 GB |
+| `confirm7` | [confirm7.frozen.tsv.gz](manifests/confirm7.frozen.tsv.gz) | 23,052 | 23.9 GB |
+
+To check a set you fetched, run this from the directory that holds `data/`:
+
+```bash
+tintype verify-set docs/manifests/confirm7.frozen.tsv.gz
+```
+
+It lists every file that is missing or has other bytes, and every manifest
+row that was added, dropped or relabelled, and fails if there is any. A
+plan's output can differ from the record if an upstream file was removed or
+replaced (the pins guard against the second) or if the RAISE-1k archive
+changed.
+
+The training stores and the `dev` sets are not recorded: several training
+stores were deleted between phases (see above), so a record would describe
+data that was not all there at once. To record any set, including your own:
+
+```bash
+tintype freeze-set --suite confirm7 --out confirm7.frozen.tsv.gz
+tintype freeze-set --manifest data/store/openfake/manifest.tsv --out openfake.frozen.tsv
+```
+
+## Released model files
+
+| File | Bytes | SHA-256 |
+|---|---|---|
+| models/tintype.safetensors | 86,678,036 | 9dcb21dc9800591ffd758a3c7ca6aa65fa5a9f09a223fecc952f34294ae9aeba |
+| models/tintype.json | 3,450 | bfe1366bcfec28d15fb9116cb96c721de52de91d6fa4d98b6da4ec7fe6e62709 |
+| models/tintype-video.safetensors | 86,678,036 | 77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881 |
+| models/tintype-video.json | 2,161 | 673e9040d941125691bfb80cbcf130e8efe2fdbf26a08f0b947450c4abca4e9c |
+
+`tintype verify-models` checks a checkout against these values, which are also
+in [src/integrity.rs](../src/integrity.rs); the `models` test fails if the files,
+the source or this table disagree. The `.json` specs hold the thresholds and
+calibration, so a recalibration changes them as surely as retraining changes
+the weights.
+
+## Continuous integration
+
+[.github/workflows/ci.yml](../.github/workflows/ci.yml) builds and runs
+`cargo test --release` on macOS on Apple Silicon (once with the default
+build and once with `--features portable-cpu`) and on Linux. The tests
+include runs of the built binary (`detect` in text and JSON form, on a
+readable and an unreadable file) and a complete-model inference fixture: a
+picture generated in the test goes through decoding, the photo model's views
+and the released weights on the CPU engine, and its six logits must match
+the recorded ones to within 0.05. The GPU engine, training and evaluation
+are not exercised: hosted runners have no GPU that the Apple GPU engine can use.
 
 ## Known caveats
 

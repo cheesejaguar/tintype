@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: macos-arm64
+          - runner: ubuntu-22.04
+            platform: linux-x86_64
+          - runner: ubuntu-22.04-arm
+            platform: linux-arm64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo +stable test --release --locked
+      - name: Bundle and check the release
+        run: |
+          cargo +stable build --release --locked --bin tintype
+          test "v$(target/release/tintype --version | awk '{print $2}')" = "$GITHUB_REF_NAME"
+          scripts/pack.sh ${{ matrix.platform }} dist
+          scripts/pack-models.sh dist
+          scripts/checksums.sh dist
+          scripts/test-install.sh dist
+          rm dist/SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tintype-${{ matrix.platform }}
+          path: |
+            dist/tintype-${{ matrix.platform }}.tar.gz
+            ${{ matrix.platform == 'linux-x86_64' && 'dist/tintype-models.tar.gz' || '' }}
+          if-no-files-found: error
+          compression-level: 0
+
+  draft:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: tintype-*
+          path: dist
+          merge-multiple: true
+      - run: scripts/checksums.sh dist
+      - uses: actions/attest@v4
+        with:
+          subject-path: dist/*
+      - name: Upload the draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --draft --verify-tag --generate-notes
+          fi

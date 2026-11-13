@@ -29,7 +29,12 @@ pub const PLANS: [(&str, &str); 18] = [
 
 struct Run {
     dry: bool,
+    /// Resolve the downloads as `dry` does, and compare whatever of them is
+    /// already on disk with its recorded SHA-256 (nothing is downloaded).
+    check: bool,
     conns: usize,
+    /// Files compared in check mode that did not match.
+    mismatched: std::cell::Cell<usize>,
 }
 
 fn s(v: &[&str]) -> Vec<String> {
@@ -38,7 +43,44 @@ fn s(v: &[&str]) -> Vec<String> {
 
 impl Run {
     fn say(&self, what: &str) {
-        println!("{}{what}", if self.dry { "[dry run] " } else { "" });
+        println!("{}{what}", if self.check { "[check] " } else if self.dry { "[dry run] " } else { "" });
+    }
+
+    /// Check mode: compare the files already at `dests` with their recorded
+    /// size and SHA-256, and print one line per file that differs and a summary.
+    fn check_files(&self, what: &str, files: &[(PathBuf, Option<u64>, Option<&str>)]) -> Result<()> {
+        use fetch::Cached;
+        let (mut verified, mut size_only, mut absent, mut bad) = (0, 0, 0, 0);
+        for (dest, size, sha) in files {
+            let state = match size {
+                Some(s) => fetch::cached(dest, *s, *sha)?,
+                // No size recorded: a file that is there is compared by hash alone.
+                None if dest.exists() => match sha {
+                    Some(want) => match crate::integrity::sha256_file(dest)? {
+                        got if got.eq_ignore_ascii_case(want) => Cached::Verified,
+                        got => Cached::Corrupt(got),
+                    },
+                    None => Cached::SizeOnly,
+                },
+                None => Cached::No,
+            };
+            match state {
+                Cached::Verified => verified += 1,
+                Cached::SizeOnly => size_only += 1,
+                Cached::No if !dest.exists() => absent += 1,
+                Cached::No => {
+                    bad += 1;
+                    println!("DIFFERS   {} (size {}, expected {})", dest.display(), dest.metadata().map(|m| m.len()).unwrap_or(0), size.unwrap_or(0));
+                }
+                Cached::Corrupt(got) => {
+                    bad += 1;
+                    println!("DIFFERS   {} (sha256 {got}, expected {})", dest.display(), sha.unwrap_or_default());
+                }
+            }
+        }
+        self.mismatched.set(self.mismatched.get() + bad);
+        println!("[check] {what}: {} files: {verified} match their SHA-256, {size_only} present with no SHA-256 to check, {bad} differ, {absent} not on disk", files.len());
+        Ok(())
     }
 
     /// Download repository files matching `includes` into `data/raw/<dir>`.
@@ -52,7 +94,10 @@ impl Run {
 
     fn hf_files(&self, repo: &str, files: &[RemoteFile], dir: &str) -> Result<Vec<PathBuf>> {
         let out = Path::new("data/raw").join(dir);
-        self.say(&format!("{repo}: {} files, {:.2} GB -> {}", files.len(), files.iter().map(|f| f.size).sum::<u64>() as f64 / 1e9, out.display()));
+        self.say(&format!("{repo}@{}: {} files, {:.2} GB -> {}", &fetch::hf_revision(repo)?[..12], files.len(), files.iter().map(|f| f.size).sum::<u64>() as f64 / 1e9, out.display()));
+        if self.check {
+            self.check_files(repo, &files.iter().map(|f| (out.join(&f.path), Some(f.size), f.sha256.as_deref())).collect::<Vec<_>>())?;
+        }
         if self.dry {
             return Ok(files.iter().map(|f| out.join(&f.path)).collect());
         }
@@ -64,11 +109,15 @@ impl Run {
         Ok(fetch::hf_list(repo)?.into_iter().filter(|f| f.path.starts_with(prefix)).collect())
     }
 
-    fn url(&self, url: &str, dest: &str) -> Result<PathBuf> {
+    /// Download one file; `sha256` is its expected digest where one is recorded.
+    fn url(&self, url: &str, dest: &str, sha256: Option<&str>) -> Result<PathBuf> {
         let dest = PathBuf::from(dest);
-        self.say(&format!("{url} -> {}", dest.display()));
+        self.say(&format!("{url} -> {}{}", dest.display(), if sha256.is_some() { "" } else { " (no SHA-256 recorded)" }));
+        if self.check {
+            self.check_files(url, &[(dest.clone(), None, sha256)])?;
+        }
         if !self.dry {
-            fetch::download(url, &dest, None, self.conns)?;
+            fetch::download(url, &dest, None, sha256, self.conns)?;
         }
         Ok(dest)
     }
@@ -176,7 +225,15 @@ const AIGVD: &str = "AIGVDBench/AIGVDBench";
 const KINETICS: &str = "kiyoonkim/kinetics-400-targz";
 const SOFAKE_OOD: &str = "saberzl/So-Fake-OOD";
 const WASITAI: &str = "wasitaigeneratedcom/frontier-image-video-bench-2026-10";
-const GENVIDEO_VAL: &str = "https://modelscope.cn/datasets/cccnju/Gen-Video/resolve/master/GenVideo-Val.zip";
+/// GenVideo-Val (ModelScope `cccnju/Gen-Video`) and its SHA-256 as ModelScope lists it.
+const GENVIDEO_VAL: (&str, &str) = ("GenVideo-Val.zip", "aba02ecd57528257249dd38b72b7a34c9d56bc75d4f2541a721b2778f1d864a6");
+/// GenVideo-100K archives (ModelScope `cccnju/GenVideo-100K`) and their SHA-256 as ModelScope lists them.
+const GENVIDEO_100K: [(&str, &str); 2] =
+    [("OpenSora", "165b708c61aeab157150a2fe7a4fb8bb536443461398d3e8c459f79619483662"), ("ZeroScope", "b6f84437ed1888166fbd82c4f4a6b3787413824a88cebf8ef8b88f6d5034d4fa")];
+/// RAISE-1k originals from the GRIP server, which serves one unversioned URL
+/// and publishes no digest; the copy used was deleted after extraction, so
+/// no SHA-256 is recorded (see docs/DATA.md).
+const RAISE_1K: &str = "https://www.grip.unina.it/download/prog/B-Free/extended_synthbuster/real_RAISE_1k.zip";
 const GENVIDEO_GENERATORS: [&str; 10] = ["Crafter", "Gen2", "HotShot", "Lavie", "ModelScope", "MoonValley", "MorphStudio", "Show_1", "Sora", "WildScrape"];
 
 impl Run {
@@ -216,7 +273,7 @@ impl Run {
         let classes = ["/0_real/", "/1_fake/"];
         if per_class > 0 {
             // A sampled set is read out of the remote archive; a whole one is downloaded first.
-            let url = fetch::hf_url("HorizonTEL/AIGIBench", &format!("test/{name}.zip"));
+            let url = fetch::hf_url("HorizonTEL/AIGIBench", &format!("test/{name}.zip"))?;
             self.say(&format!("{url}: {per_class} files per class -> {out}"));
             if !self.dry {
                 for class in classes {
@@ -238,7 +295,7 @@ impl Run {
     /// spaced; `exclude` lists members already used (the fresh sample then
     /// starts half a step in, as the first sample started at zero).
     fn genvideo_val(&self, out: &str, dataset: &str, n_real: usize, n_fake: usize, exclude: Vec<String>) -> Result<Vec<String>> {
-        let zip = self.url(GENVIDEO_VAL, "data/raw/genvideo-val/GenVideo-Val.zip")?;
+        let zip = self.url(&fetch::modelscope_url("cccnju/Gen-Video", GENVIDEO_VAL.0)?, "data/raw/genvideo-val/GenVideo-Val.zip", Some(GENVIDEO_VAL.1))?;
         if self.dry {
             return Ok(vec![]);
         }
@@ -330,8 +387,8 @@ impl Run {
         self.rm("genbuster");
         self.index("data/vstore/genbuster", "genbuster", true, &[("fake/easyanimate", 1, "EasyAnimate"), ("fake/cogvideox", 1, "CogVideoX"), ("fake/ltxvideo", 1, "LTX-Video"), ("fake/hunyuanvideo", 1, "HunyuanVideo"), ("train/real", 0, "openvid")])?;
 
-        for g in ["OpenSora", "ZeroScope"] {
-            let tar = self.url(&fetch::modelscope_url("cccnju/GenVideo-100K", &format!("{g}.tar.gz")), &format!("data/raw/genvideo-100k/{g}.tar.gz"))?;
+        for (g, sha) in GENVIDEO_100K {
+            let tar = self.url(&fetch::modelscope_url("cccnju/GenVideo-100K", &format!("{g}.tar.gz"))?, &format!("data/raw/genvideo-100k/{g}.tar.gz"), Some(sha))?;
             self.unpack(&tar, "data/vstore/genvideo100k", Select::default())?;
         }
         self.rm("genvideo-100k");
@@ -404,7 +461,7 @@ impl Run {
         let got = self.hf("marco-willi/synthbuster-plus", &["data/test-*", "data/validation-*"], "synthbuster")?;
         self.ingest(&got, "data/store/synthbuster", "synthbuster", labelled("label", &["1"], &["__none__"], Some("source"), None))?;
         self.rm("synthbuster");
-        let zip = self.url("https://www.grip.unina.it/download/prog/B-Free/extended_synthbuster/real_RAISE_1k.zip", "data/raw/raise/real_RAISE_1k.zip")?;
+        let zip = self.url(RAISE_1K, "data/raw/raise/real_RAISE_1k.zip", None)?;
         self.unpack(&zip, "data/store/synthbuster/raise1k", Select { exts: IMAGE_EXTS.to_vec(), ..Default::default() })?;
         self.rm("raise");
         if !self.dry {
@@ -802,7 +859,7 @@ impl Run {
         }
 
         // The classic GAN test set (Wang et al., CVPR 2020): 300 per class of each family.
-        let url = fetch::hf_url("sywang/CNNDetection", "CNN_synth_testset.zip");
+        let url = fetch::hf_url("sywang/CNNDetection", "CNN_synth_testset.zip")?;
         for (folder, gen) in CONFIRM6_CLASSIC {
             let out = format!("data/fresh7/classic-{folder}");
             if !have(&out) {
@@ -885,7 +942,7 @@ impl Run {
         // AIGIBench: 400 per class from what earlier batches left of each archive.
         for (name, gen, taken) in confirm7_aigibench() {
             let out = format!("data/fresh8/aigibench-{name}");
-            let url = fetch::hf_url("HorizonTEL/AIGIBench", &format!("test/{name}.zip"));
+            let url = fetch::hf_url("HorizonTEL/AIGIBench", &format!("test/{name}.zip"))?;
             if !have(&out) && self.sample_rest(&url, "", &out, &format!("aigibench-{}-b3", name.to_lowercase()), "aigibench", gen, &taken, 400, false, false)? {
                 dedupe(&format!("{out}/manifest.tsv"), &seen)?;
             }
@@ -895,7 +952,7 @@ impl Run {
         // The classic test set: 300 per class from what batch 6 left of its six
         // families, and from five families not used before. IMLE shares its real
         // photos with CRN, so its sample starts half a step in.
-        let url = fetch::hf_url("sywang/CNNDetection", "CNN_synth_testset.zip");
+        let url = fetch::hf_url("sywang/CNNDetection", "CNN_synth_testset.zip")?;
         let again = CONFIRM6_CLASSIC.iter().map(|&(folder, gen)| (folder, gen, vec![(300, false)], false));
         let new = CONFIRM7_CLASSIC.iter().map(|&(folder, gen)| (folder, gen, vec![], folder == "imle"));
         for (folder, gen, taken, half) in again.chain(new) {
@@ -967,12 +1024,28 @@ pub const CONFIRM3_IMAGE_MANIFESTS: [&str; 5] = [
     "data/fresh4/aigibench-Imagen3/manifest.tsv",
 ];
 
-/// Released checkpoints of the reference detectors: (URL, local path).
-pub const BASELINE_WEIGHTS: [(&str, &str); 4] = [
-    ("https://huggingface.co/OwensLab/commfor-model-384/resolve/main/model.safetensors", "baselines/commfor-384.safetensors"),
-    ("https://huggingface.co/OwensLab/commfor-model-224/resolve/main/model.safetensors", "baselines/commfor-224.safetensors"),
-    ("https://huggingface.co/haywoodsloan/ai-image-detector-deploy/resolve/main/model.safetensors", "baselines/swinv2-detector.safetensors"),
-    ("https://www.grip.unina.it/download/prog/WaveRep_SynthVideoDet/weights_dinov2_G4.ckpt", "baselines/waverep-g4.ckpt"),
+/// Released checkpoints of the reference detectors: (URL, local path,
+/// SHA-256). The Hugging Face URLs name a commit and their digests are the
+/// LFS ids Hugging Face lists at it; the GRIP server has one unversioned URL,
+/// so the WaveRep digest is that of the copy the reported numbers used, and a
+/// download that differs from it is refused.
+pub const BASELINE_WEIGHTS: [(&str, &str, &str); 4] = [
+    (
+        "https://huggingface.co/OwensLab/commfor-model-384/resolve/6076002bf0d9dd37537f965ee2f06f826c333b61/model.safetensors",
+        "baselines/commfor-384.safetensors",
+        "b89f36275f3bf5e2b040eee36597a8f19db051bff9a473a9cf7b2466284fb387",
+    ),
+    (
+        "https://huggingface.co/OwensLab/commfor-model-224/resolve/26afc31e6b40c312c3fd42c05a758be62446215b/model.safetensors",
+        "baselines/commfor-224.safetensors",
+        "a6cc439d5a6d2dfadd60c77d27a2838ad55b34e601ecd30f46ad97266d6ac4e0",
+    ),
+    (
+        "https://huggingface.co/haywoodsloan/ai-image-detector-deploy/resolve/4ae1822603cb1ec980c217cfde1ef1b8e0477a16/model.safetensors",
+        "baselines/swinv2-detector.safetensors",
+        "3a4439d47a41dc62ef1b4ca5067f2954da0652e8c3ced36705820adc6c1abe31",
+    ),
+    ("https://www.grip.unina.it/download/prog/WaveRep_SynthVideoDet/weights_dinov2_G4.ckpt", "baselines/waverep-g4.ckpt", "50d639049d928986ba7d69861a4fe4f3e7afbba1843e3e089cdf6b4748f53d5b"),
 ];
 
 pub const TRAIN_IMAGE_MANIFESTS: [&str; 10] = [
@@ -1064,12 +1137,23 @@ fn wasitai_manifests(root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn run(plan: &str, dry: bool, conns: usize) -> Result<()> {
-    let r = Run { dry, conns };
+/// Run a plan. `dry` only resolves and prints the downloads; `check` does the
+/// same and also compares the files already on disk with their recorded
+/// SHA-256, failing if any differs. Neither downloads anything but listings.
+pub fn run(plan: &str, dry: bool, check: bool, conns: usize) -> Result<()> {
+    let r = Run { dry: dry || check, check, conns, mismatched: Default::default() };
+    run_with(&r, plan)?;
+    if r.mismatched.get() > 0 {
+        bail!("{} files on disk differ from the pinned downloads", r.mismatched.get());
+    }
+    Ok(())
+}
+
+fn run_with(r: &Run, plan: &str) -> Result<()> {
     match plan {
         "baselines" => {
-            for (url, dest) in BASELINE_WEIGHTS {
-                r.url(url, dest)?;
+            for (url, dest, sha) in BASELINE_WEIGHTS {
+                r.url(url, dest, Some(sha))?;
             }
             Ok(())
         }
@@ -1091,10 +1175,150 @@ pub fn run(plan: &str, dry: bool, conns: usize) -> Result<()> {
         "confirm7" => r.confirm7(),
         "all" => {
             for (p, _) in PLANS.iter().filter(|(p, _)| *p != "all" && *p != "baselines") {
-                run(p, dry, conns)?;
+                run_with(r, p)?;
             }
             Ok(())
         }
         other => bail!("unknown plan `{other}`; available: {}", PLANS.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(", ")),
+    }
+}
+
+/// One evaluation set: display name, manifest, and whether it holds clips.
+pub struct Set {
+    pub name: &'static str,
+    pub manifest: &'static str,
+    pub video: bool,
+    /// False when this set's real items are the same files as another set's
+    /// in the suite, so the pooled table counts them once.
+    pub pool_reals: bool,
+}
+
+const fn img(name: &'static str, manifest: &'static str) -> Set {
+    Set { name, manifest, video: false, pool_reals: true }
+}
+const fn vid(name: &'static str, manifest: &'static str) -> Set {
+    Set { name, manifest, video: true, pool_reals: true }
+}
+
+/// The sets of an evaluation suite (`benchmarks`, `confirm1` … `confirm7`),
+/// as `tintype evaluate` scores them and `tintype freeze-set` records them.
+pub fn suite(name: &str) -> Result<Vec<Set>> {
+    Ok(match name {
+        "benchmarks" => vec![
+            img("sofake-ood", "data/store/sofake-ood/manifest.tsv"),
+            img("synthbuster", "data/store/synthbuster/manifest.tsv"),
+            img("aigibench", "data/store/aigibench/manifest.tsv"),
+            img("wasitai-images", "data/vstore/wasitai/images.tsv"),
+            img("wasitai-images_social", "data/vstore/wasitai/images_social.tsv"),
+            vid("wasitai-video", "data/vstore/wasitai/manifest.tsv"),
+            vid("comgenvid", "data/vstore/comgenvid/manifest.tsv"),
+            vid("genvideo-val", "data/vstore/genvideo-val/manifest.tsv"),
+        ],
+        "confirm1" => vec![
+            img("fresh-sofake", "data/fresh/sofake-ood/manifest.tsv"),
+            img("fresh-socialrf", "data/fresh/socialrf/manifest.tsv"),
+            img("fresh-synthbuster", "data/fresh/synthbuster/manifest.tsv"),
+            vid("fresh-aigvd", "data/fresh/video/manifest.tsv"),
+            vid("fresh-comgenvid", "data/fresh/comgenvid/manifest.tsv"),
+            vid("wasitai-messenger", "data/vstore/wasitai/videos_social.tsv"),
+            vid("fresh-genvideo", "data/fresh/genvideo-val/manifest.tsv"),
+        ],
+        "confirm2" => vec![
+            img("fresh3-sofake-ood", "data/fresh3/sofake-ood/manifest.tsv"),
+            img("fresh3-aigibench-Midjourney", "data/fresh3/aigibench-Midjourney/manifest.tsv"),
+            img("fresh3-aigibench-FLUX1-dev", "data/fresh3/aigibench-FLUX1-dev/manifest.tsv"),
+        ],
+        "confirm3" => vec![
+            img("fresh4-sofake-ood", "data/fresh4/sofake-ood/manifest.tsv"),
+            img("fresh4-aigibench-DALLE-3", "data/fresh4/aigibench-DALLE-3/manifest.tsv"),
+            img("fresh4-aigibench-SD3", "data/fresh4/aigibench-SD3/manifest.tsv"),
+            // AIGIBench pairs SDXL with the same real photos as SD3.
+            Set { pool_reals: false, ..img("fresh4-aigibench-SDXL", "data/fresh4/aigibench-SDXL/manifest.tsv") },
+            img("fresh4-aigibench-Imagen3", "data/fresh4/aigibench-Imagen3/manifest.tsv"),
+            vid("fresh4-aigvd", "data/fresh4/video/manifest.tsv"),
+            vid("fresh4-comgenvid", "data/fresh4/comgenvid/manifest.tsv"),
+            vid("fresh4-genvideo", "data/fresh4/genvideo-val/manifest.tsv"),
+        ],
+        "confirm4" => vec![
+            vid("fresh5-aigvd", "data/fresh5/video/manifest.tsv"),
+            vid("fresh5-comgenvid", "data/fresh5/comgenvid/manifest.tsv"),
+            vid("fresh5-genvideo", "data/fresh5/genvideo-val/manifest.tsv"),
+        ],
+        "confirm5" => {
+            let mut v = vec![img("fresh6-sofake-ood", "data/fresh6/sofake-ood/manifest.tsv")];
+            for (name, _) in CONFIRM5_AIGIBENCH {
+                let (set, manifest) = (format!("fresh6-aigibench-{name}"), format!("data/fresh6/aigibench-{name}/manifest.tsv"));
+                v.push(img(Box::leak(set.into_boxed_str()), Box::leak(manifest.into_boxed_str())));
+            }
+            v
+        }
+        "confirm6" => {
+            let leak = |x: String| -> &'static str { Box::leak(x.into_boxed_str()) };
+            let mut v = vec![img("fresh7-sofake-ood", "data/fresh7/sofake-ood/manifest.tsv")];
+            for (name, _) in CONFIRM5_AIGIBENCH {
+                v.push(img(leak(format!("fresh7-aigibench-{name}")), leak(format!("data/fresh7/aigibench-{name}/manifest.tsv"))));
+            }
+            for (folder, _) in CONFIRM6_CLASSIC {
+                v.push(img(leak(format!("fresh7-classic-{folder}")), leak(format!("data/fresh7/classic-{folder}/manifest.tsv"))));
+            }
+            v
+        }
+        "confirm7" => {
+            // Sets that the plan skipped (too few unused files) have no manifest.
+            let leak = |x: String| -> &'static str { Box::leak(x.into_boxed_str()) };
+            let mut v = vec![("sofake-ood".to_string(), "data/fresh8/sofake-ood/manifest.tsv".to_string())];
+            v.extend(confirm7_aigibench().iter().map(|(name, _, _)| (format!("aigibench-{name}"), format!("data/fresh8/aigibench-{name}/manifest.tsv"))));
+            v.extend(CONFIRM6_CLASSIC.iter().chain(CONFIRM7_CLASSIC.iter()).map(|(folder, _)| (format!("classic-{folder}"), format!("data/fresh8/classic-{folder}/manifest.tsv"))));
+            v.into_iter().filter(|(_, m)| Path::new(m).exists()).map(|(set, m)| img(leak(format!("fresh8-{set}")), leak(m))).collect()
+        }
+        other => bail!("unknown suite `{other}` (benchmarks, confirm1 to confirm7)"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_download_names_a_commit() {
+        for (url, _, sha) in BASELINE_WEIGHTS {
+            assert!(!url.contains("/resolve/main/"), "{url}");
+            assert_eq!(sha.len(), 64);
+        }
+        assert!(fetch::hf_url("HorizonTEL/AIGIBench", "test/SD3.zip").unwrap().contains("/resolve/e44ec40efe5117a5ccdaa6ff0e89ed934d03d310/test/SD3.zip"));
+        assert!(fetch::modelscope_url("cccnju/Gen-Video", GENVIDEO_VAL.0).unwrap().contains("/resolve/4c1cb7ec0f196e4359d764a71f2d36b158b6e877/"));
+        // A repository without a pinned commit is refused instead of read at its moving head.
+        assert!(fetch::hf_url("someone/unpinned", "x").is_err());
+        assert!(fetch::hf_list("someone/unpinned").is_err());
+        for (_, rev) in fetch::HF_REVISIONS.iter().chain(fetch::MODELSCOPE_REVISIONS.iter()) {
+            assert!(rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()), "{rev}");
+        }
+    }
+
+    #[test]
+    fn every_repository_a_plan_reads_is_pinned() {
+        // Every string literal in this file that names a Hugging Face dataset
+        // repository (`owner/name`, passed to `hf`, `hf_files`, `hf_folder`,
+        // `hf_url` or `fetch::hf_list`) must have a revision.
+        let all = include_str!("plans.rs");
+        let src = &all[..all.find("\n#[cfg(test)]\nmod tests").unwrap()];
+        let pinned: Vec<&str> = fetch::HF_REVISIONS.iter().map(|(r, _)| *r).collect();
+        let mut seen = 0;
+        for call in ["self.hf(\"", "self.hf_files(\"", "self.hf_folder(\"", "fetch::hf_url(\"", "fetch::hf_list(\""] {
+            for (i, _) in src.match_indices(call) {
+                let repo = src[i + call.len()..].split('"').next().unwrap();
+                assert!(pinned.contains(&repo), "{repo} has no pinned revision");
+                seen += 1;
+            }
+        }
+        for c in ["AIGVD", "KINETICS", "SOFAKE_OOD", "WASITAI"] {
+            let def = src.split(&format!("const {c}: &str = \"")).nth(1).unwrap().split('"').next().unwrap();
+            assert!(pinned.contains(&def), "{def} has no pinned revision");
+        }
+        // Repositories listed inside arrays.
+        for repo in ["Rapidata/text-2-video-human-preferences-moonvalley-marey", "Rapidata/text-2-video-human-preferences-veo3.1", "34data/ip-adapter-faceid", "34data/sd35-ip-adapter-faceid"] {
+            assert!(pinned.contains(&repo));
+        }
+        assert!(seen > 30, "found only {seen} calls; did the call syntax change?");
     }
 }

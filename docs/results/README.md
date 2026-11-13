@@ -24,6 +24,8 @@ and paths alike; nothing else in them was changed.
 | `speed_interleaved.log` | Phase-6 and phase-3 photo weights and Community Forensics, alternated on the same files with the machine under load |
 | `speed_improvements.log` | The build before and after the five speed changes, alternated on the same files, then both builds on blind batch 6 (photos) and the blind video batch |
 | `confirm7.md` | Fourth blind photo batch (photo second opinion; default profile alongside) |
+| `confirm4-scores.tsv.gz`, `confirm7-scores.tsv.gz` | Per-file detector scores for the release comparison, validated against the frozen video and photo manifests |
+| `frontier-jpeg-stress-scores.tsv.gz` | Paired originals and two JPEG transforms scored by Tintype and Community Forensics on the frontier photo development set |
 | `confirm7_second_opinion.log` | That batch set by set against Community Forensics, the timing of the mode on a sample of it, and the check of a real two-stage run against the score-file arithmetic |
 | `linux.log` | Photo and video detection built, tested and run in an aarch64 Linux virtual machine: a sample first, then both whole blind batches next to Community Forensics as released – agreement with macOS, precision, recall and timings |
 | `linux_after_speed.log` | The Linux runs after the speed changes: the build with them against the build before on both blind batches, and the photo second opinion on blind batches 6 and 7 next to Community Forensics as released |

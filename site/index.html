@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f6f3eb">
+  <title>Tintype — Detect AI in photos and video</title>
+  <meta name="description" content="Run Tintype on your own machine or server. Detect AI-generated images and video from the command line, in bulk, or over HTTP.">
+  <link rel="canonical" href="https://cheesejaguar.github.io/tintype/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Tintype — Detect AI in photos and video">
+  <meta property="og:description" content="One Rust binary for local file detection, bulk scans, and a self-hosted HTTP API. See the blind benchmarks and reproduce a result.">
+  <meta property="og:url" content="https://cheesejaguar.github.io/tintype/">
+  <meta property="og:image" content="https://cheesejaguar.github.io/tintype/assets/share.jpg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Tintype detects AI in photos and video. Its generated demo image is missed by the default profile and flagged by the sensitive profile.">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="site.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header page-width">
+    <a class="wordmark" href="./" aria-label="Tintype home">Tintype</a>
+    <nav aria-label="Main navigation">
+      <a href="#quickstart">Quickstart</a>
+      <a href="#benchmark">Benchmark</a>
+      <a href="#api">API</a>
+      <a href="https://github.com/cheesejaguar/tintype">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+
+  <main class="page-width" id="main">
+    <section class="hero" aria-labelledby="headline">
+      <div class="hero-content">
+        <h1 id="headline">Detect AI in<br class="wide-break"> photos and<br class="wide-break"> video.</h1>
+        <p class="hero-description">Run Tintype on your own machine or server. Scan a file, process a folder, or call the API.</p>
+
+        <div class="command command-install" id="install">
+          <code id="install-command">curl -fsSL https://cheesejaguar.github.io/tintype/install.sh | sh</code>
+          <button type="button" data-copy="install-command" aria-label="Copy install command" hidden>Copy</button>
+        </div>
+        <p class="install-meta">
+          <span>macOS · Linux</span>
+          <a href="https://github.com/cheesejaguar/tintype/blob/main/scripts/install.sh">View installer</a>
+          <a href="https://github.com/cheesejaguar/tintype/releases/latest">Downloads</a>
+        </p>
+        <p class="install-note">Apple silicon macOS · x86-64 and ARM64 glibc Linux. Bundled weights are <a href="https://github.com/cheesejaguar/tintype/blob/main/models/LICENSE.md">noncommercial</a>.</p>
+      </div>
+
+      <figure class="contact-print">
+        <figcaption>
+          <span>AI-generated sample</span>
+          <a href="assets/demo.png" download="tintype-demo.png">Download <span aria-hidden="true">↘</span></a>
+        </figcaption>
+        <img src="assets/demo.png" width="880" height="660" alt="White concrete building with a rust-red door beside a winding road across volcanic terrain">
+        <div class="sample-results" aria-label="Recorded results on the sample, using the CPU">
+          <div>
+            <span>Default score · missed</span>
+            <strong>0.298</strong>
+          </div>
+          <div>
+            <span>Sensitive score · flagged</span>
+            <strong>0.913</strong>
+          </div>
+        </div>
+        <a class="sample-run" href="#sample">Reproduce this result <span aria-hidden="true">↓</span></a>
+      </figure>
+    </section>
+
+    <section class="benchmark section-rule" id="benchmark" aria-labelledby="benchmark-heading">
+      <div class="benchmark-grid">
+        <div class="section-intro">
+          <h2 id="benchmark-heading">The benchmark.</h2>
+          <p>23,052 images across 30 sets in Tintype’s seventh blind photo batch. The table shows each detector at its shipped threshold.</p>
+          <a class="text-link" href="https://github.com/cheesejaguar/tintype/blob/main/docs/BENCHMARK.md">Read the methodology and per-set results <span aria-hidden="true">↗</span></a>
+        </div>
+        <table class="benchmark-table" aria-label="Photo benchmark results">
+          <thead>
+            <tr>
+              <th scope="col">Detector</th>
+              <th scope="col">Precision</th>
+              <th scope="col">Recall</th>
+              <th scope="col">False-positive rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="tintype-row">
+              <th scope="row">Tintype</th>
+              <td>98.8%</td>
+              <td>89.7%</td>
+              <td>1.2%</td>
+            </tr>
+            <tr>
+              <th scope="row">Community Forensics</th>
+              <td>94.5%</td>
+              <td>78.9%</td>
+              <td>5.2%</td>
+            </tr>
+            <tr>
+              <th scope="row">SwinV2 detector</th>
+              <td>84.1%</td>
+              <td>58.7%</td>
+              <td>12.7%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <dl class="measurements">
+        <div>
+          <dt>88.5%</dt>
+          <dd>photo recall at 1% false positives on batch 7. Community Forensics reached 63.1% and SwinV2 reached 33.8%.</dd>
+        </div>
+        <div>
+          <dt>96.1%</dt>
+          <dd>video recall at 1% false positives on 2,056 clips in blind batch 4. WaveRep reached 87.4%.</dd>
+        </div>
+        <div>
+          <dt>530–563/s</dt>
+          <dd>photos from decode to verdict on an Apple M6 GPU, timed on 2,096 batch 7 images.</dd>
+        </div>
+      </dl>
+      <p class="measurement-note">Matched-rate comparisons set the thresholds retrospectively on each batch. Default recall was 14.3% on the FaceForensics++ face-swap subset. In a separate stress test, downscaling and strong JPEG compression reduced recall to 28.0% at a 1% false-positive rate. Use flags to prioritize review and corroborate them with other evidence. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/EVIDENCE.md">See the evidence and limitations <span aria-hidden="true">↗</span></a></p>
+    </section>
+
+    <section class="quickstart section-rule" id="quickstart" aria-labelledby="quickstart-heading">
+      <div class="section-intro">
+        <h2 id="quickstart-heading">From one file to a whole feed.</h2>
+        <p>Install once and run inference on your own hardware. Choose the CLI for local work or serve requests from your own infrastructure.</p>
+        <a class="text-link" href="https://github.com/cheesejaguar/tintype/blob/main/docs/DISTRIBUTION.md">Installation and containers <span aria-hidden="true">↗</span></a>
+      </div>
+
+      <div class="workflows">
+        <div class="workflow" id="sample">
+          <div>
+            <h3>Try the sample</h3>
+            <p>Compare the same built-in image under two profiles. Scores summarize model evidence. Sensitive mode catches more generated images and flags more real ones.</p>
+            <p>If your shell can’t find Tintype, run <code>export PATH="$HOME/.local/bin:$PATH"</code> first.</p>
+          </div>
+          <div class="command">
+            <code id="sample-command">tintype demo --device cpu
+tintype demo --device cpu --sensitive</code>
+            <button type="button" data-copy="sample-command" aria-label="Copy sample commands" hidden>Copy</button>
+          </div>
+        </div>
+        <div class="workflow">
+          <div>
+            <h3>Scan one file</h3>
+            <p>Get a verdict and score for a photo or video. Add <code>--json</code> for structured output.</p>
+          </div>
+          <div class="command">
+            <code id="file-command">tintype detect photo.jpg</code>
+            <button type="button" data-copy="file-command" aria-label="Copy single file command" hidden>Copy</button>
+          </div>
+        </div>
+        <div class="workflow">
+          <div>
+            <h3>Process a folder</h3>
+            <p>Recursively scan media and write one JSON record per file.</p>
+          </div>
+          <div class="command">
+            <code id="batch-command">tintype batch --json ./media &gt; detections.jsonl</code>
+            <button type="button" data-copy="batch-command" aria-label="Copy folder scan command" hidden>Copy</button>
+          </div>
+        </div>
+        <div class="workflow" id="api">
+          <div>
+            <h3>Serve an HTTP API</h3>
+            <p>Start the server, then send a file from a second terminal. The API also accepts multipart batches.</p>
+            <a class="text-link" href="https://github.com/cheesejaguar/tintype/blob/main/docs/API.md">API reference <span aria-hidden="true">↗</span></a>
+          </div>
+          <div class="api-commands">
+            <div class="command">
+              <code id="serve-command">tintype serve</code>
+              <button type="button" data-copy="serve-command" aria-label="Copy API server command" hidden>Copy</button>
+            </div>
+            <div class="command">
+              <code id="request-command">curl --fail-with-body -F 'file=@photo.jpg' http://127.0.0.1:8080/v1/detect</code>
+              <button type="button" data-copy="request-command" aria-label="Copy API request" hidden>Copy</button>
+            </div>
+          </div>
+        </div>
+        <div class="workflow" id="agent-skill">
+          <div>
+            <h3>Use Tintype from an agent</h3>
+            <p>Install the <a href="https://github.com/cheesejaguar/tintype/tree/main/skills/tintype">Agent Skill</a> after the CLI, then ask your agent to review a local photo, clip, or folder.</p>
+          </div>
+          <div class="command">
+            <code id="skill-command">npx skills add cheesejaguar/tintype --skill tintype</code>
+            <button type="button" data-copy="skill-command" aria-label="Copy agent skill install command" hidden>Copy</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer page-width">
+    <a class="wordmark" href="./" aria-label="Tintype home">Tintype</a>
+    <p>Rust code under MIT or Apache-2.0. Bundled weights under CC BY-NC-SA 4.0.</p>
+    <nav aria-label="Project links">
+      <a href="https://github.com/cheesejaguar/tintype">GitHub <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/cheesejaguar/tintype/issues">Issues <span aria-hidden="true">↗</span></a>
+    </nav>
+  </footer>
+
+  <p class="copy-status visually-hidden" role="status" id="copy-status"></p>
+</body>
+</html>

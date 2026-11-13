@@ -131,6 +131,15 @@ impl EarlyExit {
         c
     }
 
+    /// Whether this schedule was defined for the full set of sampled units.
+    pub fn covers(&self, total: usize) -> bool {
+        let mut order = self.order.clone();
+        order.sort_unstable();
+        order.into_iter().eq(0..total)
+            && self.stages.iter().all(|s| s.views > 0 && s.views <= total)
+            && self.stages.windows(2).all(|s| s[0].views < s[1].views)
+    }
+
     /// The logits early exit would have looked at, from all of an image's
     /// view logits (in the profile's view order): the same arithmetic as
     /// running it.
@@ -461,11 +470,11 @@ pub enum Device {
 
 impl Device {
     pub fn best() -> Self {
-        if cfg!(target_os = "macos") {
-            Device::Gpu
-        } else {
-            Device::Cpu
+        #[cfg(target_os = "macos")]
+        if objc2_metal::MTLCreateSystemDefaultDevice().is_some() {
+            return Device::Gpu;
         }
+        Device::Cpu
     }
 }
 
@@ -522,6 +531,23 @@ impl PixelFeed {
                 }
             }
         }
+    }
+}
+
+pub struct ScoredVideo {
+    pub frame_logits: Vec<Vec<f32>>,
+    pub coverage: crate::video::Coverage,
+}
+
+struct VideoFrames {
+    logits: Vec<Vec<f32>>,
+    in_looking_order: bool,
+    decided: bool,
+}
+
+impl VideoFrames {
+    fn plain(logits: Vec<Vec<f32>>) -> Self {
+        Self { logits, in_looking_order: false, decided: false }
     }
 }
 
@@ -741,13 +767,32 @@ impl Detector {
     /// at the half-way mark too: only the clips still undecided there are
     /// opened again for their second half.
     pub fn score_videos_adaptive(&self, paths: &[PathBuf], sampling: crate::video::Sampling, threads: usize, exit: &EarlyExit) -> (Vec<Option<Vec<Vec<f32>>>>, Timing) {
+        let (results, timing) = self.score_video_frames(paths, sampling, threads, Some(exit));
+        (results.into_iter().map(|r| r.map(|r| r.logits)).collect(), timing)
+    }
+
+    pub fn score_videos_with_coverage(&self, paths: &[PathBuf], sampling: crate::video::Sampling, threads: usize, exit: Option<&EarlyExit>) -> (Vec<Option<ScoredVideo>>, Timing) {
+        use rayon::prelude::*;
+        let (results, timing) = self.score_video_frames(paths, sampling, threads, exit);
+        let scores = paths.par_iter().zip(results).map(|(path, result)| {
+            result.map(|r| {
+                let info = crate::video::probe(path).ok();
+                let order = exit.filter(|_| r.in_looking_order).map(|e| e.order.as_slice());
+                let coverage = crate::video::coverage(r.logits.len(), sampling, info, order, r.decided);
+                ScoredVideo { frame_logits: r.logits, coverage }
+            })
+        }).collect();
+        (scores, timing)
+    }
+
+    fn score_video_frames(&self, paths: &[PathBuf], sampling: crate::video::Sampling, threads: usize, exit: Option<&EarlyExit>) -> (Vec<Option<VideoFrames>>, Timing) {
         let (nv, nf) = (self.spec.views.len(), sampling.frames);
+        let Some(exit) = exit.filter(|exit| exit.covers(nf)) else {
+            let (plain, t) = self.score_videos(paths, sampling, threads);
+            return (plain.into_iter().map(|r| r.map(VideoFrames::plain)).collect(), t);
+        };
         let (pre, thr) = (self.preprocessor(), self.threshold_logit());
-        let order: Vec<usize> = exit.order.iter().copied().filter(|&f| f < nf).collect();
-        if order.len() != nf {
-            // Not a schedule for this many frames.
-            return self.score_videos(paths, sampling, threads);
-        }
+        let order = &exit.order;
         let half = nf / 2;
         let halves = half > 0 && order[..half].iter().all(|&f| f < half) && exit.stages.iter().any(|st| st.views == half);
         // Frames decoded up front, and the schedule counted in views over them.
@@ -766,25 +811,34 @@ impl Detector {
             }
             Some(frames.iter().flat_map(|f| pre.crops(f)).collect())
         });
-        let frames_of = |l: Vec<f32>| -> Vec<Vec<f32>> { l.chunks(nv).map(|c| c.to_vec()).collect() };
         // Clips that saw the whole first half and are still undecided.
         let more: Vec<usize> = (0..paths.len()).filter(|&i| halves && res[i].as_ref().is_some_and(|l| l.len() == first * nv && !by_view.decided(l, thr))).collect();
-        let mut out: Vec<Option<Vec<Vec<f32>>>> = res.into_iter().map(|r| r.map(frames_of)).collect();
+        let mut out: Vec<Option<VideoFrames>> = res.into_iter().map(|r| r.map(|l| VideoFrames {
+            decided: by_view.decided(&l, thr),
+            logits: l.chunks(nv).map(|c| c.to_vec()).collect(),
+            in_looking_order: true,
+        })).collect();
+        let mut odd = odd.into_inner().unwrap();
         if !more.is_empty() {
             let (rest, t2) = self.score_stream(more.len(), threads, |j| crate::video::sample_frames_range(&paths[more[j]], sampling, half, nf).ok());
             for (&i, r) in more.iter().zip(rest) {
                 // Second-half frames arrive in clip order; file them in looking order.
                 let (Some(seen), Some(r)) = (out[i].as_mut(), r) else { continue };
-                seen.extend(order[half..].iter().filter_map(|&f| r.get(f - half).cloned()));
+                if r.len() == nf - half {
+                    seen.logits.extend(order[half..].iter().map(|&f| r[f - half].clone()));
+                } else {
+                    odd.push(i);
+                }
             }
             t.wall_s += t2.wall_s;
             t.model_s += t2.model_s;
         }
-        let odd = odd.into_inner().unwrap();
         if !odd.is_empty() {
             let (plain, t2) = self.score_videos(&odd.iter().map(|&i| paths[i].clone()).collect::<Vec<_>>(), sampling, threads);
             for (&i, r) in odd.iter().zip(plain) {
-                out[i] = r;
+                if let Some(r) = r {
+                    out[i] = Some(VideoFrames::plain(r));
+                }
             }
             t.wall_s += t2.wall_s;
             t.model_s += t2.model_s;
@@ -1004,7 +1058,7 @@ impl Detector {
                     return;
                 }
                 let t = std::time::Instant::now();
-                let logits = self.logits_fed(buf);
+                let logits = self.logits_n(buf, owners.len(), vl);
                 model_s += t.elapsed().as_secs_f64();
                 for (k, &i) in owners.iter().enumerate() {
                     acc.entry(i).or_default().push(logits[k]);
@@ -1026,6 +1080,7 @@ impl Detector {
                 let done: Vec<usize> = acc.iter().filter(|(k, l)| expect.get(k) == Some(&l.len())).map(|(k, _)| *k).collect();
                 for k in done {
                     let l = acc.remove(&k).unwrap();
+                    expect.remove(&k);
                     results[k] = Some(l.chunks_exact(nv).map(|c| c.to_vec()).collect());
                 }
             }
