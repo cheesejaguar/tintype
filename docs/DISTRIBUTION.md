@@ -66,14 +66,14 @@ health checks, and server options.
 The [container workflow](../.github/workflows/containers.yml) publishes
 versioned Linux AMD64 and ARM64 images to GitHub Container Registry. The
 code-only image takes your models from a read-only mount. The bundled image
-includes the noncommercial Tintype checkpoints. Both v0.1.0 images support anonymous pulls.
+includes the noncommercial Tintype checkpoints. Both v0.1.1 images support anonymous pulls.
 
 ```sh
 export TINTYPE_API_TOKEN="$(openssl rand -hex 32)"
 docker run --rm --init -e TINTYPE_API_TOKEN -p 127.0.0.1:8080:8080 \
-  -v "$PWD/my-models:/models:ro" ghcr.io/cheesejaguar/tintype:v0.1.0
+  -v "$PWD/my-models:/models:ro" ghcr.io/cheesejaguar/tintype:v0.1.1
 docker run --rm --init -e TINTYPE_API_TOKEN -p 127.0.0.1:8080:8080 \
-  ghcr.io/cheesejaguar/tintype-bundled:v0.1.0
+  ghcr.io/cheesejaguar/tintype-bundled:v0.1.1
 ```
 
 The workflow summary records both index digests for pinning deployments.
