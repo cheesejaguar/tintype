@@ -81,6 +81,16 @@ struct Job {
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
+impl Job {
+    fn execute(self, photo: &Detector, clip: &Detector, frames: usize) {
+        if let Some(rows) = score_uploads(photo, clip, frames, self.files, || {
+            self.response.is_closed()
+        }) {
+            let _ = self.response.send(rows);
+        }
+    }
+}
+
 struct Upload {
     name: String,
     bytes: Vec<u8>,
@@ -153,10 +163,7 @@ pub fn run(
             }
         };
         while let Some(job) = receive.blocking_recv() {
-            if !job.response.is_closed() {
-                let rows = score_uploads(&photo, &clip, frames, job.files);
-                let _ = job.response.send(rows);
-            }
+            job.execute(&photo, &clip, frames);
         }
     });
     let result = runtime.block_on(async {
@@ -356,13 +363,20 @@ fn score_uploads(
     clip: &Detector,
     frames: usize,
     files: Vec<Upload>,
-) -> Vec<Value> {
+    cancelled: impl Fn() -> bool + Sync,
+) -> Option<Vec<Value>> {
+    if cancelled() {
+        return None;
+    }
     let mut results: Vec<_> = files
         .iter()
         .map(|f| json!({"name": f.name, "error": {"code": "unreadable_media", "message": "media is unsupported, exceeds decode limits, or could not be decoded"}}))
         .collect();
     let mut images = Vec::new();
     for (i, file) in files.into_iter().enumerate() {
+        if cancelled() {
+            return None;
+        }
         let ext = std::path::Path::new(&file.name)
             .extension()
             .and_then(|x| x.to_str())
@@ -376,6 +390,9 @@ fn score_uploads(
             images.push((i, file));
         }
     }
+    if cancelled() {
+        return None;
+    }
     if !images.is_empty() {
         let exit = photo
             .spec
@@ -386,15 +403,23 @@ fn score_uploads(
             Some(exit) => {
                 let pre = photo.preprocessor();
                 photo.score_staged(images.len(), 2, exit, photo.spec.views.len(), |i| {
+                    if cancelled() {
+                        return None;
+                    }
                     decode_image(&images[i].1.bytes)
                         .ok()
+                        .filter(|_| !cancelled())
                         .map(|image| pre.crops(&image))
                 })
             }
             None => {
                 let (scores, time) = photo.score_stream(images.len(), 2, |i| {
+                    if cancelled() {
+                        return None;
+                    }
                     decode_image(&images[i].1.bytes)
                         .ok()
+                        .filter(|_| !cancelled())
                         .map(|image| vec![image])
                 });
                 (
@@ -406,6 +431,9 @@ fn score_uploads(
                 )
             }
         };
+        if cancelled() {
+            return None;
+        }
         for ((i, file), scores) in images.into_iter().zip(scores) {
             if let Some(scores) = scores {
                 let score = photo.probability(&scores);
@@ -419,7 +447,7 @@ fn score_uploads(
             }
         }
     }
-    results
+    Some(results)
 }
 
 fn decode_image(bytes: &[u8]) -> Result<image_io::Rgb> {
@@ -637,9 +665,7 @@ mod tests {
             .unwrap();
             let frames = clip.use_video_profile();
             while let Some(job) = receive.blocking_recv() {
-                let _ = job
-                    .response
-                    .send(score_uploads(&photo, &clip, frames, job.files));
+                job.execute(&photo, &clip, frames);
             }
         });
         let photo = image::RgbImage::from_pixel(224, 224, image::Rgb([47, 127, 211]));
@@ -705,5 +731,28 @@ mod tests {
                 assert_eq!(json(bad).await["error"]["code"], "unreadable_media");
             });
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn abandoned_upload_stops_before_decoding_remaining_files() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let weights =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("models/tintype.safetensors");
+        let detector = Detector::load(&weights, None, 6, Device::Cpu).unwrap();
+        let files = ["invalid.mp4", "not-needed.mp4", "not-needed.png"]
+            .into_iter()
+            .map(|name| Upload {
+                name: name.into(),
+                bytes: b"invalid".to_vec(),
+            })
+            .collect();
+        let checks = AtomicUsize::new(0);
+        let output = score_uploads(&detector, &detector, 1, files, || {
+            // The request closes after the first video reaches the decoder.
+            checks.fetch_add(1, Ordering::Relaxed) >= 2
+        });
+        assert!(output.is_none());
+        assert_eq!(checks.load(Ordering::Relaxed), 3);
     }
 }
