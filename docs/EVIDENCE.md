@@ -125,6 +125,44 @@ The runner requires Python 3.9 or later, FFmpeg and curl. `--archive` accepts a 
 
 The originals have a format imbalance between labels. The runner counts formats from file signatures, including JPEG data stored under `.png` names. It re-encodes both classes to 4:2:0 JPEG at FFmpeg MJPEG q4 with stored dimensions and orientation, and with source metadata removed. That controls the output format and encoder. Earlier compression, image sources, and content differences remain. The public repository CSV lists 1,032 authentic images while the release lists 1,020. The runner reports the actual archive membership and any missing metadata paths. Results from this runner are author-run comparisons and the official leaderboard uses its own submissions.
 
+### GPTTrace comparison on the same Arena images
+
+We added the 448-pixel GPTTrace PE-Core-L flag-pec-v3 ONNX checkpoint to
+the same archived input pairs. The run verified the pinned FP32 model,
+config, Arena ZIP, and each original and normalized JPEG hash. It scored
+all 4,076 file variants with the model card's center crop, resized full
+frame and shipped offset. ONNX Runtime used the Core ML provider with CPU
+fallback. A CPU spot check on 24 image IDs sampled by hash within class,
+with both variants for each ID, differed by at most 0.000054 in raw logits.
+[GPTTrace model and preprocessing](https://huggingface.co/nakas/gpttrace-img-flag-pec-v3-onnx/blob/197d072c7ff2e41d53f5e23b57e16c9e0d9ba042/README.md).
+
+| Input | Tintype recall at 1% FPR | GPTTrace recall at 1% FPR | Community Forensics recall at 1% FPR |
+| --- | ---: | ---: | ---: |
+| Original | 88.5% | 82.0% | 46.3% |
+| Same-dimension JPEG | 73.1% | 76.7% | 23.7% |
+
+Tintype led on the originals, and GPTTrace led after JPEG normalization.
+On normalized inputs at the shipped thresholds, Tintype found 69.5% and
+flagged 7 of 1,020 authentic images. GPTTrace found 79.1% and flagged 13
+authentic images. The 1% false-positive comparison chooses each threshold
+on the cohort being measured. Prior compression and source differences
+can persist after re-encoding.
+
+[Full tables](results/arena-v0.1-gpttrace/report.md) ·
+[Matched score archive](results/arena-v0.1-gpttrace/scores.tsv.gz) ·
+[Raw GPTTrace logits](results/arena-v0.1-gpttrace/gpttrace-logits.tsv.gz) ·
+[Run parameters](results/arena-v0.1-gpttrace/run.json) ·
+[CPU comparison](results/arena-v0.1-gpttrace/mixed-provider-parity.tsv).
+
+With Python 3.12, FFmpeg 9.0.2, NumPy 2.5.4, Pillow 13.0.0 and
+ONNX Runtime 1.32.0, run the pinned comparison. The `--coreml` flag
+enables Core ML on supported macOS builds. Omit it for a CPU run.
+
+```sh
+python3 scripts/score-gpttrace-arena.py arena-gpttrace --coreml
+python3 scripts/report-archive.py arena-gpttrace/scores.tsv.gz --tintype tintype
+```
+
 ## External comparisons
 
 ### CVPR 2026 NTIRE Hard Validation
