@@ -8,6 +8,7 @@ description = "Fast AI-generated image and video detection in pure Rust"
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "multipart", "tokio"] }
+c2pa = { version = "=0.92.1", optional = true, default-features = false, features = ["rust_native_crypto"] }
 candle-core = "0.11"
 clap = { version = "4.6.7", features = ["derive"] }
 crossbeam-channel = "0.5.17"
@@ -49,6 +50,7 @@ objc2-metal-performance-shaders-graph = "0.3.2"
 [features]
 # Use the pure-Rust CPU kernels on macOS too (they are the only ones elsewhere).
 portable-cpu = []
+provenance = ["dep:c2pa"]
 
 [profile.release]
 opt-level = 3
