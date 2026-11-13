@@ -6,6 +6,7 @@ on:
     paths:
       - site/**
       - scripts/install.sh
+      - scripts/install.ps1
       - .github/workflows/pages.yml
   release:
     types: [published]
@@ -36,7 +37,9 @@ jobs:
             available=$(gh release view "$release" --json assets --jq '
               [.assets[].name] | contains([
                 "SHA256SUMS", "tintype-models.tar.gz", "tintype-macos-arm64.tar.gz",
-                "tintype-linux-x86_64.tar.gz", "tintype-linux-arm64.tar.gz"
+                "tintype-linux-x86_64.tar.gz", "tintype-linux-x86.tar.gz",
+                "tintype-linux-arm64.tar.gz", "tintype-windows-x86_64.zip",
+                "tintype-windows-x86.zip"
               ])')
           fi
           echo "available=$available" >> "$GITHUB_OUTPUT"
@@ -46,7 +49,9 @@ jobs:
           persist-credentials: false
       - run: |
           cp scripts/install.sh site/install.sh
+          cp scripts/install.ps1 site/install.ps1
           sh -n site/install.sh
+          pwsh -NoProfile -Command '$null = [scriptblock]::Create((Get-Content -Raw site/install.ps1))'
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site

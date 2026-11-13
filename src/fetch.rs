@@ -154,8 +154,32 @@ fn remote_size(url: &str) -> Result<u64> {
         .ok_or_else(|| anyhow!("server gave no size for {url}"))
 }
 
+/// Write all of `buf` at byte `offset` without moving a shared cursor.
+#[cfg(unix)]
+fn write_all_at(file: &File, buf: &[u8], offset: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(file, buf, offset)
+}
+
+/// Write all of `buf` at byte `offset`. Each call passes its own offset, so
+/// concurrent range writers never depend on the file cursor.
+#[cfg(windows)]
+fn write_all_at(file: &File, mut buf: &[u8], mut offset: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_write(buf, offset) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => {
+                buf = &buf[n..];
+                offset += n as u64;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 fn fetch_range(url: &str, file: &File, start: u64, end: u64) -> Result<()> {
-    use std::os::unix::fs::FileExt;
     let mut last = None;
     for attempt in 0..6 {
         let mut pos = start;
@@ -168,7 +192,7 @@ fn fetch_range(url: &str, file: &File, start: u64, end: u64) -> Result<()> {
                 if n == 0 {
                     break;
                 }
-                file.write_all_at(&buf[..n], pos)?;
+                write_all_at(file, &buf[..n], pos)?;
                 pos += n as u64;
             }
             if pos != end + 1 {
@@ -478,9 +502,12 @@ fn choose(mut names: Vec<String>, sel: &Select) -> Vec<String> {
 }
 
 fn target(out: &Path, name: &str, flatten: bool) -> Option<PathBuf> {
-    // Refuse absolute paths and parent traversal from untrusted archives.
+    // Refuse absolute paths, roots, drive prefixes and parent traversal from
+    // untrusted archives. On Windows `/etc/passwd` and `C:x` are not absolute,
+    // yet joining them would escape `out`, so only plain names pass.
+    use std::path::Component;
     let rel = Path::new(name);
-    if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if rel.components().any(|c| !matches!(c, Component::Normal(_) | Component::CurDir)) {
         return None;
     }
     Some(if flatten { out.join(rel.file_name()?) } else { out.join(rel) })
@@ -663,6 +690,12 @@ mod tests {
         let out = Path::new("/tmp/out");
         assert!(target(out, "../evil", false).is_none());
         assert!(target(out, "/etc/passwd", false).is_none());
+        assert!(target(out, "a/../../evil", false).is_none());
+        if cfg!(windows) {
+            assert!(target(out, "C:evil", false).is_none());
+            assert!(target(out, r"..\evil", false).is_none());
+            assert!(target(out, r"\\server\share\evil", false).is_none());
+        }
         assert_eq!(target(out, "a/b.png", true).unwrap(), out.join("b.png"));
         assert_eq!(encode_path("videos/fake/a b%2Fc.mp4"), "videos/fake/a%20b%252Fc.mp4");
     }

@@ -1,5 +1,6 @@
 #!/bin/sh
 # Run from the repository root after cargo build --release --locked --bin tintype.
+# Windows archives are made by scripts/pack.ps1.
 set -eu
 
 if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
@@ -10,7 +11,8 @@ platform=$1
 out=$2
 binary=${3:-target/release/tintype}
 case "$platform" in
-    macos-arm64|linux-x86_64|linux-arm64) ;;
+    macos-arm64|linux-x86_64|linux-x86|linux-arm64) ;;
+    windows-*) printf '%s\n' 'Use scripts/pack.ps1 for Windows archives' >&2; exit 1 ;;
     *) printf 'Unsupported platform: %s\n' "$platform" >&2; exit 1 ;;
 esac
 

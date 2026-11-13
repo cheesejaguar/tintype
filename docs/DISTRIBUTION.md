@@ -9,8 +9,11 @@ tintype detect --json photo.jpg
 tintype batch --json ./media > detections.jsonl
 ```
 
-The installer selects Apple silicon macOS or glibc Linux (x86-64 or ARM64).
-The release builds on macOS 15 and Ubuntu 22.04 runners.
+The installer selects Apple silicon macOS or glibc Linux (x86-64, 32-bit
+x86 or ARM64). A 32-bit userland on a 64-bit kernel gets the 32-bit build;
+set `TINTYPE_PLATFORM` to `linux-x86` or `linux-x86_64` to override the
+choice. The release builds on macOS 15, Ubuntu 22.04 and Windows Server 2022
+runners.
 It downloads the versioned executable and model archives, checks both
 against the release's SHA-256 manifest, verifies the model files against
 the digests compiled into the executable, and links the new binary into
@@ -31,6 +34,45 @@ curl -fsSL https://cheesejaguar.github.io/tintype/install.sh | sh -s -- --no-mod
 The installer retains previous versions under `~/.local/bin/.tintype/`.
 Remove the `tintype` symlink and that directory to uninstall, substituting
 your installation path when customized.
+
+### Windows
+
+Run the installer from PowerShell on Windows 10 or later, x86-64 or 32-bit
+x86.
+
+```powershell
+irm https://cheesejaguar.github.io/tintype/install.ps1 | iex
+tintype demo
+tintype detect --json photo.jpg
+```
+
+It downloads `tintype-windows-x86_64.zip` or `tintype-windows-x86.zip` and
+the model archive, checks both against `SHA256SUMS`, verifies the model files
+against the digests compiled into the executable, and installs them in
+`%LOCALAPPDATA%\Programs\tintype` without administrator privileges. It adds
+that directory to your user `PATH`, so new terminals find `tintype`. A 32-bit
+PowerShell on 64-bit Windows still gets the 64-bit build.
+
+The same environment variables apply: `TINTYPE_VERSION` pins a release and
+`TINTYPE_INSTALL_DIR` sets an absolute installation directory. Set
+`TINTYPE_NO_MODIFY_PATH=1` to leave `PATH` alone and
+`TINTYPE_PLATFORM=windows-x86` to install the 32-bit build on 64-bit Windows.
+The following installs the executable alone.
+
+```powershell
+& ([scriptblock]::Create((irm https://cheesejaguar.github.io/tintype/install.ps1))) -NoModels
+```
+
+An update replaces the installation directory only after the new download
+passes every check. Close running `tintype` processes first. To uninstall,
+delete the installation directory and remove it from your user `PATH` in
+Settings → System → About → Advanced system settings → Environment Variables.
+
+To install by hand, extract the zip archive and `tintype-models.tar.gz` into
+the same directory. `tar -xzf tintype-models.tar.gz` from that directory
+puts the weights in the `models` folder beside `tintype.exe`. In Windows
+PowerShell 5.1, `curl` is an alias for `Invoke-WebRequest`; call `curl.exe`
+for the HTTP API examples.
 
 Models are located from `--weights`, then `TINTYPE_MODEL_DIR`, then beside
 the resolved executable, then `../share/tintype/models` from that
@@ -87,9 +129,12 @@ with the digest from that summary.
    passes. Push a `vX.Y.Z` tag on the merged commit. The tag must match the
    version reported by `tintype --version`.
 2. Wait for the [release workflow](../.github/workflows/release.yml) to pass
-   on macOS ARM64, Linux x86-64, and Linux ARM64 and create the draft.
-   Check for `tintype-macos-arm64.tar.gz`, `tintype-linux-x86_64.tar.gz`,
-   `tintype-linux-arm64.tar.gz`, `tintype-models.tar.gz`, and `SHA256SUMS`.
+   on macOS ARM64, Linux x86-64, Linux x86, Linux ARM64, Windows x86-64 and
+   Windows x86 and create the draft. Check for
+   `tintype-macos-arm64.tar.gz`, `tintype-linux-x86_64.tar.gz`,
+   `tintype-linux-x86.tar.gz`, `tintype-linux-arm64.tar.gz`,
+   `tintype-windows-x86_64.zip`, `tintype-windows-x86.zip`,
+   `tintype-models.tar.gz`, and `SHA256SUMS`.
    Verify the checksums and the build attestations for the tagged ref.
    The workflow checks the packaged model digests against the ones compiled
    into the executable.
@@ -100,8 +145,8 @@ with the digest from that summary.
    resolves to the published version.
 
 The [Pages workflow](../.github/workflows/pages.yml) deploys the static
-site and the checked-in installer once a stable release carries all installer
-assets. Publishing the draft triggers the deployment. In repository Settings → Pages, set
+site and the checked-in installers (`install.sh` and `install.ps1`) once a
+stable release carries all installer assets. Publishing the draft triggers the deployment. In repository Settings → Pages, set
 the source to **GitHub Actions**. After deployment, verify the site and
 the exact public install command from a clean directory.
 

@@ -33,18 +33,34 @@ main() {
         --no-models) models=code-only; shift ;;
         --help)
             printf '%s\n' 'Usage: sh install.sh [--no-models]' \
-                'TINTYPE_VERSION=v0.1.0 pins a release.' \
-                'TINTYPE_INSTALL_DIR sets the executable directory (default ~/.local/bin).'
+                'TINTYPE_VERSION=v0.1.2 pins a release.' \
+                'TINTYPE_INSTALL_DIR sets the executable directory (default ~/.local/bin).' \
+                'TINTYPE_PLATFORM=linux-x86 installs the 32-bit build on 64-bit Linux.'
             exit 0 ;;
         *) fail "unknown option: $1" ;;
     esac
     [ "$#" -eq 0 ] || fail "unexpected argument: $1"
 
-    case "$(uname -s)/$(uname -m)" in
-        Darwin/arm64) platform=macos-arm64 ;;
-        Linux/x86_64) platform=linux-x86_64 ;;
-        Linux/aarch64|Linux/arm64) platform=linux-arm64 ;;
-        *) fail 'supported targets are Apple silicon macOS and glibc Linux (x86-64 and ARM64)' ;;
+    platform=${TINTYPE_PLATFORM:-}
+    if [ -z "$platform" ]; then
+        case "$(uname -s)/$(uname -m)" in
+            Darwin/arm64) platform=macos-arm64 ;;
+            Linux/x86_64|Linux/amd64)
+                # A 32-bit userland on a 64-bit kernel needs the 32-bit build.
+                if [ "$(getconf LONG_BIT 2>/dev/null || echo 64)" = 32 ]; then
+                    platform=linux-x86
+                else
+                    platform=linux-x86_64
+                fi ;;
+            Linux/i[3-6]86) platform=linux-x86 ;;
+            Linux/aarch64|Linux/arm64) platform=linux-arm64 ;;
+            MINGW*|MSYS*|CYGWIN*) fail 'on Windows, use install.ps1 from PowerShell' ;;
+            *) fail 'supported targets are Apple silicon macOS and glibc Linux (x86-64, x86 and ARM64)' ;;
+        esac
+    fi
+    case "$platform" in
+        macos-arm64|linux-x86_64|linux-x86|linux-arm64) ;;
+        *) fail 'TINTYPE_PLATFORM must be macos-arm64, linux-x86_64, linux-x86 or linux-arm64' ;;
     esac
 
     version=${TINTYPE_VERSION:-}
@@ -58,7 +74,7 @@ main() {
     fi
     case "$version" in
         v[0-9]*) ;;
-        *) fail 'TINTYPE_VERSION must be a release tag such as v0.1.0' ;;
+        *) fail 'TINTYPE_VERSION must be a release tag such as v0.1.2' ;;
     esac
     case "$version" in
         *[!a-zA-Z0-9._-]*) fail 'invalid release tag' ;;

@@ -1,0 +1,4 @@
+# Link the C runtime statically into Windows MSVC builds, so tintype.exe runs
+# without the Visual C++ Redistributable.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

@@ -13,7 +13,11 @@ concurrency:
 
 jobs:
   build:
+    name: Build ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -22,28 +26,74 @@ jobs:
             platform: macos-arm64
           - runner: ubuntu-22.04
             platform: linux-x86_64
+          - runner: ubuntu-22.04
+            platform: linux-x86
+            target: i686-unknown-linux-gnu
           - runner: ubuntu-22.04-arm
             platform: linux-arm64
+          - runner: windows-2022
+            platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+          - runner: windows-2022
+            platform: windows-x86
+            target: i686-pc-windows-msvc
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      TARGET: ${{ matrix.target }}
+      EXE: ${{ startsWith(matrix.platform, 'windows') && '.exe' || '' }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - run: rustup toolchain install stable --profile minimal
-      - run: cargo +stable test --release --locked
-      - name: Bundle and check the release
+      - name: Install the Rust toolchain
         run: |
-          cargo +stable build --release --locked --bin tintype
-          test "v$(target/release/tintype --version | awk '{print $2}')" = "$GITHUB_REF_NAME"
-          scripts/pack.sh ${{ matrix.platform }} dist
-          scripts/pack-models.sh dist
+          rustup toolchain install stable --profile minimal
+          if [ -n "$TARGET" ]; then rustup target add --toolchain stable "$TARGET"; fi
+      - if: matrix.platform == 'linux-x86'
+        name: Install the 32-bit C toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-multilib
+      - run: cargo +stable test --release --locked ${TARGET:+--target "$TARGET"}
+      - name: Build and check the version
+        run: |
+          cargo +stable build --release --locked --bin tintype ${TARGET:+--target "$TARGET"}
+          bin="target/${TARGET:+$TARGET/}release/tintype$EXE"
+          test "v$("$bin" --version | awk '{print $2}' | tr -d '\r')" = "$GITHUB_REF_NAME"
+          echo "BIN=$bin" >> "$GITHUB_ENV"
+      - if: ${{ !startsWith(matrix.platform, 'windows') }}
+        name: Bundle and check the release
+        run: |
+          scripts/pack.sh "$PLATFORM" dist "$BIN"
+          scripts/pack-models.sh dist "$BIN"
           scripts/checksums.sh dist
-          scripts/test-install.sh dist
+          if [ "$PLATFORM" = linux-x86 ]; then
+            # An i686 kernel personality, then a pure 32-bit Debian userland.
+            linux32 sh scripts/test-install.sh dist
+            docker run --rm --platform linux/386 -v "$PWD:/src:ro" -w /src \
+              i386/debian:bookworm-slim sh scripts/test-install.sh dist
+          else
+            scripts/test-install.sh dist
+          fi
           rm dist/SHA256SUMS
+      - if: startsWith(matrix.platform, 'windows')
+        name: Bundle the Windows release
+        shell: pwsh
+        run: scripts/pack.ps1 $env:PLATFORM dist $env:BIN
+      - if: startsWith(matrix.platform, 'windows')
+        name: Bundle the models
+        run: |
+          sh scripts/pack-models.sh dist "$BIN"
+          sh scripts/checksums.sh dist
+      - if: startsWith(matrix.platform, 'windows')
+        name: Check the Windows installer
+        shell: pwsh
+        run: scripts/test-install.ps1 dist $env:PLATFORM
+      - if: startsWith(matrix.platform, 'windows')
+        run: rm dist/SHA256SUMS
       - uses: actions/upload-artifact@v7
         with:
           name: tintype-${{ matrix.platform }}
           path: |
-            dist/tintype-${{ matrix.platform }}.tar.gz
+            dist/tintype-${{ matrix.platform }}.${{ startsWith(matrix.platform, 'windows') && 'zip' || 'tar.gz' }}
             ${{ matrix.platform == 'linux-x86_64' && 'dist/tintype-models.tar.gz' || '' }}
           if-no-files-found: error
           compression-level: 0

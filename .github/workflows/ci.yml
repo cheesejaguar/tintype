@@ -13,6 +13,9 @@ jobs:
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -26,29 +29,76 @@ jobs:
           - name: Linux x86-64
             runner: ubuntu-22.04
             platform: linux-x86_64
+          - name: Linux x86
+            runner: ubuntu-22.04
+            platform: linux-x86
+            target: i686-unknown-linux-gnu
           - name: Linux ARM64
             runner: ubuntu-22.04-arm
             platform: linux-arm64
+          - name: Windows x86-64
+            runner: windows-2022
+            platform: windows-x86_64
+            target: x86_64-pc-windows-msvc
+          - name: Windows x86
+            runner: windows-2022
+            platform: windows-x86
+            target: i686-pc-windows-msvc
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      TARGET: ${{ matrix.target }}
+      EXE: ${{ startsWith(matrix.platform, 'windows') && '.exe' || '' }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - run: rustup toolchain install stable --profile minimal
-      - run: cargo +stable test --release --locked ${{ matrix.features }}
-      - if: matrix.platform
+      - name: Install the Rust toolchain
         run: |
-          cargo +stable build --release --locked --bin tintype
-          scripts/pack.sh ${{ matrix.platform }} dist
-          scripts/pack-models.sh dist
+          rustup toolchain install stable --profile minimal
+          if [ -n "$TARGET" ]; then rustup target add --toolchain stable "$TARGET"; fi
+      - if: matrix.platform == 'linux-x86'
+        name: Install the 32-bit C toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-multilib
+      - run: cargo +stable test --release --locked ${TARGET:+--target "$TARGET"} ${{ matrix.features }}
+      - if: matrix.platform
+        name: Build
+        run: |
+          cargo +stable build --release --locked --bin tintype ${TARGET:+--target "$TARGET"}
+          echo "BIN=target/${TARGET:+$TARGET/}release/tintype$EXE" >> "$GITHUB_ENV"
+      - if: matrix.platform && !startsWith(matrix.platform, 'windows')
+        name: Bundle and check the installer
+        run: |
+          scripts/pack.sh "$PLATFORM" dist "$BIN"
+          scripts/pack-models.sh dist "$BIN"
           scripts/checksums.sh dist
-          scripts/test-install.sh dist
+          if [ "$PLATFORM" = linux-x86 ]; then
+            # An i686 kernel personality, then a pure 32-bit Debian userland.
+            linux32 sh scripts/test-install.sh dist
+            docker run --rm --platform linux/386 -v "$PWD:/src:ro" -w /src \
+              i386/debian:bookworm-slim sh scripts/test-install.sh dist
+          else
+            scripts/test-install.sh dist
+          fi
+      - if: startsWith(matrix.platform, 'windows')
+        name: Bundle the Windows release
+        shell: pwsh
+        run: scripts/pack.ps1 $env:PLATFORM dist $env:BIN
+      - if: startsWith(matrix.platform, 'windows')
+        name: Bundle the models
+        run: |
+          sh scripts/pack-models.sh dist "$BIN"
+          sh scripts/checksums.sh dist
+      - if: startsWith(matrix.platform, 'windows')
+        name: Check the Windows installer
+        shell: pwsh
+        run: scripts/test-install.ps1 dist $env:PLATFORM
   provenance:
     name: Offline Content Credentials (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, ubuntu-22.04, ubuntu-22.04-arm]
+        runner: [macos-15, ubuntu-22.04, ubuntu-22.04-arm, windows-2022]
     steps:
       - uses: actions/checkout@v7
         with:

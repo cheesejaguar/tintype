@@ -7,7 +7,7 @@
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-dea584?logo=rust&logoColor=white)](Cargo.toml)
 [![Code: MIT or Apache-2.0](https://img.shields.io/badge/code-MIT%20OR%20Apache--2.0-2a78d6)](#-licence)
 [![Weights: CC BY-NC-SA 4.0](https://img.shields.io/badge/weights-CC%20BY--NC--SA%204.0-eb6834)](models/LICENSE.md)
-[![Platforms: macOS and Linux](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux-52514e)](#-build-from-source)
+[![Platforms: macOS, Linux and Windows](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows-52514e)](#-build-from-source)
 [![Model: ViT-S/16, 22M parameters](https://img.shields.io/badge/model-ViT--S%2F16%20%C2%B7%2022M%20params-1baf7a)](#-how-it-works)
 [![GitHub stars](https://img.shields.io/github/stars/cheesejaguar/tintype?style=flat&color=898781)](https://github.com/cheesejaguar/tintype/stargazers)
 
@@ -48,10 +48,18 @@ tintype demo
 tintype detect photo.jpg clip.mp4
 ```
 
+On Windows, run this in PowerShell instead.
+
+```powershell
+irm https://cheesejaguar.github.io/tintype/install.ps1 | iex
+tintype demo
+```
+
 The demo scores one bundled image with a known AI-generated label.
 `tintype demo --sensitive` runs the same bytes with a lower threshold.
 
-The installer runs on Apple silicon macOS and glibc Linux (x86-64 or ARM64).
+The installers run on Apple silicon macOS, glibc Linux (x86-64, 32-bit x86
+or ARM64) and Windows 10 or later (x86-64 or 32-bit x86).
 Detection runs on your machine. See [installation and deployment](docs/DISTRIBUTION.md)
 for release archives, source builds, model paths and code-only installation.
 
@@ -316,13 +324,13 @@ the newest blind photo batch.
 |---|---|---|
 | `gpu` (default on macOS) | Apple GPU, 16-bit | The whole network is compiled into one MPSGraph, driven from Rust through `objc2`. Training uses the same graph builder, with autodiff and AdamW inside the graph. |
 | `gpu-f32` | Apple GPU, 32-bit | Matches PyTorch output to five decimals. |
-| `cpu` | Anywhere | An engine written for this network. The matrix products go to Accelerate on macOS and to pure-Rust kernels (NEON, AVX2 or AVX-512, chosen at run time) on Linux. |
+| `cpu` | Anywhere | An engine written for this network. The matrix products go to Accelerate on macOS and to pure-Rust kernels (NEON, AVX2 or AVX-512, chosen at run time) on Linux and Windows. |
 
 Images are decoded and resized in Rust (`image`, `zune-jpeg`,
 `fast_image_resize`) on all cores and fed to the engine through a bounded
 queue. Video is decoded in-process by AVFoundation on macOS, with a pure-Rust
-fallback that also runs on Linux (an MP4/MOV parser written for this project
-feeding the `rust_h264` and `rust_h265` decoders). The YCbCr→RGB conversion
+fallback that also runs on Linux and Windows (an MP4/MOV parser written for
+this project feeding the `rust_h264` and `rust_h265` decoders). The YCbCr→RGB conversion
 is done in Rust either way.
 
 ## 📦 Build from source
@@ -337,11 +345,25 @@ A recent stable Rust toolchain builds the executable. The checkout includes
 two 87 MB checkpoints and their JSON specs. Run `tintype verify-models`
 from the checkout to verify their hashes.
 
-| | macOS on Apple Silicon | Linux |
+| | macOS on Apple Silicon | Linux and Windows |
 |---|---|---|
 | `detect`, photos and video | ✅ GPU and CPU | ✅ CPU |
 | Second opinions | ✅ | ✅ photos · ❌ video |
 | Training and evaluation commands | ✅ | ❌ |
+
+Release builds cover Linux on x86-64, 32-bit x86 (i686) and ARM64, and
+Windows on x86-64 and 32-bit x86. The bundled demo image gets the same
+score to the last digit from the x86-64 and i686 builds for Linux and
+Windows, and the test suite runs on every release target. The 32-bit
+builds are slower: on one 4-core x86-64 machine the i686 Linux binary took
+2.2 times as long as the x86-64 binary on the same 40 photos. Prefer the
+64-bit build wherever the system can run it.
+
+To build on Windows, install Rust with the MSVC toolchain and run the same
+`cargo build` command. The executable is `target\release\tintype.exe`. It
+links the C runtime statically, so it needs no Visual C++ Redistributable.
+For a 32-bit build, add `--target i686-pc-windows-msvc` on Windows or
+`--target i686-unknown-linux-gnu` on Linux (with `gcc-multilib` installed).
 
 On Linux (aarch64 Ubuntu, eight virtual cores) `detect` gave the same verdict
 as the macOS CPU engine on every one of 16,324 photos of a blind batch, at
@@ -499,10 +521,10 @@ tintype evaluate confirm4 --baselines
 - The GPU engine, training, the evaluation commands and the video second
   opinion are Apple-only.
 - Video containers and codecs: on macOS the system decoder reads MP4 and MOV
-  with H.264, HEVC or MPEG-4 Part 2; AVI and WebM do not work. On Linux the
-  pure-Rust reader takes MP4 and MOV with H.264 or HEVC in 4:2:0 only – not
-  lossless H.264, MPEG-4 Part 2 or fragmented files – and such clips are
-  reported as unreadable. `TINTYPE_DECODER=rust` selects that reader on
+  with H.264, HEVC or MPEG-4 Part 2; AVI and WebM do not work. On Linux and
+  Windows the pure-Rust reader takes MP4 and MOV with H.264 or HEVC in 4:2:0
+  only – not lossless H.264, MPEG-4 Part 2 or fragmented files – and such
+  clips are reported as unreadable. `TINTYPE_DECODER=rust` selects that reader on
   macOS too.
 
 ## 📜 Licence

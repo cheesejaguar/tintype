@@ -19,6 +19,12 @@ CC BY-NC-SA 4.0. Follow the user's environment rules for installing tools.
 curl -fsSL https://cheesejaguar.github.io/tintype/install.sh | sh
 ```
 
+On Windows, use the PowerShell installer instead.
+
+```powershell
+irm https://cheesejaguar.github.io/tintype/install.ps1 | iex
+```
+
 Use paths supplied by the user. Quote each path and put flags before `--`.
 Detection runs locally and accepts a photo or video. Batch scans a directory
 recursively and emits one JSON object per file.
