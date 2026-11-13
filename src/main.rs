@@ -260,6 +260,18 @@ enum Cmd {
         #[arg(long)]
         all_views: bool,
     },
+    /// Prepare an untrained ViT-S/16 checkpoint for detector training.
+    InitTraining {
+        /// Local timm-layout ViT-S/16 safetensors backbone.
+        #[arg(long)]
+        backbone: PathBuf,
+        /// Expected SHA-256. Defaults to the pinned timm DINO checkpoint.
+        #[arg(long, default_value = tintype::training_init::DINO_SHA256)]
+        sha256: String,
+        /// New safetensors file. A matching JSON sidecar is written beside it.
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Fine-tune the detector (Apple GPU).
     Train {
         /// Starting weights (safetensors).
@@ -463,6 +475,9 @@ fn main() -> Result<()> {
         Cmd::Batch { paths, options } => scan::batch(paths, options),
         Cmd::Demo(options) => scan::demo(options),
         Cmd::Serve(args) => tintype::server::run(args, scan::resolve_weights),
+        Cmd::InitTraining { backbone, sha256, out } => {
+            tintype::training_init::initialize(&backbone, &sha256, &out)
+        }
         #[cfg(target_os = "macos")]
         Cmd::Score { weights, reference, manifest, out, batch, device, views, fast, sensitive, strict, all_views, photo_second_opinion } => {
             tintype::eval::score_images(&weights, &system(&reference, fast, sensitive, strict)?, &manifest, &out, parse_device(&device)?, batch, views.as_deref(), all_views, photo_second_opinion.as_deref()).map(|_| ())
