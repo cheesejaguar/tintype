@@ -237,7 +237,7 @@ fn an_integer_linear_layer_gives_what_the_simulation_gives() {
         LinI8::new(&lin).apply(&x, &mut got, rows, &mut Scratch::default());
         // The simulation: round weights per channel and inputs per token, multiply in single precision.
         let mut sim = Lin { w: lin.w.clone(), b: lin.b.clone(), out, inp };
-        fake_quantise_weights(&mut sim.w, inp);
+        fake_quantise_weights(&mut sim.w, inp, 127.0);
         let mut xq = x.clone();
         xq.chunks_mut(inp).for_each(|row| fake_quantise_inputs(row, 255.0));
         let mut want = vec![0f32; rows * out];

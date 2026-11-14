@@ -172,7 +172,8 @@ pub enum Ranges {
 /// the residual stream and the head.
 ///
 /// Weights are rounded once, when the model is loaded, to 255 levels
-/// symmetric about zero with one step per output channel (row). Inputs are
+/// symmetric about zero (127 at seven bits) with one step per output channel
+/// (row). Inputs are
 /// rounded as they arrive to `2^input_bits` evenly spaced levels between
 /// the smallest and largest value of their token or view, so nothing is
 /// ever clipped and no calibration data is needed; the ranges of one view
@@ -187,9 +188,12 @@ pub struct Int8 {
     /// Whose inputs are rounded, in the same order.
     pub inputs: [bool; 4],
     pub ranges: Ranges,
-    /// Bits of a rounded input. Seven is what the AVX2 multiply-add
-    /// (`vpmaddubsw`) takes without saturating; weights are always eight.
+    /// Bits of a rounded input.
     pub input_bits: u32,
+    /// Bits of a rounded weight, sign included. The AVX2 multiply-add
+    /// (`vpmaddubsw`) adds two products in sixteen bits, which holds without
+    /// saturating when either the inputs or the weights have seven bits.
+    pub weight_bits: u32,
 }
 
 impl Int8 {
@@ -209,8 +213,9 @@ impl Int8 {
         ("inputs",           [false, false, false, false],      [true,  true,  true,  true]),
     ];
 
-    /// `variant[:ranges[:bits]]`, e.g. `all`, `mlp:tensor`, `all:token:7`.
-    /// Ranges default to `token`, bits to 8.
+    /// `variant[:ranges[:input bits[:weight bits]]]`, e.g. `all`,
+    /// `mlp:tensor`, `all:token:7`, `all:token:8:7`. Ranges default to
+    /// `token`, bits to 8.
     pub fn parse(s: &str) -> Result<Self> {
         let mut fields = s.split(':');
         let name = fields.next().unwrap_or("");
@@ -223,12 +228,13 @@ impl Int8 {
             Some("tensor") => Ranges::Tensor,
             Some(other) => anyhow::bail!("unknown INT8 ranges `{other}` (use token or tensor)"),
         };
-        let input_bits = match fields.next() {
-            None => 8,
-            Some(b) => b.parse::<u32>().ok().filter(|b| (2..=16).contains(b)).ok_or_else(|| anyhow::anyhow!("INT8 input bits must be a number from 2 to 16, not `{b}`"))?,
+        let mut bits = || match fields.next() {
+            None => Ok(8),
+            Some(b) => b.parse::<u32>().ok().filter(|b| (2..=16).contains(b)).ok_or_else(|| anyhow::anyhow!("INT8 bits must be a number from 2 to 16, not `{b}`")),
         };
-        anyhow::ensure!(fields.next().is_none(), "an INT8 variant is `name[:ranges[:bits]]`, not `{s}`");
-        Ok(Self { weights, inputs, ranges, input_bits })
+        let (input_bits, weight_bits) = (bits()?, bits()?);
+        anyhow::ensure!(fields.next().is_none(), "an INT8 variant is `name[:ranges[:input bits[:weight bits]]]`, not `{s}`");
+        Ok(Self { weights, inputs, ranges, input_bits, weight_bits })
     }
 
     /// The variant `TINTYPE_INT8` names, or `all` (every block linear layer's
@@ -244,20 +250,26 @@ impl Int8 {
     fn input_steps(&self) -> f32 {
         ((1u32 << self.input_bits) - 1) as f32
     }
+
+    /// The largest level of a rounded weight: 127 at eight bits.
+    fn weight_levels(&self) -> f32 {
+        ((1u32 << (self.weight_bits - 1)) - 1) as f32
+    }
 }
 
-/// Round each row of `w` (`[out, inp]`) to 255 levels symmetric about zero,
-/// the step set by the row's largest magnitude: per-output-channel INT8
-/// weights, kept as the `f32` values they stand for.
-fn fake_quantise_weights(w: &mut [f32], inp: usize) {
+/// Round each row of `w` (`[out, inp]`) to `2 * levels + 1` levels symmetric
+/// about zero (`levels` is 127 for eight bits), the step set by the row's
+/// largest magnitude: per-output-channel INT8 weights, kept as the `f32`
+/// values they stand for.
+fn fake_quantise_weights(w: &mut [f32], inp: usize, levels: f32) {
     for row in w.chunks_mut(inp) {
         let max = row.iter().fold(0f32, |a, &v| a.max(v.abs()));
         if max == 0.0 || !max.is_finite() {
             continue;
         }
-        let step = max / 127.0;
+        let step = max / levels;
         for v in row.iter_mut() {
-            *v = (*v / step).round().clamp(-127.0, 127.0) * step;
+            *v = (*v / step).round().clamp(-levels, levels) * step;
         }
     }
 }
@@ -372,7 +384,7 @@ impl CpuVit {
             for blk in &mut vit.blocks {
                 for (layer, lin) in [(Layer::Qkv, &mut blk.qkv), (Layer::Proj, &mut blk.proj), (Layer::Fc1, &mut blk.fc1), (Layer::Fc2, &mut blk.fc2)] {
                     if q.weights[layer as usize] {
-                        fake_quantise_weights(&mut lin.w, lin.inp);
+                        fake_quantise_weights(&mut lin.w, lin.inp, q.weight_levels());
                     }
                 }
             }
@@ -642,29 +654,32 @@ mod tests {
     fn weights_round_to_255_levels_per_output_channel() {
         let (out, inp) = (5, 64);
         // Rows of very different sizes, one of them all zero.
-        let mut w: Vec<f32> = (0..out * inp).map(|i| ((i as f32 * 0.731).sin() + 0.2) * [1.0, 0.01, 30.0, 0.0, 1e-4][i / inp]).collect();
-        let before = w.clone();
-        fake_quantise_weights(&mut w, inp);
-        for (row, was) in w.chunks(inp).zip(before.chunks(inp)) {
-            let max = was.iter().fold(0f32, |a, &v| a.max(v.abs()));
-            if max == 0.0 {
-                assert!(row.iter().all(|&v| v == 0.0));
-                continue;
+        let before: Vec<f32> = (0..out * inp).map(|i| ((i as f32 * 0.731).sin() + 0.2) * [1.0, 0.01, 30.0, 0.0, 1e-4][i / inp]).collect();
+        // Eight bits and seven.
+        for levels in [127.0f32, 63.0] {
+            let mut w = before.clone();
+            fake_quantise_weights(&mut w, inp, levels);
+            for (row, was) in w.chunks(inp).zip(before.chunks(inp)) {
+                let max = was.iter().fold(0f32, |a, &v| a.max(v.abs()));
+                if max == 0.0 {
+                    assert!(row.iter().all(|&v| v == 0.0));
+                    continue;
+                }
+                let step = max / levels;
+                for (&v, &u) in row.iter().zip(was) {
+                    let level = v / step;
+                    assert!((level - level.round()).abs() < 1e-3 && level.round().abs() <= levels, "{v} is not a level of step {step}");
+                    assert!((v - u).abs() <= step * 0.5001, "{u} moved to {v}, step {step}");
+                }
+                // The largest weight of a row is a level itself, so each row uses its whole range.
+                assert!((row.iter().fold(0f32, |a, &v| a.max(v.abs())) - max).abs() <= max * 1e-6);
             }
-            let step = max / 127.0;
-            for (&v, &u) in row.iter().zip(was) {
-                let level = v / step;
-                assert!((level - level.round()).abs() < 1e-3 && level.round().abs() <= 127.0, "{v} is not a level of step {step}");
-                assert!((v - u).abs() <= step * 0.5001, "{u} moved to {v}, step {step}");
+            // Rounding again changes nothing.
+            let once = w.clone();
+            fake_quantise_weights(&mut w, inp, levels);
+            for (a, b) in w.iter().zip(&once) {
+                assert!((a - b).abs() <= a.abs() * 1e-6);
             }
-            // The largest weight of a row is a level itself, so each row uses its whole range.
-            assert!((row.iter().fold(0f32, |a, &v| a.max(v.abs())) - max).abs() <= max * 1e-6);
-        }
-        // Rounding again changes nothing.
-        let once = w.clone();
-        fake_quantise_weights(&mut w, inp);
-        for (a, b) in w.iter().zip(&once) {
-            assert!((a - b).abs() <= a.abs() * 1e-6);
         }
     }
 
@@ -698,17 +713,19 @@ mod tests {
     #[test]
     fn int8_variants_parse_by_name_with_optional_ranges_and_bits() {
         let all = Int8::parse("all").unwrap();
-        assert_eq!(all, Int8 { weights: [true; 4], inputs: [true; 4], ranges: Ranges::Token, input_bits: 8 });
-        assert_eq!(all.input_steps(), 255.0);
+        assert_eq!(all, Int8 { weights: [true; 4], inputs: [true; 4], ranges: Ranges::Token, input_bits: 8, weight_bits: 8 });
+        assert_eq!((all.input_steps(), all.weight_levels()), (255.0, 127.0));
         assert_eq!(Int8::parse("weights").unwrap().inputs, [false; 4]);
-        assert_eq!(Int8::parse("mlp:tensor").unwrap(), Int8 { weights: [true; 4], inputs: [false, false, true, true], ranges: Ranges::Tensor, input_bits: 8 });
+        assert_eq!(Int8::parse("mlp:tensor").unwrap(), Int8 { weights: [true; 4], inputs: [false, false, true, true], ranges: Ranges::Tensor, input_bits: 8, weight_bits: 8 });
         let seven = Int8::parse("all:token:7").unwrap();
-        assert_eq!((seven.input_bits, seven.input_steps()), (7, 127.0));
+        assert_eq!((seven.input_bits, seven.input_steps(), seven.weight_bits), (7, 127.0, 8));
+        let narrow = Int8::parse("all:token:8:7").unwrap();
+        assert_eq!((narrow.input_bits, narrow.weight_bits, narrow.weight_levels()), (8, 7, 63.0));
         assert_eq!(Int8::parse("inputs").unwrap().weights, [false; 4]);
         for (name, ..) in Int8::VARIANTS {
             assert!(Int8::parse(name).is_ok(), "{name}");
         }
-        for bad in ["", "everything", "all:row", "all:token:1", "all:token:x", "all:token:8:9"] {
+        for bad in ["", "everything", "all:row", "all:token:1", "all:token:x", "all:token:8:1", "all:token:8:8:8"] {
             assert!(Int8::parse(bad).is_err(), "`{bad}` should not parse");
         }
     }
@@ -754,7 +771,7 @@ mod tests {
         assert!(plain.iter().all(|l| l.is_finite()) && plain.len() == 3);
         // Asking for nothing to be rounded is the engine proper, bit for bit.
         assert_eq!(CpuVit::with_int8(&w, cfg, None).unwrap().forward(&views), plain);
-        let nothing = Int8 { weights: [false; 4], inputs: [false; 4], ranges: Ranges::Token, input_bits: 8 };
+        let nothing = Int8 { weights: [false; 4], inputs: [false; 4], ranges: Ranges::Token, input_bits: 8, weight_bits: 8 };
         assert_eq!(CpuVit::with_int8(&w, cfg, Some(nothing)).unwrap().forward(&views), plain);
         let largest = |q: &str| {
             let got = CpuVit::with_int8(&w, cfg, Some(Int8::parse(q).unwrap())).unwrap().forward(&views);
@@ -768,6 +785,7 @@ mod tests {
             }
         }
         assert!(largest("all:token:4") > largest("all:token:8"));
+        assert!(largest("weights:token:8:4") > largest("weights"));
         // A view's ranges are its own: its logit does not depend on its neighbours.
         let q = Some(Int8::parse("all:tensor").unwrap());
         let vit = CpuVit::with_int8(&w, cfg, q).unwrap();
