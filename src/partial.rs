@@ -331,8 +331,14 @@ pub struct Edit {
     pub generated: bool,
 }
 
-/// Read `edits.tsv`, keyed by the item's path as a manifest in the same
-/// directory resolves it.
+/// The key files are joined on: the absolute path, so that a score file, a
+/// manifest and an edits file agree however each was addressed.
+pub fn path_key(p: &Path) -> String {
+    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()).display().to_string()
+}
+
+/// Read `edits.tsv`, keyed by the item's path ([`path_key`]) as a manifest
+/// in the same directory resolves it.
 pub fn read_edits(path: &Path) -> Result<BTreeMap<String, Edit>> {
     let root = path.parent().unwrap_or(Path::new("."));
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
@@ -341,7 +347,7 @@ pub fn read_edits(path: &Path) -> Result<BTreeMap<String, Edit>> {
         let f: Vec<&str> = l.split('\t').collect();
         ensure!(f.len() >= 4, "bad edits line (need path, mask, kind, generated): {l}");
         let mask = (f[1] != "-" && !f[1].is_empty()).then(|| root.join(f[1]));
-        out.insert(root.join(f[0]).display().to_string(), Edit { mask, kind: f[2].to_string(), generated: f[3] == "1" });
+        out.insert(path_key(&root.join(f[0])), Edit { mask, kind: f[2].to_string(), generated: f[3] == "1" });
     }
     Ok(out)
 }
@@ -456,14 +462,15 @@ pub struct Entry {
 /// Join a `score-windows` file with the store's manifest and edits. Items the
 /// manifest does not list are dropped; the count of those is returned too.
 pub fn join(scored: Vec<Scored>, items: &[Item], edits: &BTreeMap<String, Edit>) -> Result<(Vec<Entry>, usize)> {
-    let by_path: BTreeMap<String, &Item> = items.iter().map(|it| (it.path.display().to_string(), it)).collect();
+    let by_path: BTreeMap<String, &Item> = items.iter().map(|it| (path_key(&it.path), it)).collect();
     let (mut out, mut unknown) = (Vec::new(), 0);
     for s in scored {
-        let Some(it) = by_path.get(&s.path) else {
+        let key = path_key(Path::new(&s.path));
+        let Some(it) = by_path.get(&key) else {
             unknown += 1;
             continue;
         };
-        let edit = edits.get(&s.path);
+        let edit = edits.get(&key);
         let transform = it.transform().unwrap_or(if it.label == 0 { "parent" } else { "(none)" }).to_string();
         let mask = match edit.and_then(|e| e.mask.as_ref()) {
             Some(p) => {
@@ -1365,6 +1372,34 @@ mod tests {
     }
 
     #[test]
+    fn scores_manifest_and_edits_join_however_their_paths_were_written() {
+        let dir = std::env::temp_dir().join(format!("tintype-partial-join-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("masks")).unwrap();
+        write_mask(&dir.join("masks/m.png"), 448, 224, &full_mask(448, 224, Rect { x: 224, y: 0, w: 224, h: 224 }, &region_alpha(224, 224, Blend::Hard))).unwrap();
+        std::fs::write(dir.join("edits.tsv"), "# path\tmask\tkind\tgenerated\nimg/a.jpg\tmasks/m.png\tgenerated-paste\t1\nimg/p.jpg\t-\tparent\t0\n").unwrap();
+        let edits = read_edits(&dir.join("edits.tsv")).unwrap();
+        // The manifest resolves to absolute paths; the score file was written from a path with a detour in it.
+        let item = |name: &str, label: u8, transform: &str| {
+            let mut it = Item { path: dir.join("img").join(name), label, generator: "g".into(), dataset: "d".into(), extra: vec![] };
+            it.set_group(0, "p1");
+            it.set_group(4, transform);
+            it
+        };
+        let items = [item("a.jpg", 1, "generated-paste-hard-area0.5"), item("p.jpg", 0, "parent")];
+        let scored = |name: &str| Scored { path: dir.join("img/./").join(name).display().to_string(), size: (448, 224), ..Default::default() };
+        let (entries, unknown) = join(vec![scored("a.jpg"), scored("p.jpg"), scored("elsewhere.jpg")], &items, &edits).unwrap();
+        assert_eq!((entries.len(), unknown), (2, 1));
+        assert_eq!((entries[0].kind.as_str(), entries[0].generated, entries[0].parent.as_str()), ("generated-paste", true, "p1"));
+        assert!((entries[0].mask.as_ref().unwrap().area() - 0.5).abs() < 1e-6);
+        assert!(entries[1].mask.is_none() && entries[1].kind == "parent");
+        // A mask of the wrong size is an error, not a silent zero.
+        let wrong = Scored { size: (100, 100), ..scored("a.jpg") };
+        assert!(join(vec![wrong], &items, &edits).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_parent_disjoint_report_sets_cutoffs_on_other_parents() {
         let mut entries: Vec<Entry> = Vec::new();
         for i in 0..200 {
@@ -1416,7 +1451,7 @@ mod tests {
         let edits = read_edits(&out.join("edits.tsv")).unwrap();
         assert_eq!((items.len(), edits.len()), (n, n));
         for it in &items {
-            let e = &edits[&it.path.display().to_string()];
+            let e = &edits[&path_key(&it.path)];
             let t = it.transform().unwrap();
             assert!(it.parent_id().unwrap().contains("/src/real"), "{:?}", it.parent_id());
             assert_eq!(it.dataset, "partial-paste");

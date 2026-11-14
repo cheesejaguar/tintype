@@ -1102,6 +1102,9 @@ fn main() -> Result<()> {
             if unknown > 0 {
                 eprintln!("{unknown} scored files are not in the manifests and were left out");
             }
+            if !all_edits.is_empty() && entries.iter().all(|e| e.mask.is_none()) {
+                eprintln!("warning: none of the scored files has a mask in the edits files; localisation will be empty");
+            }
             let opts = partial::ReportOptions { fprs: fpr, top_k, overlap, cutoff_on, disjoint: disjoint_cutoff };
             print!("{}", partial::report(&entries, &opts));
             if let Some(out) = out {
