@@ -895,6 +895,19 @@ pub fn frames_uniform_range(path: &Path, n: usize, max_seconds: f64, from: usize
     yuv::uniform_range(&mut r, n, max_seconds, from, to, path).map_err(|_| r.why_empty(path))
 }
 
+/// The frames nearest to `targets` (seconds after the first frame,
+/// ascending), each with the time of the frame used; `None` for a target the
+/// clip ended before. See [`yuv::at_times`].
+pub fn frames_at(path: &Path, targets: &[f64]) -> Result<Vec<Option<(f64, Rgb)>>> {
+    let mut r = open(path, None)?;
+    yuv::at_times(&mut r, targets, path).map_err(|_| r.why_empty(path))
+}
+
+/// Times of the clip's hard cuts, from a pass over every frame ([`yuv::cuts`]).
+pub fn cut_times(path: &Path) -> Result<Vec<f64>> {
+    Ok(yuv::cuts(&mut open(path, None)?))
+}
+
 pub fn frames_first(path: &Path, n: usize) -> Result<Vec<Rgb>> {
     let mut r = open(path, None)?;
     yuv::first(&mut r, n, true, path).map_err(|_| r.why_empty(path))

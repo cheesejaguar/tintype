@@ -275,6 +275,19 @@ pub fn frames_uniform_range(path: &Path, n: usize, max_seconds: f64, from: usize
     with_deadline(path, move |p| yuv::uniform_range(&mut open(p, None)?, n, max_seconds, from, to, p))
 }
 
+/// The frames nearest to `targets` (seconds after the first frame,
+/// ascending), each with the time of the frame used; `None` for a target the
+/// clip ended before. See [`yuv::at_times`].
+pub fn frames_at(path: &Path, targets: &[f64]) -> Result<Vec<Option<(f64, Rgb)>>> {
+    let targets = targets.to_vec();
+    with_deadline(path, move |p| yuv::at_times(&mut open(p, None)?, &targets, p))
+}
+
+/// Times of the clip's hard cuts, from a pass over every frame ([`yuv::cuts`]).
+pub fn cut_times(path: &Path) -> Result<Vec<f64>> {
+    with_deadline(path, |p| Ok(yuv::cuts(&mut open(p, None)?)))
+}
+
 /// The first `n` frames in presentation order, with the colour conversion
 /// of OpenCV's reader (see [`Yuv::to_rgb_opencv`]).
 pub fn frames_first(path: &Path, n: usize) -> Result<Vec<Rgb>> {

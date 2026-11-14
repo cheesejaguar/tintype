@@ -97,6 +97,17 @@ pub struct ScanOptions {
     /// Spread samples over the first N seconds of video. Use 0 for the whole clip.
     #[arg(long, default_value_t = 30.0, value_parser = parse_seconds)]
     max_seconds: f64,
+    /// Opt-in video coverage that scores every planned frame (no early exit)
+    /// and reports each window beside the clip's score: `uniform` (the
+    /// default sampling positions), `segments` (the same frames divided
+    /// between equal windows of the whole clip) or `shots` (as `segments`,
+    /// with window boundaries moved onto nearby cuts). `segments` and
+    /// `shots` always span the whole clip, whatever `--max-seconds` says.
+    #[arg(long, value_parser = video::CoverageMode::parse)]
+    coverage: Option<video::CoverageMode>,
+    /// Windows for `--coverage segments` and `shots`: early, middle and late by default.
+    #[arg(long, default_value_t = 3, value_parser = parse_segments, requires = "coverage")]
+    segments: usize,
     /// Write one JSON object per file.
     #[arg(long)]
     json: bool,
@@ -111,6 +122,14 @@ fn parse_frames(value: &str) -> Result<usize, String> {
         .ok()
         .filter(|n| (1..=256).contains(n))
         .ok_or_else(|| "expected an integer between 1 and 256".into())
+}
+
+fn parse_segments(value: &str) -> Result<usize, String> {
+    value
+        .parse()
+        .ok()
+        .filter(|n| (1..=64).contains(n))
+        .ok_or_else(|| "expected an integer between 1 and 64".into())
 }
 
 fn parse_seconds(value: &str) -> Result<f64, String> {
@@ -203,6 +222,10 @@ impl Scan {
         } else {
             Profile::Default
         };
+        ensure!(
+            options.coverage.is_none() || video_second.is_none(),
+            "--coverage reports the primary model window by window and cannot be combined with --second-opinion"
+        );
         let device = super::parse_device(&options.device)?;
         let threads = std::thread::available_parallelism().map_or(4, usize::from);
         Ok(Self {
@@ -300,10 +323,8 @@ impl Scan {
         Ok(rows)
     }
 
-    fn videos(&mut self, paths: &[PathBuf]) -> Result<Vec<Row>> {
-        if paths.is_empty() {
-            return Ok(Vec::new());
-        }
+    /// Load the video model once, with its video profile switched on.
+    fn load_video(&mut self) -> Result<()> {
         if self.video.is_none() {
             let weights = match &self.options.video_weights {
                 Some(path) => path.clone(),
@@ -327,6 +348,121 @@ impl Scan {
                 "video model must declare at least one view"
             );
             self.video = Some(det);
+        }
+        Ok(())
+    }
+
+    /// The opt-in coverage modes (`--coverage`): plan windows over the clip,
+    /// score every frame of every window, and report each window beside the
+    /// clip's score. Early exit is off: a window that was never looked at
+    /// could not be reported, and a clip cleared from its first frames is
+    /// exactly what this mode is for checking. The clip's score is still the
+    /// mean over all scored frames, and it is complete only when every
+    /// planned frame was scored.
+    fn videos_covered(&self, paths: &[PathBuf], mode: video::CoverageMode) -> Result<Vec<Row>> {
+        struct Plan {
+            duration: Option<f64>,
+            cuts: Option<Vec<f64>>,
+            windows: Vec<video::Window>,
+            /// Per planned frame, the time of the frame that was scored for it.
+            times: Vec<Option<f64>>,
+        }
+        let det = self.video.as_ref().unwrap();
+        let frames = self.options.frames.unwrap_or(self.video_frames);
+        ensure!(
+            (1..=256).contains(&frames),
+            "video profile must request between 1 and 256 frames"
+        );
+        let (segments, max_seconds) = (self.options.segments, self.options.max_seconds);
+        let plans: Vec<std::sync::Mutex<Option<Plan>>> =
+            paths.iter().map(|_| std::sync::Mutex::new(None)).collect();
+        let threads = self
+            .threads
+            .min(paths.len())
+            .min(if frames > 32 { 1 } else { 4 });
+        let (results, _) = det.score_stream(paths.len(), threads, |i| {
+            let duration = video::probe(&paths[i])
+                .ok()
+                .map(|info| info.duration)
+                .filter(|d| d.is_finite() && *d > 0.0);
+            let whole = video::span(duration.unwrap_or(0.0), 0.0);
+            let (windows, cuts) = match mode {
+                video::CoverageMode::Uniform => {
+                    let span = video::span(duration.unwrap_or(0.0), max_seconds);
+                    (vec![video::uniform_window(span, frames)], None)
+                }
+                video::CoverageMode::Segments => {
+                    (video::plan_windows(whole, segments, frames, &[]), None)
+                }
+                video::CoverageMode::Shots => {
+                    let cuts = video::cut_times(&paths[i]).ok()?;
+                    (video::plan_windows(whole, segments, frames, &cuts), Some(cuts))
+                }
+            };
+            let targets: Vec<f64> = windows.iter().flat_map(|w| w.targets.iter().copied()).collect();
+            let got = video::sample_frames_at(&paths[i], &targets).ok()?;
+            let times = got.iter().map(|f| f.as_ref().map(|f| f.0)).collect();
+            *plans[i].lock().unwrap() = Some(Plan { duration, cuts, windows, times });
+            Some(got.into_iter().flatten().map(|f| f.1).collect())
+        });
+        let rows = paths
+            .iter()
+            .zip(results)
+            .zip(plans)
+            .map(|((path, result), plan)| {
+                let mut row = Row::empty(path, "video", "video");
+                let (Some(result), Some(plan)) = (result, plan.into_inner().unwrap()) else {
+                    row.error = Some(decode_error(video::frame_at(path, 0.0)));
+                    return row;
+                };
+                let frame_logits: Vec<f32> = result.iter().map(|v| mean(v)).collect();
+                let logit = video::aggregate(&frame_logits);
+                row.set_score(det.probability(&[logit]), logit, det.threshold_logit());
+                let planned = plan.times.len();
+                let targets: Vec<f64> = plan.windows.iter().flat_map(|w| w.targets.iter().copied()).collect();
+                let until = plan.times.iter().zip(&targets).filter(|(t, _)| t.is_some()).map(|(_, &t)| t).last();
+                row.coverage = Some(video::Coverage {
+                    frames: frame_logits.len(),
+                    frames_expected: planned,
+                    duration: plan.duration,
+                    until,
+                    complete: !frame_logits.is_empty() && frame_logits.len() == planned,
+                });
+                // Scored frames are in plan order: hand them back to their windows.
+                let mut scored = frame_logits.iter().copied();
+                let mut at = 0;
+                let names: &[&str] = if plan.windows.len() == 3 { &["early", "middle", "late"] } else { &[] };
+                let windows = plan
+                    .windows
+                    .iter()
+                    .enumerate()
+                    .map(|(k, w)| {
+                        let times: Vec<f64> = plan.times[at..at + w.targets.len()].iter().flatten().copied().collect();
+                        at += w.targets.len();
+                        let logits: Vec<f32> = scored.by_ref().take(times.len()).collect();
+                        let name = match (mode, names.get(k)) {
+                            (video::CoverageMode::Uniform, _) => "span".to_string(),
+                            (_, Some(name)) => name.to_string(),
+                            _ => (k + 1).to_string(),
+                        };
+                        let logit = (!logits.is_empty()).then(|| video::aggregate(&logits));
+                        Segment { name, start: w.start, end: w.end, expected: w.targets.len(), score: logit.map(|z| det.probability(&[z])), logit, times, logits }
+                    })
+                    .collect();
+                row.covered = Some(Covered { mode, cuts: plan.cuts, windows });
+                row
+            })
+            .collect();
+        Ok(rows)
+    }
+
+    fn videos(&mut self, paths: &[PathBuf]) -> Result<Vec<Row>> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.load_video()?;
+        if let Some(mode) = self.options.coverage {
+            return self.videos_covered(paths, mode);
         }
         let det = self.video.as_ref().unwrap();
         let frames = self.options.frames.unwrap_or(self.video_frames);
@@ -544,6 +680,28 @@ pub fn batch(roots: Vec<PathBuf>, options: ScanOptions) -> Result<()> {
     counts.finish()
 }
 
+/// One window of an opt-in coverage mode: where it lies, the frames scored
+/// in it and their mean, through the clip's own calibration.
+struct Segment {
+    name: String,
+    start: f64,
+    end: f64,
+    expected: usize,
+    score: Option<f32>,
+    logit: Option<f32>,
+    /// Times of the frames scored, seconds from the first frame.
+    times: Vec<f64>,
+    logits: Vec<f32>,
+}
+
+/// What `--coverage` adds to a clip's result.
+struct Covered {
+    mode: video::CoverageMode,
+    /// The cuts found, for `shots`.
+    cuts: Option<Vec<f64>>,
+    windows: Vec<Segment>,
+}
+
 /// One file's result. When a second opinion contributes, the logit and
 /// threshold still describe the primary model and the score describes the blend.
 struct Row {
@@ -556,6 +714,7 @@ struct Row {
     second_opinion: bool,
     views: Option<usize>,
     coverage: Option<video::Coverage>,
+    covered: Option<Covered>,
     fixture_label: Option<&'static str>,
     error: Option<String>,
 }
@@ -572,6 +731,7 @@ impl Row {
             second_opinion: false,
             views: None,
             coverage: None,
+            covered: None,
             fixture_label: None,
             error: None,
         }
@@ -632,6 +792,25 @@ impl Row {
                 object["analysed_until_s"] = c.until.into();
                 object["complete"] = c.complete.into();
             }
+            if let Some(covered) = &self.covered {
+                object["coverage_mode"] = covered.mode.name().into();
+                if let Some(cuts) = &covered.cuts {
+                    object["cuts_s"] = cuts.clone().into();
+                }
+                object["segments"] = covered
+                    .windows
+                    .iter()
+                    .map(|w| {
+                        serde_json::json!({
+                            "name": w.name, "start_s": w.start, "end_s": w.end,
+                            "frames": w.logits.len(), "frames_expected": w.expected,
+                            "score": w.score, "logit": w.logit,
+                            "sampled_s": w.times, "frame_logits": w.logits
+                        })
+                    })
+                    .collect::<Vec<_>>()
+                    .into();
+            }
             writeln!(out, "{object}")?;
             return Ok(());
         }
@@ -650,6 +829,17 @@ impl Row {
                     c.frames, c.frames_expected
                 )?;
             }
+        }
+        if let Some(covered) = &self.covered {
+            let windows: Vec<String> = covered
+                .windows
+                .iter()
+                .map(|w| match w.score {
+                    Some(score) => format!("{} {score:.3} ({} frames)", w.name, w.logits.len()),
+                    None => format!("{} not sampled", w.name),
+                })
+                .collect();
+            write!(out, "  {}: {}", covered.mode.name(), windows.join(", "))?;
         }
         writeln!(out)?;
         Ok(())

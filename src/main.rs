@@ -511,6 +511,106 @@ enum Cmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Build a pasted-region store for the partial-edit evaluation: each
+    /// authentic parent with a region replaced by generated pixels, and the
+    /// controls (the parent, a re-save, a self-paste, an authentic paste).
+    /// Writes `manifest.tsv`, `edits.tsv`, images and masks under `--out`.
+    /// An evaluation target of its own: keep it out of training and calibration.
+    PasteEdits {
+        /// Manifests whose authentic items (label 0) are the parents.
+        #[arg(long, required = true)]
+        real: Vec<PathBuf>,
+        /// Manifests whose generated items (label 1) donate the pasted pixels.
+        #[arg(long, required = true)]
+        fake: Vec<PathBuf>,
+        /// A new directory for the store.
+        #[arg(long)]
+        out: PathBuf,
+        /// Authentic parents to use.
+        #[arg(long, default_value_t = 200)]
+        parents: usize,
+        /// Further authentic images of the same kind, kept as `parent` rows only: more authentic images to set cutoffs on.
+        #[arg(long, default_value_t = 0)]
+        extra_parents: usize,
+        /// Shares of the image the pasted region covers.
+        #[arg(long, value_delimiter = ',', default_value = "0.02,0.05,0.12,0.25")]
+        areas: Vec<f32>,
+        /// Seams: `hard`, `feather`.
+        #[arg(long, default_value = "hard,feather")]
+        blends: String,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Parents need a shorter side of at least this many pixels ...
+        #[arg(long, default_value_t = 448)]
+        min_side: u32,
+        /// ... and a longer side of at most this many.
+        #[arg(long, default_value_t = 2048)]
+        max_side: u32,
+        /// Dataset name written to the manifest.
+        #[arg(long, default_value = "partial-paste")]
+        dataset: String,
+        /// Save every derived image as PNG instead of in its parent's format.
+        #[arg(long)]
+        png: bool,
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+    },
+    /// Score the model's own views and a dense grid of native-resolution
+    /// windows for every image in a manifest, with where each window lies.
+    /// Evaluation output for `partial-report`; the first columns are those
+    /// of `score --all-views`. Runs on every platform with `--device cpu`.
+    ScoreWindows {
+        #[arg(long)]
+        weights: PathBuf,
+        #[arg(long, required = true)]
+        manifest: Vec<PathBuf>,
+        #[arg(long)]
+        out: PathBuf,
+        /// Largest distance between neighbouring grid windows, in pixels (0: no grid).
+        #[arg(long, default_value_t = 112)]
+        stride: u32,
+        /// Most grid windows per image; a larger image gets a sparser grid.
+        #[arg(long, default_value_t = 64)]
+        max_windows: usize,
+        #[arg(long, default_value_t = 64)]
+        batch: usize,
+        #[arg(long, default_value = "auto")]
+        device: String,
+        /// Decode threads.
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+    },
+    /// Compare pooling rules on a partial-edit store at equal authentic
+    /// false-positive rates, and measure how well the grid windows above the
+    /// cutoff match the masks. Reads a `score-windows` file.
+    PartialReport {
+        #[arg(long)]
+        scores: PathBuf,
+        /// The store's manifests (grouping columns: `parent_id`, `transform`).
+        #[arg(long, required = true)]
+        manifest: Vec<PathBuf>,
+        /// The store's `edits.tsv` files (default: beside each manifest, when present).
+        #[arg(long)]
+        edits: Vec<PathBuf>,
+        /// Authentic false-positive rates to operate every pooling rule at.
+        #[arg(long, value_delimiter = ',', default_value = "0.01,0.001")]
+        fpr: Vec<f64>,
+        /// `k` of the top-k means.
+        #[arg(long, default_value_t = 3)]
+        top_k: usize,
+        /// A window counts as edited when the mask covers more than this share of it.
+        #[arg(long, default_value_t = 0.1)]
+        overlap: f32,
+        /// The `transform` whose items are the authentic images cutoffs are set on.
+        #[arg(long, default_value = "parent")]
+        cutoff_on: String,
+        /// Set cutoffs on half of the parents and report on the other half.
+        #[arg(long)]
+        disjoint_cutoff: bool,
+        /// Also write the per-item output: the global score and the local scores of every image.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 fn parse_device(s: &str) -> Result<Device> {
@@ -973,6 +1073,43 @@ fn main() -> Result<()> {
                 println!("{l}");
             }
             anyhow::ensure!(ok, "the model files differ from the released ones");
+            Ok(())
+        }
+        Cmd::PasteEdits { real, fake, out, parents, extra_parents, areas, blends, seed, min_side, max_side, dataset, png, threads } => {
+            use tintype::partial;
+            let real: Vec<ingest::Item> = load_manifests(&real)?.into_iter().filter(|i| i.label == 0).collect();
+            let fake: Vec<ingest::Item> = load_manifests(&fake)?.into_iter().filter(|i| i.label == 1).collect();
+            let opts = partial::PasteOptions { parents, extra_parents, areas, blends: partial::Blend::parse_list(&blends)?, seed, min_side, max_side, dataset, png, threads };
+            let (parents, items) = partial::paste_edits(&real, &fake, &out, &opts)?;
+            println!("{}: {items} items from {parents} authentic parents ({} candidates, {} donors); masks in edits.tsv", out.display(), real.len(), fake.len());
+            Ok(())
+        }
+        Cmd::ScoreWindows { weights, manifest, out, stride, max_windows, batch, device, threads } => {
+            let items = load_manifests(&manifest)?;
+            anyhow::ensure!(!items.is_empty(), "the manifests list no items");
+            tintype::partial::score_windows(&weights, &items, &out, parse_device(&device)?, &tintype::partial::WindowOptions { stride, max_windows, batch, threads })
+        }
+        Cmd::PartialReport { scores, manifest, edits, fpr, top_k, overlap, cutoff_on, disjoint_cutoff, out } => {
+            use tintype::partial;
+            anyhow::ensure!(fpr.iter().all(|f| (0.0..1.0).contains(f)) && (0.0..1.0).contains(&overlap), "--fpr and --overlap are fractions, e.g. 0.01");
+            let items = load_manifests(&manifest)?;
+            let mut all_edits = std::collections::BTreeMap::new();
+            let beside: Vec<PathBuf> = manifest.iter().map(|m| m.with_file_name("edits.tsv")).filter(|p| p.is_file()).collect();
+            for e in if edits.is_empty() { &beside } else { &edits } {
+                all_edits.extend(partial::read_edits(e)?);
+            }
+            let (entries, unknown) = partial::join(partial::read_window_scores(&scores)?, &items, &all_edits)?;
+            if unknown > 0 {
+                eprintln!("{unknown} scored files are not in the manifests and were left out");
+            }
+            if !all_edits.is_empty() && entries.iter().all(|e| e.mask.is_none()) {
+                eprintln!("warning: none of the scored files has a mask in the edits files; localisation will be empty");
+            }
+            let opts = partial::ReportOptions { fprs: fpr, top_k, overlap, cutoff_on, disjoint: disjoint_cutoff };
+            print!("{}", partial::report(&entries, &opts));
+            if let Some(out) = out {
+                std::fs::write(&out, partial::per_item(&entries, &opts))?;
+            }
             Ok(())
         }
     }

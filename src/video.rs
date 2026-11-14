@@ -149,6 +149,102 @@ pub fn sample_frames_range(path: &Path, s: Sampling, from: usize, to: usize) -> 
     software()
 }
 
+/// Opt-in ways of covering a clip (`detect --coverage`). None of them is the
+/// default, and none stops early: every frame they plan is scored, and the
+/// result is reported window by window beside the clip's score.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoverageMode {
+    /// The default sampling positions (spread over the first `max_seconds`),
+    /// as one window: the fixed-budget baseline, with every frame reported.
+    Uniform,
+    /// The same number of frames divided between equal windows of the whole
+    /// clip: early, middle and late when there are three.
+    Segments,
+    /// As `Segments`, with window boundaries moved onto nearby hard cuts so
+    /// that a window does not straddle two shots. Reads the clip twice.
+    Shots,
+}
+
+impl CoverageMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            CoverageMode::Uniform => "uniform",
+            CoverageMode::Segments => "segments",
+            CoverageMode::Shots => "shots",
+        }
+    }
+
+    pub fn parse(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "uniform" => Ok(CoverageMode::Uniform),
+            "segments" => Ok(CoverageMode::Segments),
+            "shots" => Ok(CoverageMode::Shots),
+            other => Err(format!("unknown coverage mode `{other}` (use uniform, segments or shots)")),
+        }
+    }
+}
+
+/// One window of a coverage plan: a stretch of the clip and the times,
+/// in seconds from its first frame, at which frames are wanted.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Window {
+    pub start: f64,
+    pub end: f64,
+    pub targets: Vec<f64>,
+}
+
+/// The default sampling positions as one window: frame `k` of `frames` at
+/// `k * span / frames`, exactly where [`sample_frames`] looks.
+pub fn uniform_window(span: f64, frames: usize) -> Window {
+    Window { start: 0.0, end: span, targets: (0..frames).map(|k| k as f64 * span / frames.max(1) as f64).collect() }
+}
+
+/// Divide `span` seconds into `segments` windows and `frames` frames between
+/// them. Windows are equal, except that a boundary within a quarter of a
+/// window of one of `cuts` moves onto it. The frame budget is shared evenly
+/// (earlier windows get the remainder), and a window's frames sit at the
+/// centres of equal parts of it, so no window is sampled only at its start.
+/// With fewer frames than windows there are only as many windows as frames.
+pub fn plan_windows(span: f64, segments: usize, frames: usize, cuts: &[f64]) -> Vec<Window> {
+    let n = segments.clamp(1, frames.max(1));
+    let width = span / n as f64;
+    let mut edges: Vec<f64> = (0..=n).map(|i| i as f64 * width).collect();
+    for i in 1..n {
+        let nearest = cuts.iter().copied().filter(|c| (c - edges[i]).abs() <= width / 4.0).min_by(|a, b| (a - edges[i]).abs().total_cmp(&(b - edges[i]).abs()));
+        if let Some(c) = nearest.filter(|&c| c > edges[i - 1]) {
+            edges[i] = c;
+        }
+    }
+    (0..n)
+        .map(|i| {
+            let m = frames / n + usize::from(i < frames % n);
+            let (start, end) = (edges[i], edges[i + 1]);
+            Window { start, end, targets: (0..m).map(|j| start + (j as f64 + 0.5) * (end - start) / m as f64).collect() }
+        })
+        .collect()
+}
+
+/// Decode the frames nearest to `targets` (seconds from the first frame,
+/// ascending). Each entry is the time of the frame used and the frame, or
+/// `None` when the clip ended before the target.
+pub fn sample_frames_at(path: &Path, targets: &[f64]) -> Result<Vec<Option<(f64, Rgb)>>> {
+    #[cfg(target_os = "macos")]
+    if !pure_rust() {
+        return decode_with_fallback(|| crate::avf::frames_at(path, targets), || crate::swdec::frames_at(path, targets));
+    }
+    crate::swdec::frames_at(path, targets)
+}
+
+/// Times of a clip's hard cuts, in seconds from its first frame. Reads
+/// every frame.
+pub fn cut_times(path: &Path) -> Result<Vec<f64>> {
+    #[cfg(target_os = "macos")]
+    if !pure_rust() {
+        return decode_with_fallback(|| crate::avf::cut_times(path), || crate::swdec::cut_times(path));
+    }
+    crate::swdec::cut_times(path)
+}
+
 /// Combine per-frame logits into one clip logit. The mean is the
 /// log-likelihood-ratio average, the same rule the strongest frame-level
 /// video detectors use.
@@ -230,6 +326,39 @@ mod coverage_tests {
         assert_eq!(span(12.0, 30.0), 12.0);
         assert_eq!(span(312.0, 0.0), 312.0);
         assert_eq!(span(0.0, 30.0), 30.0);
+    }
+
+    #[test]
+    fn the_uniform_window_holds_the_default_sampling_positions() {
+        let w = uniform_window(30.0, 16);
+        assert_eq!((w.start, w.end, w.targets.len()), (0.0, 30.0, 16));
+        assert_eq!((w.targets[0], w.targets[7], w.targets[15]), (0.0, 30.0 * 7.0 / 16.0, 30.0 * 15.0 / 16.0));
+    }
+
+    #[test]
+    fn windows_share_the_frame_budget_and_cover_the_whole_clip() {
+        let w = plan_windows(90.0, 3, 16, &[]);
+        assert_eq!(w.iter().map(|w| (w.start, w.end, w.targets.len())).collect::<Vec<_>>(), vec![(0.0, 30.0, 6), (30.0, 60.0, 5), (60.0, 90.0, 5)]);
+        // Frames sit at the centres of equal parts of their window.
+        assert_eq!(w[0].targets, vec![2.5, 7.5, 12.5, 17.5, 22.5, 27.5]);
+        assert_eq!((w[2].targets[0], w[2].targets[4]), (63.0, 87.0));
+        // Every frame lies inside its window and the times ascend across windows.
+        let all: Vec<f64> = w.iter().flat_map(|w| w.targets.clone()).collect();
+        assert!(all.windows(2).all(|p| p[0] < p[1]) && w.iter().all(|w| w.targets.iter().all(|t| *t > w.start && *t < w.end)));
+        // Fewer frames than windows: one frame each, in fewer windows.
+        let few = plan_windows(90.0, 3, 2, &[]);
+        assert_eq!(few.iter().map(|w| (w.end, w.targets.clone())).collect::<Vec<_>>(), vec![(45.0, vec![22.5]), (90.0, vec![67.5])]);
+        assert_eq!(plan_windows(12.0, 1, 4, &[]).len(), 1);
+    }
+
+    #[test]
+    fn window_boundaries_move_onto_nearby_cuts_only() {
+        // Boundaries at 30 and 60. A cut at 34 is within a quarter window (7.5 s); one at 45 is not.
+        let w = plan_windows(90.0, 3, 15, &[34.0, 45.0]);
+        assert_eq!(w.iter().map(|w| (w.start, w.end)).collect::<Vec<_>>(), vec![(0.0, 34.0), (34.0, 60.0), (60.0, 90.0)]);
+        assert!(w.iter().all(|w| w.targets.len() == 5));
+        // Of two nearby cuts the nearer one is taken.
+        assert_eq!(plan_windows(90.0, 3, 15, &[24.0, 31.0, 66.0])[1], Window { start: 31.0, end: 66.0, targets: vec![34.5, 41.5, 48.5, 55.5, 62.5] });
     }
 
     #[test]
