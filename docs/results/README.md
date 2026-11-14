@@ -27,6 +27,7 @@ and paths alike; nothing else in them was changed.
 | `confirm4-scores.tsv.gz`, `confirm7-scores.tsv.gz` | Per-file detector scores for the release comparison, validated against the frozen video and photo manifests |
 | `frontier-jpeg-stress-scores.tsv.gz` | Paired originals and two JPEG transforms scored by Tintype and Community Forensics on the frontier photo development set |
 | `arena-v0.1-gpttrace/` | Pinned GPTTrace, Tintype and Community Forensics scores on all 2,038 Arena originals and paired JPEGs |
+| `policy-comparison/` | Exploratory photo policy comparisons printed by `scripts/compare-policies.py` from the confirmation 7, Frontier and Arena score archives: the CF band, GPTTrace fusion, gate misses, and a dry run of the frozen-split commands ([runbook](../runbooks/policy-comparison.md)) |
 | `ntire-2026-hard-validation/` | Both detectors' full scores and tables for the organizers' 2,500 released hard-validation images |
 | `ntire-2026-public-test/` | Both detectors' full scores and tables for the organizers' 2,500 released public test images |
 | `davodi-2026-video/` | Matched detector scores, source and normalized hashes, and run parameters for 20 of 24 released video themes |

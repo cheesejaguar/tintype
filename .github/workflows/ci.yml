@@ -60,6 +60,11 @@ jobs:
         name: Install the 32-bit C toolchain
         run: sudo apt-get update && sudo apt-get install -y gcc-multilib
       - run: cargo +stable test --release --locked ${TARGET:+--target "$TARGET"} ${{ matrix.features }}
+      - if: matrix.platform == 'linux-x86_64'
+        name: Check the research scripts against the score archives
+        run: |
+          python3 scripts/compare-policies.py --self-test --check-replay
+          python3 scripts/fit-linear-probe.py --self-test
       - if: matrix.platform
         name: Build
         run: |
