@@ -465,6 +465,20 @@ exit).
   and on degraded rows. Otherwise it fails; a pass would rest on
   development data for its first half and is to be read so.
 
+**Added on 2026-11-14 after the `calibrate` stage of Part B, before the
+look at `test`.** Nothing above changed. On `calibrate`, with thresholds,
+weights, orders and margins fitted on `fit`, the reference (the refitted
+mean) has clean recall 95.02% at 1% and 72.48% at 0.1% empirical
+false-positive rate, degraded recall 72.25% and 41.00%, and 1.54 views
+per image. **No candidate is eligible**: none of the 24 has clean recall
+above 95.02% at 1% (the highest is the median in the shipped order,
+95.00%), so condition (a) fails for every one. By the rule above no pool
+goes to `test`, the pooling half of the gate has failed on `calibrate`,
+and `test` is read once for the mean alone: threshold and margins
+refitted on `calibrate` for 1% and for 0.1%, beside the same thresholds
+with the shipped margins (the incumbent's recalibrated specs, replayed)
+and with all six views.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames
