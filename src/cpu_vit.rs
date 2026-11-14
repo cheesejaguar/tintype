@@ -611,6 +611,9 @@ impl CpuVit {
 }
 
 #[cfg(test)]
+mod int8_gemm;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
