@@ -297,6 +297,9 @@ fn sampling_shares_prints_the_recipe_and_weights_and_replay_change_it() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let o = tintype(&["sampling-shares", "--manifest", &new, "--manifest", &social, "--val-pct", "0", "--family-map", &d("map.tsv"), "--weights-file", &d("equal.tsv")]);
     assert!(stdout(&o).contains("| latent-diffusion | 500 | 50.00% |") && stdout(&o).contains("| reddit-wild | 900 | 50.00% |"), "{}", stdout(&o));
+    // A flag replaces the file's weight for the same name: back to 1, the shares are the plain ones.
+    let o = tintype(&["sampling-shares", "--manifest", &new, "--manifest", &social, "--val-pct", "0", "--weights-file", &d("weights.tsv"), "--manifest-weight", "social=1"]);
+    assert!(stdout(&o).contains("| social | main | 100 | 36.60% | 900 | 50.00% |"), "{} {}", stdout(&o), String::from_utf8_lossy(&o.stderr));
     // A weight that names nothing is refused rather than ignored.
     let o = tintype(&["sampling-shares", "--manifest", &new, "--manifest-weight", "socials=2"]);
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("no manifest is called socials"), "{}", String::from_utf8_lossy(&o.stderr));

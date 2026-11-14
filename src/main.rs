@@ -562,6 +562,7 @@ struct SamplingFlags {
     #[arg(long, value_name = "FAMILY=WEIGHT")]
     family_weight: Vec<String>,
     /// A file of weights: tab-separated `manifest|family  name  weight` rows.
+    /// `--manifest-weight` and `--family-weight` replace its weight for the same name.
     #[arg(long)]
     weights_file: Option<PathBuf>,
     /// Tab-separated `generator  family` rows naming the family of
@@ -584,12 +585,21 @@ impl SamplingFlags {
             Some(f) => sampling::read_weights_file(f)?,
             None => (Vec::new(), Vec::new()),
         };
-        for w in &self.manifest_weight {
-            manifest_weights.push(sampling::parse_weight(w)?);
-        }
-        for w in &self.family_weight {
-            family_weights.push(sampling::parse_weight(w)?);
-        }
+        // A weight given on the command line replaces the file's weight for the same name.
+        let add = |list: &mut Vec<(String, f64)>, flags: &[String], from_file: usize| -> Result<()> {
+            for w in flags {
+                let (name, weight) = sampling::parse_weight(w)?;
+                if let Some(k) = list[..from_file].iter().position(|(n, _)| *n == name) {
+                    list[k].1 = weight;
+                } else {
+                    list.push((name, weight));
+                }
+            }
+            Ok(())
+        };
+        let (m, f) = (manifest_weights.len(), family_weights.len());
+        add(&mut manifest_weights, &self.manifest_weight, m)?;
+        add(&mut family_weights, &self.family_weight, f)?;
         let family_map = match &self.family_map {
             Some(f) => sampling::read_family_map(f)?,
             None => Default::default(),
