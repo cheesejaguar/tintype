@@ -13,6 +13,7 @@ steps. Every step writes under the directory it is given and none touches
     extract KIND RAW_DIR OUT_DIR      KIND: arforensics, csafe, genimagepp (needs `zstd`)
     manifests FROZEN_SRC_DIR          write <store>/manifest.tsv with the grouping columns
     stress-sample SET.tsv OUT.tsv N   N authentic and N generated parents of a set, for processed copies
+    sets-from-record RECORD OUT.tsv   write a set's manifest from its frozen record (paths under the current directory)
     self-test
 
 Standard library only; run with `python3 -I`. Downloaded archives are
@@ -280,6 +281,20 @@ def stress_sample(rows, n):
     return chosen
 
 
+def manifest_lines(record_lines, root):
+    """Manifest rows from the rows of a frozen record (format 2): the path
+    made absolute under `root`, then label, generator, dataset and the five
+    grouping columns, an empty one written as `-`."""
+    rows = []
+    for line in record_lines:
+        if line.startswith("#") or not line.strip():
+            continue
+        f = line.rstrip("\n").split("\t")
+        groups = [g or "-" for g in (f[6:11] + [""] * 5)[:5]]
+        rows.append("\t".join([f"{root}/{f[5]}", f[2], f[3], f[4], *groups]))
+    return rows
+
+
 def self_test():
     assert evenly(["c", "a", "b"], 5) == ["a", "b", "c"]
     assert evenly([f"{i:02}" for i in range(10)], 5) == ["00", "02", "04", "06", "08"]
@@ -299,6 +314,11 @@ def self_test():
     assert collections.Counter(r[6] for r in picked if r[1] == "0") == {"s1": 6, "s2": 2}
     assert collections.Counter(r[7] for r in picked if r[1] == "1") == {"f1": 4, "f2": 4}
     assert stress_sample(rows, 8) == picked
+    record = ["# tintype frozen evaluation set, format 2", "# manifest\tdata/frozen-eval/test.tsv\tabc",
+              "aa\t10\t0\treal:x\tx\tdata/frozen-src/x/a.jpg\tx/a.jpg\t\ts1\t\t",
+              "bb\t11\t1\tG\ty-jpeg-qv4\tdata/frozen-src/p/000000.jpg\ty/b.png\t\t\tf1\tjpeg-qv4"]
+    assert manifest_lines(record, "/r") == ["/r/data/frozen-src/x/a.jpg\t0\treal:x\tx\tx/a.jpg\t-\ts1\t-\t-",
+                                            "/r/data/frozen-src/p/000000.jpg\t1\tG\ty-jpeg-qv4\ty/b.png\t-\t-\tf1\tjpeg-qv4"]
     print("build-frozen-eval self-test: ok")
 
 
@@ -326,6 +346,12 @@ def main():
         picked = stress_sample(originals, int(args[3]))
         Path(args[2]).write_text("".join("\t".join(r) + "\n" for r in picked))
         print(f"{len(picked)} parents -> {args[2]}")
+    elif command == "sets-from-record" and len(args) == 3:
+        import gzip
+        with gzip.open(args[1], "rt") as record:
+            lines = manifest_lines(record, os.getcwd())
+        Path(args[2]).write_text("".join(line + "\n" for line in lines))
+        print(f"{len(lines)} rows -> {args[2]}")
     else:
         sys.exit(__doc__)
 

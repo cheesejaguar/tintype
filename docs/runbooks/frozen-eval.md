@@ -173,6 +173,70 @@ earlier records stay as they are.
 **No manifest already pinned by `docs/manifests/*.frozen.tsv.gz` is
 rewritten.** Grouped copies of older sets are written as new manifests.
 
+### As built on 2026-11-14
+
+The split exists. Its three records are
+`docs/manifests/frozen-eval-{fit,calibrate,test}.frozen.tsv.gz`; the
+pre-registration entry gives the sources, licences and counts.
+
+| Set | Authentic originals | Generated originals | Processed copies | Files | Size |
+|---|---|---|---|---|---|
+| `fit` | 1,659 | 2,100 | none | 3,759 | 8.9 GB |
+| `calibrate` | 3,457 | 4,200 | 2,400 + 2,400 | 12,457 | 40.8 GB |
+| `test` | 7,326 | 7,200 | 2,400 + 2,400 | 19,326 | 53.0 GB |
+
+`scripts/build-frozen-eval.py` is the recipe (it prints its steps with no
+arguments). From the directory that holds `data/`:
+
+```bash
+B="python3 -I scripts/build-frozen-eval.py"
+# 1. Fetch. The archives go under data/raw/frozen and are deleted after step 2.
+$B list-hdrplus hdrplus.list   && $B fetch hdrplus.list   data/frozen-src/hdrplus 16
+$B list-floreview floreview.list && $B fetch floreview.list data/frozen-src/floreview 12
+$B fetch-ranges https://ndownloader.figshare.com/files/49389769 data/raw/frozen/iPhone14.zip 20428338922 20
+#    ARForensics (four test archives) and GenImage++ (three archives): curl from the
+#    commits named in the pre-registration; check each SHA-256 against the listing.
+# 2. Cut down to the selection, then write the nine-column manifests.
+$B extract csafe       data/raw/frozen             data/frozen-src/csafe-iphone14pro
+$B extract arforensics data/raw/frozen/arforensics data/frozen-src/arforensics
+$B extract genimagepp  data/raw/frozen/genimagepp  data/frozen-src/genimagepp
+$B manifests data/frozen-src
+# 3. The sets, straight from the records (their rows carry every column):
+for set in fit calibrate test; do
+  $B sets-from-record docs/manifests/frozen-eval-$set.frozen.tsv.gz data/frozen-eval/$set.tsv
+done
+# 4. The processed copies, if they are not on disk: the parents of each set's
+#    copies are the rows of the record with a transform; render them with
+#    scripts/stress-photo.py (FFmpeg 9.0.2 made the recorded bytes) into
+#    data/frozen-src/processed-{calibrate,test}/ with the twelve --transform
+#    names of the pre-registration.
+tintype verify-set docs/manifests/frozen-eval-{fit,calibrate,test}.frozen.tsv.gz
+```
+
+Three things to know:
+
+- **The sets come from the records, not from running `split-groups`
+  again.** `split-groups` places a group by a hash that includes the
+  absolute path of one of its files, so the same command run from another
+  directory divides the items differently. The division recorded here was
+  made once (`--fractions 0.2,0.4,0.4 --seed 1 --together parent,scene`,
+  holding out `infinity`, `rar` and `csafe-iphone14pro`), the processed
+  copies were added with `--existing` together with their parents'
+  manifests (it pins by path, so the originals must be in the input), and
+  the result was frozen. A placement that does not depend on where the
+  files sit is a fix for a later change.
+- **The set manifests hold absolute paths.** A record's file rows are
+  relative and verify anywhere; its manifest line matches only when the
+  set is rebuilt at the same absolute location, so on another machine
+  `verify-set` reports the three manifests as changed and nothing else.
+- **`verify-split` passes**: no parent or scene crosses sets, the held-out
+  families and source are in `test` only, and no two sets share a file's
+  bytes.
+
+The files themselves are large (103 GB with the processed copies) and are
+not kept on the machine that built them once the runs logged below were
+done; the steps above bring them back.
+
 ### Models trained on the old split
 
 The phase-6 weights, and anything initialised from them, were trained on
@@ -274,8 +338,44 @@ logged below; it is not a blind batch after the first look.
 The gates in the report are proposed decision criteria. A runbook that
 changes one says so in its pre-registration entry before it runs.
 
+## The incumbent on the split
+
+The released photo model, scored on 2026-11-14 at commit `aa2f695` on an
+Apple M6 (GPU engine, macOS 27.2), every file readable. Tables:
+[shipped cutoff](../results/frozen-eval-incumbent/report-shipped.md),
+[refitted cutoffs](../results/frozen-eval-incumbent/report-recal.md); the
+score files are beside them. `test` at each frozen cutoff:
+
+| Cutoff | Clean authentic flagged | Clean recall | Processed authentic flagged | Processed recall |
+|---|---|---|---|---|
+| Shipped, default profile | 26 of 7,326 (0.35%) | 94.76% | 39 of 2,400 (1.62%) | 79.29% |
+| Shipped, all six views | 35 of 7,326 (0.48%) | 94.83% | 50 of 2,400 (2.08%) | 78.71% |
+| Refitted on `calibrate` for 1% | 51 of 7,326 (0.70%) | 95.71% | 69 of 2,400 (2.88%) | 82.25% |
+| Refitted on `calibrate` for 0.1% (strict profile) | 5 of 7,326 (0.07%) | 92.72% | 13 of 2,400 (0.54%) | 72.62% |
+
+Over all of `test`, the cutoff refitted for 1% flags 120 of 9,726
+authentic files (1.23%, upper bound 1.43%) and the one refitted for 0.1%
+flags 18 (0.19%, upper bound 0.27%): both overshoot their targets on the
+test set, and the held-out phone source carries most of it (CSAFE: 1.56%
+and 0.25%; HDR+: 0.52% and 0.05%).
+
+What stands out at the shipped cutoff:
+
+- **Added noise is where authentic photos are flagged**: 16 of 200 at
+  `noise-a10` and 12 of 200 at `noise-a40`, against 0 to 3 of 200 on every
+  other operation.
+- **Recall falls most under JPEG and reposts**: 68.5% at `jpeg-qv12` and
+  `repost-960-qv12x1`, 73.0% at `repost-720-qv9x1`, 18.5% at `noise-a40`.
+- **Two of the new families are the weakest**: Open-MAGVIT2 62.2% and VAR
+  68.9%, both 256 px; the other families are at 93% or above.
+
+Read the clean rows with the confound of the pre-registration in mind:
+every authentic original is a camera JPEG of 12 megapixels or more and
+every generated original is a PNG of 256 to 1,024 px.
+
 ## Log
 
 | Date | Commit | What was scored on which set | By |
 |---|---|---|---|
-| – | – | Nothing yet: the split has not been built. | – |
+| 2026-11-14 | `aa2f695` | The released photo model (`models/tintype.safetensors`, a copy under `runs/`), unchanged spec: `fit`, `calibrate` and `test` with `--all-views`, and `test` with the default profile. Apple M6, GPU engine | incumbent, first look |
+| 2026-11-14 | `aa2f695` | Two more copies of the released model with cutoffs refitted on `calibrate` (`--profile photo --target-fpr 0.01`; `--profile strict --target-fpr 0.001`), then `test` with each | incumbent, recalibrated |
