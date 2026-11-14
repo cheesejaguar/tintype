@@ -300,3 +300,364 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A JSON row without the review fields.
+fn without_review(row: &serde_json::Value) -> serde_json::Value {
+    let mut r = row.clone();
+    if let Some(o) = r.as_object_mut() {
+        o.remove("review");
+        o.remove("review_reason");
+    }
+    r
+}
+
+/// Whether two JSON values are the same but for the last bits of their
+/// numbers. Two runs of the CPU engine over several files can put the views
+/// into batches differently, and with Accelerate a view's logit depends on
+/// what it is run with (by about 1e-6), so rows from separate runs are
+/// compared this way and not bit for bit.
+fn same_but_for_rounding(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x == y || matches!((x.as_f64(), y.as_f64()), (Some(x), Some(y)) if (x - y).abs() < 1e-4),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same_but_for_rounding(x, y)),
+        (Value::Object(x), Value::Object(y)) => x.len() == y.len() && x.iter().all(|(k, x)| y.get(k).is_some_and(|y| same_but_for_rounding(x, y))),
+        _ => a == b,
+    }
+}
+
+#[test]
+fn review_is_off_by_default_and_only_adds_fields_when_on() {
+    let dir = common::scratch("cli-review");
+    let (a, b, bad) = (dir.join("a.png"), dir.join("b.png"), dir.join("broken.png"));
+    common::write_fixture(&a);
+    image::imageops::flip_vertical(&common::fixture_pixels()).save(&b).unwrap();
+    std::fs::write(&bad, b"not an image").unwrap();
+    let video = common::repo().join("tests/fixtures/video.mp4");
+    let files: [&Path; 4] = [&a, &video, &bad, &b];
+
+    // Off: no review key in JSON, no review note in text.
+    let plain = detect(&files, &["--json", "--frames", "4"]);
+    let plain_rows = json_lines(&plain);
+    assert_eq!(plain_rows.len(), 4);
+    assert!(plain_rows.iter().all(|r| r.get("review").is_none() && r.get("review_reason").is_none()), "{}", stdout(&plain));
+    let plain_text = detect(&files, &["--frames", "4"]);
+    assert!(!stdout(&plain_text).contains("needs review"), "{}", stdout(&plain_text));
+
+    for margin in [0.000001f64, 0.75, 3.0, 50.0] {
+        let m = margin.to_string();
+        let on = detect(&files, &["--json", "--frames", "4", "--review-margin", &m]);
+        // The exit status does not change: 2 here, for the unreadable file.
+        assert_eq!(on.status.code(), plain.status.code());
+        let rows = json_lines(&on);
+        assert_eq!(rows.len(), 4);
+        for (row, before) in rows.iter().zip(&plain_rows) {
+            // Everything that was there is there unchanged, the verdict and the score included.
+            assert!(same_but_for_rounding(&without_review(row), before), "margin {margin}: {row} against {before}");
+            if row.get("error").is_some() {
+                // An unreadable file has no verdict to review.
+                assert!(row.get("review").is_none(), "{row}");
+                continue;
+            }
+            // The fields are consistent with the score: its logit is 0 at the threshold.
+            let score = score_of(row).unwrap();
+            let calibrated = (score / (1.0 - score)).ln();
+            let review = row["review"].as_bool().unwrap_or_else(|| panic!("no review field in {row}"));
+            if (calibrated.abs() - margin).abs() > 1e-3 {
+                assert_eq!(review, calibrated.abs() < margin, "margin {margin}: {row}");
+            }
+            assert_eq!(row.get("review_reason").and_then(|r| r.as_str()), review.then_some("margin"), "{row}");
+        }
+        // Text: the same lines, with a note on the ones that need review.
+        let text = detect(&files, &["--frames", "4", "--review-margin", &m]);
+        assert_eq!(text.status.code(), plain_text.status.code());
+        let (with_note, before) = (stdout(&text), stdout(&plain_text));
+        assert_eq!(with_note.lines().count(), 4);
+        for ((line, old), row) in with_note.lines().zip(before.lines()).zip(&rows) {
+            let expect = if row.get("review").and_then(|r| r.as_bool()) == Some(true) { format!("{old}  [needs review: margin]") } else { old.to_string() };
+            assert_eq!(line, expect);
+        }
+    }
+    // The widest band marks every scored file and the narrowest marks none.
+    let all = json_lines(&detect(&files, &["--json", "--frames", "4", "--review-margin", "50"]));
+    assert!(all.iter().filter(|r| r.get("error").is_none()).all(|r| r["review"] == true));
+    let none = json_lines(&detect(&files, &["--json", "--frames", "4", "--review-margin", "0"]));
+    assert!(none.iter().filter(|r| r.get("error").is_none()).all(|r| r["review"] == false && r.get("review_reason").is_none()));
+
+    // Disagreement alone: `view_disagreement` is the only reason it can give.
+    let split = json_lines(&detect(&files, &["--json", "--frames", "4", "--all-views", "--review-disagreement", "0.01"]));
+    for (row, before) in split.iter().zip(json_lines(&detect(&files, &["--json", "--frames", "4", "--all-views"]))) {
+        assert!(same_but_for_rounding(&without_review(row), &before), "{row} against {before}");
+        if let Some(review) = row.get("review").and_then(|r| r.as_bool()) {
+            assert_eq!(row.get("review_reason").and_then(|r| r.as_str()), review.then_some("view_disagreement"), "{row}");
+        }
+    }
+
+    // `batch` takes the same flag.
+    let o = tintype(&["batch", "--device", "cpu", "--json", "--review-margin", "50", a.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(json_lines(&o)[0]["review_reason"], "margin");
+
+    // A malformed band is a usage error, before any inference.
+    for flags in [["--review-margin", "-1"], ["--review-margin", "NaN"], ["--review-disagreement", "0"], ["--review-disagreement", "1.5"]] {
+        let o = detect(&[&a], &[flags[0], flags[1]]);
+        assert_eq!(o.status.code(), Some(2), "{flags:?}");
+        assert!(o.stdout.is_empty());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_review_band_in_the_spec_applies_to_the_default_profile_only() {
+    let dir = common::scratch("cli-review-spec");
+    let png = dir.join("fixture.png");
+    common::write_fixture(&png);
+    // A candidate checkpoint: the released weights (linked, not rewritten) with a band in a spec of its own.
+    let weights = dir.join("candidate.safetensors");
+    if std::fs::hard_link(common::photo_weights(), &weights).is_err() {
+        std::fs::copy(common::photo_weights(), &weights).unwrap();
+    }
+    let mut spec: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(common::repo().join("models/tintype.json")).unwrap()).unwrap();
+    spec["review"] = serde_json::json!({"margin": 50.0});
+    std::fs::write(dir.join("candidate.json"), serde_json::to_string_pretty(&spec).unwrap()).unwrap();
+    let run = |extra: &[&str]| {
+        let mut args = vec!["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        args.push(png.to_str().unwrap());
+        json_lines(&tintype(&args)).remove(0)
+    };
+    let stored = run(&[]);
+    assert_eq!((stored["review"].as_bool(), stored["review_reason"].as_str()), (Some(true), Some("margin")), "{stored}");
+    // The released spec gives the same result without the fields.
+    assert_eq!(without_review(&stored), json_lines(&detect(&[&png], &["--json"])).remove(0));
+    // A flag overrides the stored margin.
+    assert_eq!(run(&["--review-margin", "0"])["review"], false);
+    // The stored band is in the default profile's calibrated logits: other profiles ignore it ...
+    assert!(run(&["--strict"]).get("review").is_none());
+    // ... unless a flag gives one.
+    assert_eq!(run(&["--strict", "--review-margin", "50"])["review"], true);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn report_accounts_for_review_and_transfer_only_when_asked() {
+    let dir = common::scratch("cli-review-report");
+    // 200 real items with logits -6.01..1.95 and 200 AI items with logits -3.01..4.95, in steps of 0.04
+    // (off the band edges, so rounding decides nothing): prob = sigmoid(logit). Each has two "view"
+    // logits, 1 either side of it for real items and 3 either side for AI items.
+    let sigmoid = |z: f64| 1.0 / (1.0 + (-z).exp());
+    let mut text = String::new();
+    for i in 0..200 {
+        let z = -4.01 + 0.04 * i as f64;
+        text.push_str(&format!("r{i}.jpg\t0\treal:{}\tdemo\t{:.6}\t{:.5}\t{:.5}\n", if i < 150 { "cam" } else { "phone" }, sigmoid(z - 2.0), z - 2.0 + 1.0, z - 2.0 - 1.0));
+        text.push_str(&format!("f{i}.png\t1\tgen-a\tdemo\t{:.6}\t{:.5}\t{:.5}\n", sigmoid(z + 1.0), z + 1.0 + 3.0, z + 1.0 - 3.0));
+    }
+    let scores = dir.join("scores.tsv");
+    std::fs::write(&scores, text).unwrap();
+    let system = format!("demo={}@0.5", scores.display());
+    let base = tintype(&["report", "--system", &system, "--operating-points", "--slice-by", "generator"]);
+    assert!(base.status.success(), "{}", String::from_utf8_lossy(&base.stderr));
+    assert!(!stdout(&base).contains("review") && !stdout(&base).contains("transfer"), "{}", stdout(&base));
+
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--slice-by", "generator", "--review-margin", "0.5,1", "--transfer-budget", "0.05"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    // Every line of the plain report is still there, in order.
+    let mut rest = out.lines();
+    for line in stdout(&base).lines() {
+        assert!(rest.any(|l| l == line), "the plain report's line is missing or out of order: {line}");
+    }
+    // 49 real and 124 AI items are above 0 (flagged). A band of half-width 0.5 holds 25 of each class,
+    // 12 of them flagged; one of half-width 1 holds 50 of each, 25 of them flagged.
+    for want in [
+        "demo, review accounting at the frozen cutoff 0.5.",
+        "| none | 100.00% | 0 of 200 (0.00%) | 0 of 200 (0.00%) | 0 of 0 | 49 of 200 | 24.50% |",
+        "| margin 0.5 | 87.50% | 25 of 200 (12.50%) | 25 of 200 (12.50%) | 50 of 50 | 37 of 200 | 18.50% |",
+        "| margin 1 | 75.00% | 50 of 200 (25.00%) | 50 of 200 (25.00%) | 100 of 100 | 24 of 200 | 12.00% |",
+        "demo transfer by generator: authentic items flagged at the frozen cutoff 0.5, against a false-positive budget of 5.00%.",
+        "| real:cam | 150 | 0 | 0.00% | 0.00% | 1.98% | within |",
+        "| real:phone | 50 | 49 | 98.00% |",
+        "| exceeds |",
+        "1 of 2 authentic generator strata are shown within the budget, 1 exceed it, 0 are not resolved.",
+    ] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // Recall with reviewed AI items as misses: 112 of 200 at margin 0.5, against 124 of 200 without the band.
+    let row = out.lines().find(|l| l.starts_with("| margin 0.5 |")).unwrap();
+    assert!(row.contains("| 56.00% (") && row.contains("| 62.00% |"), "{row}");
+
+    // Disagreement needs the raw threshold; with it, rows whose two logits straddle it are reviewed too.
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--review-margin", "0", "--review-disagreement", "0.5"]);
+    assert!(!o.status.success());
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--review-margin", "0", "--review-disagreement", "0.5", "--review-threshold-logit", "0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // A real row's two logits straddle 0 when its own is within 1 of it (50 rows); an AI row's within 3 (150 rows).
+    assert!(stdout(&o).contains("| margin 0, or disagreement of 0.5 or more | 50.00% | 50 of 200 (25.00%) | 150 of 200 (75.00%) | 0 of 200 |"), "{}", stdout(&o));
+
+    // Decisions recorded by `detect --json`, or as plain rows.
+    let mut flags = String::from("{\"path\":\"unreadable.jpg\",\"kind\":\"image\",\"error\":\"could not decode\"}\n");
+    for i in 0..200 {
+        flags.push_str(&format!("{{\"path\":\"r{i}.jpg\",\"review\":{}}}\n", i == 0));
+        flags.push_str(&format!("f{i}.png\t{}\tview_disagreement\n", (i >= 190) as u8));
+    }
+    let recorded = dir.join("flags.jsonl");
+    std::fs::write(&recorded, &flags).unwrap();
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--review-flags", recorded.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // One real and the ten highest AI items reviewed: recall 114 of 200 with them as misses.
+    assert!(stdout(&o).contains("| recorded decisions | 97.25% | 1 of 200 (0.50%) | 10 of 200 (5.00%) | 1 of 11 | 49 of 200 | 24.50% |"), "{}", stdout(&o));
+    assert!(stdout(&o).lines().find(|l| l.starts_with("| recorded decisions |")).unwrap().contains("| 57.00% ("));
+    // A scored item without a recorded decision is an error, not a silent "not reviewed".
+    std::fs::write(&recorded, "r0.jpg\t1\n").unwrap();
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--review-flags", recorded.to_str().unwrap()]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("399 of 400 scored items have no row"), "{}", String::from_utf8_lossy(&o.stderr));
+    // The review flags belong to the fixed-budget tables.
+    assert!(!tintype(&["report", "--system", &system, "--review-margin", "1"]).status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An all-views score file of `n` items: reals around -4, AI around +6, a
+/// seventh of them hard, six logits each from integer arithmetic.
+fn write_view_scores(path: &Path, n: usize, salt: u32) {
+    let mut text = String::new();
+    for i in 0..n {
+        let label = i % 2;
+        let hard = i % 7 == 0;
+        let noise = |k: u32, scale: f64| {
+            let mut h = (i as u32).wrapping_mul(0x9E37_79B1) ^ k.wrapping_mul(0x85EB_CA77) ^ salt.wrapping_mul(0xC2B2_AE35);
+            h ^= h >> 15;
+            h = h.wrapping_mul(0x2C1B_3C6D);
+            h ^= h >> 12;
+            ((h % 2001) as f64 / 1000.0 - 1.0) * scale
+        };
+        let centre = if hard { 1.5 + noise(100, 2.5) } else if label == 1 { 6.0 + noise(100, 3.0) } else { -4.0 + noise(100, 3.0) };
+        let views: Vec<String> = (0..6).map(|k| format!("{:.5}", centre + noise(k, if hard { 4.0 } else { 2.0 }))).collect();
+        let (generator, dataset) = if label == 0 { (if i % 4 == 0 { "real:cam" } else { "real:phone" }, "demo") } else { ("gen-a", "demo") };
+        text.push_str(&format!("{salt}-{i}.jpg\t{label}\t{generator}\t{dataset}\t0.5\t{}\n", views.join("\t")));
+    }
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn refit_exit_checks_fits_and_never_writes_under_models() {
+    let dir = common::scratch("cli-refit");
+    // The tool reads the spec beside --weights and score files; it needs no weights and scores nothing.
+    let spec_text = std::fs::read_to_string(common::repo().join("models/tintype.json")).unwrap();
+    std::fs::write(dir.join("candidate.json"), &spec_text).unwrap();
+    let weights = dir.join("candidate.safetensors");
+    let (fit, report, decided) = (dir.join("fit.tsv"), dir.join("report.tsv"), dir.join("decided.tsv"));
+    write_view_scores(&fit, 3000, 1);
+    write_view_scores(&report, 2000, 2);
+    let w = weights.to_str().unwrap();
+
+    // Check only: the stored schedule against scoring every view, per profile, per source.
+    let o = tintype(&["refit-exit", "--weights", w, "--profile", "photo,strict", "--report", report.to_str().unwrap(), "--target-fpr", "0.015,0.005", "--apply-out", decided.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    for want in ["stored schedule, order [2, 0, 1, 3, 4, 5], margins after N views (raw logits) 1: 6, 2: 3, 3: 2, 4: 1.5, 5: 1", "## photo, threshold 1.692 (raw logit), stored schedule", "## strict, threshold 3.39", "2000 items (1000 AI, 1000 real);", "verdicts that differ from every view:", "| every view |", "| early exit |", "| real:cam | 500 |", "| real:phone | 500 |", "Mean over real sources with at least 100 items:", "the calibration target is 1.50%", "the calibration target is 0.50%", "photo second-opinion band (-7, 0.5) in calibrated logits", "2000 items as photo decides them under the stored schedule"] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // The applied file is a score file `report` reads: one row per item, the logits those looked at.
+    let rows = std::fs::read_to_string(&decided).unwrap();
+    assert_eq!(rows.lines().count(), 2000);
+    assert!(rows.lines().all(|l| (6..=11).contains(&l.split('\t').count())) && rows.lines().any(|l| l.split('\t').count() == 6));
+    // Nothing was written without --write.
+    assert_eq!(std::fs::read_to_string(dir.join("candidate.json")).unwrap(), spec_text);
+
+    // Fit on one file, report on the other, and store the result in the copy.
+    let o = tintype(&["refit-exit", "--weights", w, "--fit", fit.to_str().unwrap(), "--report", report.to_str().unwrap(), "--write"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    for want in ["fitted on 3000 items, pooled precision and recall within 0.001 of every view at photo: margins after N views 1: ", "## photo, threshold 1.692 (raw logit), fitted schedule", "wrote the fitted schedule to "] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    assert!(!out.contains("NOTE: a file is both fitted on and reported on"), "{out}");
+    let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("candidate.json")).unwrap()).unwrap();
+    let before: serde_json::Value = serde_json::from_str(&spec_text).unwrap();
+    assert_eq!(written["early_exit"]["order"], before["early_exit"]["order"]);
+    assert_ne!(written["early_exit"]["stages"], before["early_exit"]["stages"]);
+    // Only the schedule changed.
+    let mut same = written.clone();
+    same["early_exit"] = before["early_exit"].clone();
+    assert_eq!(same, before);
+    // Fitting and reporting on the same file says so.
+    let o = tintype(&["refit-exit", "--weights", w, "--fit", fit.to_str().unwrap(), "--report", fit.to_str().unwrap()]);
+    assert!(stdout(&o).contains("NOTE: a file is both fitted on and reported on"), "{}", stdout(&o));
+
+    // The released spec is refused before anything is read, and stays what it was.
+    let o = tintype(&["refit-exit", "--weights", "models/tintype.safetensors", "--fit", fit.to_str().unwrap(), "--report", report.to_str().unwrap(), "--write"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("refusing to write") && o.stdout.is_empty(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(std::fs::read_to_string(common::repo().join("models/tintype.json")).unwrap(), spec_text);
+    let (lines, ok) = tintype::integrity::check_models(&common::repo());
+    assert!(ok, "{}", lines.join("\n"));
+    // A file scored with early exit does not hold every view.
+    let o = tintype(&["refit-exit", "--weights", w, "--report", decided.to_str().unwrap(), "--profile", "video"]);
+    assert!(!o.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `calibrate` is one of the commands that only build on macOS. It reads
+/// score files and the spec beside `--weights`, and runs no network.
+#[cfg(target_os = "macos")]
+#[test]
+fn calibrate_bound_rule_counts_parents_and_says_how_many_it_needs() {
+    let dir = common::scratch("cli-calibrate-bound");
+    let spec_text = std::fs::read_to_string(common::repo().join("models/tintype.json")).unwrap();
+    let fresh = |name: &str| {
+        std::fs::write(dir.join(format!("{name}.json")), &spec_text).unwrap();
+        dir.join(format!("{name}.safetensors")).to_str().unwrap().to_string()
+    };
+    // 400 real parents, each an original and a JPEG copy, and 400 AI items. Real logits rise with the parent.
+    let (mut scores, mut manifest) = (String::new(), String::new());
+    for p in 0..400 {
+        let z = -6.0 + p as f64 * 0.01;
+        for (suffix, shift, transform) in [("", 0.0, ""), ("-jpeg", 0.5, "jpeg-q70")] {
+            scores.push_str(&format!("{}/r{p}{suffix}.jpg\t0\treal:cam\tdemo\t0.1\t{:.5}\t{:.5}\n", dir.display(), z + shift, z + shift));
+            manifest.push_str(&format!("r{p}{suffix}.jpg\t0\treal:cam\tdemo\tp{p}\t\t\t\t{transform}\n"));
+        }
+        scores.push_str(&format!("{}/f{p}.png\t1\tgen-a\tdemo\t0.9\t{:.5}\t{:.5}\n", dir.display(), 2.0 + p as f64 * 0.01, 2.0 + p as f64 * 0.01));
+    }
+    let (score_file, manifest_file) = (dir.join("calibrate.tsv"), dir.join("manifest.tsv"));
+    std::fs::write(&score_file, scores).unwrap();
+    std::fs::write(&manifest_file, manifest).unwrap();
+    let s = score_file.to_str().unwrap();
+
+    // The default rule writes what it always wrote, and now also says what bound it achieved.
+    let w = fresh("balanced");
+    let o = tintype(&["calibrate", "--weights", &w, "--scores", s, "--target-fpr", "0.01"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    assert!(out.contains("photo: 800 real / 400 AI items; logit threshold ") && out.contains("  flagged at the threshold: 8 of 800 real items, taken as independent; one-sided 95% Clopper–Pearson upper bound on the false-positive rate 1.797%"), "{out}");
+
+    // Items: 800 look like enough to show 1% (299 needed), and the bound rule flags 3 of them.
+    let w = fresh("items");
+    let o = tintype(&["calibrate", "--weights", &w, "--scores", s, "--target-fpr", "0.01", "--rule", "bound"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(stdout(&o).contains("flagged at the threshold: 3 of 800 real items, taken as independent; one-sided 95% Clopper–Pearson upper bound on the false-positive rate 0.966%"), "{}", stdout(&o));
+    // Parents: 400 independent units, one score each (the higher, here the JPEG copy's). One flag
+    // among 400 would put the bound at 1.18%, so none may be flagged.
+    let w = fresh("parents");
+    let o = tintype(&["calibrate", "--weights", &w, "--scores", s, "--target-fpr", "0.01", "--rule", "bound", "--groups", manifest_file.to_str().unwrap(), "--group-diagnostic", "transform"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    for want in ["flagged at the threshold: 0 of 400 real parents (800 items, one score per parent: the highest of its versions); one-sided 95% Clopper–Pearson upper bound on the false-positive rate 0.746%", "  real:cam                     n=800   false positives at threshold ", "DIAGNOSTIC ONLY, by transform", "[diagnostic] jpeg-q70", "[diagnostic] none"] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    let o = tintype(&["calibrate", "--weights", &fresh("original"), "--scores", s, "--target-fpr", "0.01", "--rule", "bound", "--groups", manifest_file.to_str().unwrap(), "--per-parent", "original"]);
+    assert!(stdout(&o).contains("0 of 400 real parents (800 items, one score per parent: its unprocessed original)"), "{}", stdout(&o));
+    // The threshold was written to the copy, as the calibrated zero of the photo profile.
+    let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("parents.json")).unwrap()).unwrap();
+    let thr = -written["logit_bias"].as_f64().unwrap() / written["logit_scale"].as_f64().unwrap();
+    // Flag strictly above the highest parent score, the top JPEG copy's: -6 + 399 * 0.01 + 0.5.
+    assert!((thr - (-6.0 + 3.99 + 0.5)).abs() < 1e-3, "{thr}");
+
+    // 0.1% cannot be shown from 400 parents: the error says how many it takes, and nothing is written.
+    let w = fresh("short");
+    let o = tintype(&["calibrate", "--weights", &w, "--scores", s, "--target-fpr", "0.001", "--rule", "bound", "--groups", manifest_file.to_str().unwrap()]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("at least 2995 with none flagged") && err.contains("these scores hold 400"), "{err}");
+    assert_eq!(std::fs::read_to_string(dir.join("short.json")).unwrap(), spec_text);
+    let _ = std::fs::remove_dir_all(&dir);
+}

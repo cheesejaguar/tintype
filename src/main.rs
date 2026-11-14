@@ -147,6 +147,32 @@ enum Cmd {
         /// With --operating-points: smallest slice that counts towards the worst slice.
         #[arg(long, default_value_t = 100)]
         min_slice: usize,
+        /// With --operating-points: a false-positive budget. After each
+        /// slice table, print every authentic stratum's rate at the frozen
+        /// cutoff with Clopper–Pearson bounds, judged against the budget
+        /// (how a cutoff frozen on other items transfers). With
+        /// --cluster-by, clusters are counted instead of items.
+        #[arg(long)]
+        transfer_budget: Option<f64>,
+        /// With --operating-points: account for a review band of this
+        /// half-width in calibrated logits around each frozen cutoff
+        /// (several, comma-separated, give one row each): coverage, review
+        /// rate per class, and recall with reviewed AI items as misses.
+        #[arg(long, value_delimiter = ',')]
+        review_margin: Vec<f32>,
+        /// With --review-margin: also review when this share of a row's
+        /// view or frame logits fall on the other side of
+        /// --review-threshold-logit.
+        #[arg(long, requires = "review_threshold_logit")]
+        review_disagreement: Option<f32>,
+        /// The raw threshold on the mean logit of the profile that wrote the
+        /// score files (`threshold_logit` in `detect --json`).
+        #[arg(long, allow_hyphen_values = true)]
+        review_threshold_logit: Option<f32>,
+        /// With --operating-points: review decisions recorded elsewhere, as
+        /// `detect --json` rows or `path<TAB>0|1[<TAB>reason]` rows.
+        #[arg(long)]
+        review_flags: Option<PathBuf>,
     },
     /// Score a whole evaluation suite and print the comparison tables.
     Evaluate {
@@ -240,12 +266,96 @@ enum Cmd {
         /// Also store the standard early-exit schedule in the checkpoint's spec.
         #[arg(long)]
         early_exit: bool,
-        /// Threshold rule: pooled, strictest or balanced (over real sources).
+        /// Threshold rule: pooled, strictest or balanced (over real
+        /// sources), or bound: the loosest threshold whose one-sided
+        /// Clopper–Pearson upper bound on the false-positive rate, over
+        /// independent real items, is within the target.
         #[arg(long, default_value = "balanced")]
         rule: String,
         /// Smallest real source that counts for the strictest / balanced rules.
         #[arg(long, default_value_t = 100)]
         min_source: usize,
+        /// Confidence of the Clopper–Pearson bound: fitted to by `--rule
+        /// bound`, printed for every rule.
+        #[arg(long, default_value_t = 0.95)]
+        confidence: f64,
+        /// Manifests whose grouping columns (5 and up) describe the scored
+        /// files: real items that share a `parent_id` then count once
+        /// towards the bound.
+        #[arg(long)]
+        groups: Vec<PathBuf>,
+        /// With --groups: the score that stands for a parent with
+        /// derivatives, `max` (the highest of its versions) or `original`.
+        #[arg(long, default_value = "max")]
+        per_parent: String,
+        /// Print, and never store, the threshold each source, transform,
+        /// dataset, generator or family would get on its own. Diagnostic only.
+        #[arg(long)]
+        group_diagnostic: Option<String>,
+    },
+    /// Re-check, and optionally refit, the early-exit schedule of a
+    /// checkpoint from score files that hold every view logit (`score
+    /// --all-views`) or every frame logit (`score-video --all-frames`):
+    /// run it after a threshold, a calibration, the views or their pooling
+    /// change. Prints what the schedule does against scoring everything:
+    /// verdicts that differ, pooled and per-source rates, units looked at.
+    /// Works on any platform; scores nothing.
+    RefitExit {
+        /// The checkpoint whose spec gives the thresholds and the stored
+        /// schedule. With --write it must be a copy under runs/, never
+        /// under models/.
+        #[arg(long)]
+        weights: PathBuf,
+        /// The profiles that share the schedule, comma-separated: photo,
+        /// strict, sensitive; or video alone.
+        #[arg(long, default_value = "photo")]
+        profile: String,
+        /// Use this raw threshold on the mean logit instead of the spec's
+        /// (one profile only).
+        #[arg(long, allow_hyphen_values = true)]
+        threshold: Option<f32>,
+        /// Score files to fit new margins on. Without them the stored
+        /// schedule (or the standard one) is only checked.
+        #[arg(long, num_args = 1..)]
+        fit: Vec<PathBuf>,
+        /// Score files to report on: other items than the ones fitted on.
+        #[arg(long, required = true, num_args = 1..)]
+        report: Vec<PathBuf>,
+        /// Pooled precision and recall under early exit must stay within
+        /// this of scoring everything.
+        #[arg(long, default_value_t = 0.001)]
+        tolerance: f64,
+        /// The calibration's false-positive target of each profile, in the
+        /// order of --profile, to compare each real source's rate under
+        /// early exit with (e.g. 0.015,0.005,0.05).
+        #[arg(long, value_delimiter = ',')]
+        target_fpr: Vec<f64>,
+        /// Smallest real source that counts towards the mean over sources.
+        #[arg(long, default_value_t = 100)]
+        min_source: usize,
+        /// Fitted margins are multiples of this many raw logits.
+        #[arg(long, default_value_t = 0.25)]
+        step: f32,
+        /// The widest margin tried.
+        #[arg(long, default_value_t = 12.0)]
+        max_margin: f32,
+        /// Fit the margins under and over the threshold separately.
+        #[arg(long)]
+        asymmetric: bool,
+        /// Store the fitted schedule in the spec beside --weights.
+        #[arg(long, requires = "fit")]
+        write: bool,
+        /// Write the reported items as the first profile decides them
+        /// under the schedule (`path label generator dataset prob
+        /// logits...`, the logits being those looked at), for `report`.
+        #[arg(long)]
+        apply_out: Option<PathBuf>,
+        /// The spec (.json) the photo second-opinion band was chosen
+        /// under: print the band re-expressed in this checkpoint's
+        /// calibration so that the same photos are routed, and store it
+        /// with --write.
+        #[arg(long)]
+        rebase_band_from: Option<PathBuf>,
     },
     /// Time the parts of the pipeline separately: decoding, cropping, and the
     /// network alone at several batch sizes.
@@ -570,7 +680,8 @@ fn main() -> Result<()> {
         Cmd::ScoreVideo { weights, reference, manifest, out, frames, views, second_opinion, all_frames, batch, device } => {
             tintype::eval::score_videos(&weights, &system(&reference, false, false, false)?, &manifest, &out, parse_device(&device)?, batch, frames, views.as_deref(), second_opinion.as_deref(), all_frames).map(|_| ())
         }
-        Cmd::Report { systems, per_generator, markdown, pooled, at_rate_of, operating_points, fpr, prevalence, slice_by, cluster_by, groups, min_slice } => {
+        Cmd::Report { systems, per_generator, markdown, pooled, at_rate_of, operating_points, fpr, prevalence, slice_by, cluster_by, groups, min_slice, transfer_budget, review_margin, review_disagreement, review_threshold_logit, review_flags } => {
+            anyhow::ensure!(operating_points || (transfer_budget.is_none() && review_margin.is_empty() && review_flags.is_none()), "--transfer-budget, --review-margin and --review-flags go with --operating-points");
             let mut loaded = Vec::new();
             for s in &systems {
                 let (name, rest) = s.split_once('=').ok_or_else(|| anyhow::anyhow!("use name=scores.tsv[@threshold]"))?;
@@ -590,7 +701,19 @@ fn main() -> Result<()> {
                 for it in load_manifests(&groups)? {
                     by_path.insert(it.path.display().to_string(), it);
                 }
-                let opts = tintype::report::OperatingPoints { fprs: fpr, prevalence, slice_by, cluster_by, min_slice, groups: by_path };
+                anyhow::ensure!(transfer_budget.is_none_or(|b| b > 0.0 && b < 1.0), "--transfer-budget is a fraction, e.g. 0.01");
+                anyhow::ensure!(review_margin.iter().all(|m| m.is_finite() && *m >= 0.0) && review_disagreement.is_none_or(|d| d > 0.0 && d <= 1.0), "--review-margin is a non-negative calibrated-logit distance and --review-disagreement a share above 0 and at most 1");
+                anyhow::ensure!(review_disagreement.is_none() || !review_margin.is_empty(), "--review-disagreement goes with --review-margin (use --review-margin 0 for disagreement alone)");
+                let review = if review_margin.is_empty() && review_flags.is_none() {
+                    None
+                } else {
+                    Some(tintype::report::ReviewAccounting {
+                        margins: review_margin,
+                        disagreement: review_disagreement.zip(review_threshold_logit),
+                        flags: review_flags.as_deref().map(tintype::report::read_review_flags).transpose()?,
+                    })
+                };
+                let opts = tintype::report::OperatingPoints { fprs: fpr, prevalence, slice_by, cluster_by, min_slice, groups: by_path, review, transfer_budget };
                 tintype::report::operating_points_markdown(&loaded, &opts)?;
             } else if let Some(baseline) = at_rate_of {
                 tintype::report::matched_markdown(&loaded, &baseline, pooled.as_deref())?;
@@ -624,7 +747,7 @@ fn main() -> Result<()> {
             tintype::eval::finalize_video(&checkpoint, &weights, &scores, video_fpr, band, parse_device(&device)?)
         }
         #[cfg(target_os = "macos")]
-        Cmd::Calibrate { weights, scores, target_fpr, profile, early_exit, rule, min_source } => {
+        Cmd::Calibrate { weights, scores, target_fpr, profile, early_exit, rule, min_source, confidence, groups, per_parent, group_diagnostic } => {
             if early_exit {
                 let mut spec = ModelSpec::load_for(&weights)?;
                 spec.early_exit = Some(tintype::detector::EarlyExit::standard());
@@ -635,9 +758,133 @@ fn main() -> Result<()> {
                 "pooled" => Rule::Pooled,
                 "strictest" => Rule::Strictest(min_source),
                 "balanced" => Rule::Balanced(min_source),
-                other => anyhow::bail!("unknown rule `{other}` (pooled, strictest, balanced)"),
+                "bound" => Rule::Bound,
+                other => anyhow::bail!("unknown rule `{other}` (pooled, strictest, balanced, bound)"),
             };
-            tintype::eval::calibrate(&weights, &scores, target_fpr, &profile, rule)
+            let mut by_path = std::collections::BTreeMap::new();
+            for it in load_manifests(&groups)? {
+                by_path.insert(it.path.display().to_string(), it);
+            }
+            let opts = tintype::eval::CalibrateOptions { confidence, groups: by_path, per_parent: tintype::calibration::PerParent::parse(&per_parent)?, group_diagnostic, min_group: min_source };
+            tintype::eval::calibrate_with(&weights, &scores, target_fpr, &profile, rule, &opts)
+        }
+        Cmd::RefitExit { weights, profile, threshold, fit, report, tolerance, target_fpr, min_source, step, max_margin, asymmetric, write, apply_out, rebase_band_from } => {
+            use tintype::exit_fit;
+            if write {
+                // Before any work: the released specs are never rewritten.
+                exit_fit::refuse_released(&weights)?;
+            }
+            let mut spec = ModelSpec::load_for(&weights)?;
+            let names: Vec<&str> = profile.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
+            anyhow::ensure!(!names.is_empty(), "--profile names at least one profile");
+            let video = names.contains(&"video");
+            anyhow::ensure!(!video || names.len() == 1, "the video profile has a schedule of its own: check it separately from the photo profiles");
+            anyhow::ensure!(threshold.is_none() || names.len() == 1, "--threshold replaces the threshold of one profile");
+            anyhow::ensure!(target_fpr.is_empty() || target_fpr.len() == names.len(), "--target-fpr takes one target per profile, in the order of --profile");
+            // (name, logit scale, logit bias) of each profile; its raw threshold is -bias / scale.
+            let mut profiles: Vec<(&str, f32, f32)> = Vec::new();
+            for &name in &names {
+                let (scale, bias) = match name {
+                    "photo" => (spec.logit_scale, spec.logit_bias),
+                    "strict" => spec.strict.as_ref().map(|p| (p.logit_scale, p.logit_bias)).ok_or_else(|| anyhow::anyhow!("{} has no strict profile", weights.display()))?,
+                    "sensitive" => spec.sensitive.as_ref().map(|p| (p.logit_scale, p.logit_bias)).ok_or_else(|| anyhow::anyhow!("{} has no sensitive profile", weights.display()))?,
+                    "video" => spec.video.as_ref().map(|v| (v.logit_scale, v.logit_bias)).ok_or_else(|| anyhow::anyhow!("{} has no video profile", weights.display()))?,
+                    "fast" => anyhow::bail!("the fast profile scores two views and has no early exit"),
+                    other => anyhow::bail!("unknown profile `{other}` (use photo, strict, sensitive or video)"),
+                };
+                // An explicit threshold keeps the profile's slope and moves its zero.
+                profiles.push((name, scale, threshold.map_or(bias, |t| -scale * t)));
+            }
+            let thresholds: Vec<f32> = profiles.iter().map(|&(_, scale, bias)| -bias / scale).collect();
+            let (units, unit, stored) = match &spec.video {
+                Some(v) if video => (v.frames, "frame", v.early_exit.clone()),
+                _ => (spec.views.len(), "view", spec.early_exit.clone()),
+            };
+            let template = stored.clone().unwrap_or_else(|| if video { tintype::detector::EarlyExit::video_standard() } else { tintype::detector::EarlyExit::standard() });
+            anyhow::ensure!(template.covers(units), "the schedule does not cover the {units} {unit}s of the profile");
+            let show = |e: &tintype::detector::EarlyExit| e.stages.iter().map(|s| if s.below == s.above { format!("{}: {}", s.views, s.below) } else { format!("{}: -{} / +{}", s.views, s.below, s.above) }).collect::<Vec<_>>().join(", ");
+            println!("{}: {} schedule, order {:?}, margins after N {unit}s (raw logits) {}", weights.display(), if stored.is_some() { "stored" } else { "no stored schedule; the standard" }, template.order, show(&template));
+            let (rows, skipped) = exit_fit::read_rows(&report, units)?;
+            if skipped > 0 {
+                println!("{skipped} rows of the report files do not hold {units} logits and are left out");
+            }
+            let fitted = if fit.is_empty() {
+                None
+            } else {
+                let (fit_rows, fit_skipped) = exit_fit::read_rows(&fit, units)?;
+                if fit_skipped > 0 {
+                    println!("{fit_skipped} rows of the fit files do not hold {units} logits and are left out");
+                }
+                let opts = exit_fit::FitOptions { tolerance, step, max_margin, asymmetric };
+                let fitted = exit_fit::fit_margins(&fit_rows, &template, &thresholds, &opts)?;
+                println!("fitted on {} items, pooled precision and recall within {tolerance} of every {unit} at {}: margins after N {unit}s {}", fit_rows.len(), names.join(", "), show(&fitted));
+                for (&(name, ..), &thr) in profiles.iter().zip(&thresholds) {
+                    let c = exit_fit::check(&fit_rows, &fitted, thr);
+                    println!("  on the fit items, {name} (threshold {thr:.3}): {:.2} {unit}s per item; precision {:.4} against {:.4}, recall {:.4} against {:.4}", c.mean_units, c.exit.precision(), c.all.precision(), c.exit.recall(), c.all.recall());
+                }
+                if fit.iter().any(|f| report.contains(f)) {
+                    println!("NOTE: a file is both fitted on and reported on. The report below is in-sample for it: exploratory, not a check.");
+                }
+                Some(fitted)
+            };
+            for (k, (&(name, ..), &thr)) in profiles.iter().zip(&thresholds).enumerate() {
+                for (what, schedule) in [(if stored.is_some() { "stored schedule" } else { "standard schedule" }, Some(&template)), ("fitted schedule", fitted.as_ref())] {
+                    let Some(schedule) = schedule else { continue };
+                    println!("\n## {name}, threshold {thr:.3} (raw logit), {what}\n");
+                    for l in exit_fit::check_lines(&exit_fit::check(&rows, schedule, thr), unit, target_fpr.get(k).copied(), min_source) {
+                        println!("{l}");
+                    }
+                }
+            }
+            let schedule = fitted.as_ref().unwrap_or(&template);
+            // The photo second-opinion band is in the default profile's calibrated logits: say what it routes now.
+            if let (false, Some(band), Some(&(_, scale, bias))) = (video, spec.second_opinion, profiles.iter().find(|p| p.0 == "photo")) {
+                let band = match &rebase_band_from {
+                    Some(old_spec) => {
+                        let old: ModelSpec = serde_json::from_str(&std::fs::read_to_string(old_spec)?)?;
+                        let old_band = old.second_opinion.ok_or_else(|| anyhow::anyhow!("{} has no photo second-opinion band", old_spec.display()))?;
+                        let moved = exit_fit::rebase_photo_band(&old_band, (old.logit_scale, old.logit_bias), (scale, bias));
+                        println!("\nphoto second-opinion band of {}: lo {}, hi {}, weight {}, threshold {}; the same routing and rule in this calibration: lo {:.4}, hi {:.4}, weight {:.4}, threshold {:.4}", old_spec.display(), old_band.lo, old_band.hi, old_band.weight, old_band.threshold, moved.lo, moved.hi, moved.weight, moved.threshold);
+                        if write {
+                            spec.second_opinion = Some(moved);
+                        }
+                        moved
+                    }
+                    None => band,
+                };
+                let thr = -bias / scale;
+                let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+                let mut routed = [[0usize; 2]; 2]; // [every view, early exit][real, AI]
+                for r in &rows {
+                    routed[0][r.label as usize] += band.wanted(scale * mean(&r.units) + bias) as usize;
+                    routed[1][r.label as usize] += band.wanted(scale * mean(&schedule.looked_at(&r.units, thr)) + bias) as usize;
+                }
+                let (nr, nf) = (rows.iter().filter(|r| r.label == 0).count().max(1), rows.iter().filter(|r| r.label == 1).count().max(1));
+                println!("\nphoto second-opinion band ({}, {}) in calibrated logits is ({:.3}, {:.3}) in raw logits around the threshold {thr:.3}.", band.lo, band.hi, (band.lo - bias) / scale, (band.hi - bias) / scale);
+                for (what, k) in [(format!("every {unit}"), routed[0]), ("the early-exit views".to_string(), routed[1])] {
+                    println!("  routed from {what}: {} of {} real ({:.2}%), {} of {} AI ({:.2}%)", k[0], nr, 100.0 * k[0] as f64 / nr as f64, k[1], nf, 100.0 * k[1] as f64 / nf as f64);
+                }
+                println!("  The band and its rule were not refitted: that takes second-stage scores on calibration data.");
+            } else if let Some(band) = spec.video.as_ref().and_then(|v| v.second_opinion).filter(|_| video) {
+                let routed = rows.iter().filter(|r| band.wanted(r.units.iter().sum::<f32>() / r.units.len() as f32)).count();
+                println!("\nvideo second-opinion band ({}, {}) is in raw logits and does not move with the calibration; the threshold {:.3} sits {:.3} above its lower edge. It routes {routed} of {} clips from every frame (early exit is off when the second opinion runs).", band.lo, band.hi, thresholds[0], thresholds[0] - band.lo, rows.len());
+            }
+            if let Some(out) = &apply_out {
+                let (_, scale, bias) = profiles[0];
+                let n = exit_fit::apply(&report, out, Some(schedule), units, scale, bias)?;
+                println!("\n{}: {n} items as {} decides them under the {} schedule", out.display(), profiles[0].0, if fitted.is_some() { "fitted" } else { "stored" });
+            }
+            if write {
+                let Some(fitted) = fitted else { anyhow::bail!("--write stores a fitted schedule: pass --fit") };
+                if video {
+                    spec.video.as_mut().expect("checked above").early_exit = Some(fitted);
+                } else {
+                    spec.early_exit = Some(fitted);
+                }
+                spec.save_for(&weights)?;
+                println!("\nwrote the fitted schedule to {}", ModelSpec::sidecar(&weights).display());
+            }
+            Ok(())
         }
         Cmd::Latency { weights, reference, manifest, n, device, fast, all_views } => {
             let items = ingest::read_manifest(&manifest)?;
