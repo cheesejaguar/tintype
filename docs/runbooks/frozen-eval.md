@@ -373,6 +373,27 @@ Read the clean rows with the confound of the pre-registration in mind:
 every authentic original is a camera JPEG of 12 megapixels or more and
 every generated original is a PNG of 256 to 1,024 px.
 
+### Its cutoffs do not carry over to the NTIRE images (diagnostic)
+
+The same three specs on the two released NTIRE sets, which are development
+data ([EVIDENCE.md](../EVIDENCE.md#external-comparisons)); authentic
+images flagged at each spec's own cutoff:
+
+| Cutoff | Frozen `test`, clean | NTIRE public test, clean | NTIRE public test, distorted | NTIRE hard validation, clean | NTIRE hard validation, distorted |
+|---|---|---|---|---|---|
+| Shipped | 26 of 7,326 (0.35%) | 41 of 600 (6.8%) | 156 of 600 (26.0%) | 42 of 625 (6.7%) | 103 of 625 (16.5%) |
+| Refitted on `calibrate` for 1% | 51 of 7,326 (0.70%) | 58 of 600 (9.7%) | 188 of 600 (31.3%) | 69 of 625 (11.0%) | 123 of 625 (19.7%) |
+| Refitted on `calibrate` for 0.1% | 5 of 7,326 (0.07%) | 21 of 600 (3.5%) | 120 of 600 (20.0%) | 14 of 625 (2.2%) | 70 of 625 (11.2%) |
+
+A cutoff that flags 0.07% of this split's clean authentic photos flags 2%
+to 3.5% of NTIRE's clean authentic images. The split's authentic part is
+phone-camera originals from three collections; it holds no photographs as
+they circulate on the web. Its false-positive rates describe camera
+originals and their FFmpeg copies, nothing wider, and a cutoff fitted on
+it must not be read as a 1% or 0.1% cutoff for other authentic sources.
+The shipped-cutoff row reproduces the archived NTIRE figures (103 of 625
+on hard validation, distorted).
+
 ## Log
 
 | Date | Commit | What was scored on which set | By |
