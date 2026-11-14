@@ -417,7 +417,16 @@ shipped here. The Community Forensics weights are MIT.
   tintype detect --max-seconds 0 --all-views --frames 64 long-clip.mp4
   ```
   Even so, a few generated seconds inside a long real video can fall between
-  the sampled frames.
+  the sampled frames. `--coverage segments` is an opt-in mode for looking
+  at where a clip scores: it divides the same number of frames between
+  early, middle and late windows of the whole clip, scores every one (no
+  early exit) and reports each window beside the clip's score; `--coverage
+  shots` also moves the window boundaries onto nearby cuts, and `--coverage
+  uniform` reports the default sampling frame by frame. The verdict is
+  still the clip's, from the mean over all scored frames; the per-window
+  scores are for evaluation and are not calibrated as decisions
+  ([JSON fields](docs/API.md#video-coverage-modes-cli),
+  [runbook](docs/runbooks/partial-edits.md)).
 - **`INCONCLUSIVE`** means decoding stopped before the verdict had the frames
   it needed (a damaged or cut-off file): the score of the frames that were
   read is shown, with no verdict (`"complete": false` in JSON).
@@ -443,6 +452,7 @@ shipped here. The Community Forensics weights are MIT.
 | `finalize`, `finalize-video`, `calibrate` | Freeze a checkpoint and fit its operating points |
 | `evaluate` | Score a whole suite with Tintype and the reference detectors, print tables |
 | `score`, `score-video` | Score one manifest (`--reference commfor|swinv2|waverep` runs a reference detector) |
+| `paste-edits`, `score-windows`, `partial-report` | Partial edits as a separate evaluation target: build pasted-region composites with controls from images on disk, score the model's views and a dense grid of native windows, and compare pooling rules at equal authentic FPR with window-level localisation against the masks ([runbook](docs/runbooks/partial-edits.md)). Nothing here changes a verdict |
 | `report` | Precision, recall, F1, FPR, AUROC, recall at 1% FPR, bootstrap intervals; `--at-rate-of` compares systems at one system's false-positive rate; `--operating-points` gives recall at 0.1% and 1% FPR, the rates at each frozen cutoff with a Clopper–Pearson bound, precision at a stated prevalence, and per-slice tables |
 | `latency` | Single-image latency, file to verdict: median, p90 and p95. Runs on every platform with `--device cpu` |
 | `profile` | Decoding, cropping and the network timed separately, the network at several batch sizes |
@@ -510,7 +520,11 @@ tintype evaluate confirm4 --baselines
   training cutoff. Evaluate on the generators used in your workflow.
 - Local edits (inpainting a region of a real photo) and face swaps are out of
   scope; the model is trained on fully generated images. On a face-swap
-  deepfake set the default profile finds 14%.
+  deepfake set the default profile finds 14% (measured on face crops, a
+  different task from a generated full frame). Partial edits are kept as a
+  separate evaluation target with its own tooling and output
+  ([runbook](docs/runbooks/partial-edits.md)); nothing there feeds the
+  verdict.
 - Media that has been through a messenger or social app is much harder. On
   WhatsApp and Instagram copies of 2026 images the default profile finds
   27–36% of the AI images (flagging under 1% of real ones); `--sensitive`
