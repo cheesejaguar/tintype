@@ -8,8 +8,10 @@ from, and combine the six view logits some other way than their mean.
 
 **Status.** The tools exist and are tested: `tintype interpolate` and
 `tintype replay-pool`, both pure Rust and platform independent. The
-exploratory numbers below were measured on development data. **Nothing
-here ships and nothing here is a result.** A changed pool or changed
+exploratory numbers below were measured on development data. The gate
+was then run on the frozen independent split (2026-11-14, "Frozen split"
+below): **pooling failed on `calibrate`, and no interpolant passed.**
+**Nothing here ships.** A changed pool or changed
 weights needs a new calibration, an early-exit re-check, the frozen split
 of [frozen-eval.md](frozen-eval.md) and a new entry in
 [PREREGISTRATION.md](../PREREGISTRATION.md) first. The released files in
@@ -367,6 +369,7 @@ tintype replay-pool --fit <all-views files> --spec models/tintype.json \
 | `--tolerance`, `--margin-step`, `--margin-max`, `--asymmetric-margins` | The margin refit: default within 0.001, a grid from 0 to 12 in steps of 0.25, one margin per stage for both directions. |
 | `--slice-by dataset\|generator` | Per-slice tables for every candidate. |
 | `--write-scores DIR` | One ordinary score file per test set and candidate, for `report --operating-points` (intervals, clustering, prevalence). |
+| `--in-sample` | Keep fit items that are also test items in the fit, and mark the output as in-sample: for reading a cutoff on slices of the very set it was fitted on. |
 
 For every pool and order it **refits before it reports**
 (`apply_profile` in `src/eval.rs`, which `evaluate` uses, does neither):
@@ -621,19 +624,373 @@ with the baseline's at the same number of views. The pool, the
 threshold and the margins are refitted for the new view set by the same
 tool.
 
+## Frozen split
+
+Run on 2026-11-14 on the frozen independent split of
+[frozen-eval.md](frozen-eval.md), after the entry "View pooling and weight
+interpolation on the frozen split" was written in
+[PREREGISTRATION.md](../PREREGISTRATION.md) (commit `e128973`; the
+calibrate-stage outcomes were added to it before each look at `test`).
+Apple M6, 12 cores, 32 GB, macOS 27.2. Raw output:
+[results/interpolation-pooling/frozen/](../results/interpolation-pooling/frozen/).
+
+Read every figure with the split's caveats: every authentic original is a
+camera JPEG of 12 megapixels or more and every generated original is a
+PNG of 256 to 1,024 px, so the clean rows carry that difference and only
+the processed copies re-encode both classes alike; FloreView is 36 scenes
+on 46 phones and CSAFE is ten units of one phone model, so the intervals,
+which resample parents, are narrower than the number of scenes and
+devices warrants; the split has no real platform round trips and no
+learned-codec copies; and `test` had been looked at before (the
+incumbent, the processing-chain arms).
+
+### Verdicts
+
+| Part | Gate verdict | Why |
+|---|---|---|
+| B, view pooling | **Failed on `calibrate`.** No pool went to `test`. | None of the 24 candidates has clean recall above the refitted mean's at 1% FPR. |
+| B, the refit itself | Not a gate; recorded. The refitted margins are **not better than the shipped ones** on `test`. | Same cutoffs: 0.40 points less clean recall at 1% for 0.26 fewer views; at 0.1%, 10 instead of 5 clean authentic photos flagged and 0.22 more views. |
+| A, interpolation, Community Forensics anchor | **Failed on `calibrate`.** No candidate went to `test`. | All four steps recover GAN recall on the development sets and all four lose more than 0.5 points of degraded recall on `calibrate` (0.63 points at `alpha` 0.10, 8.5 at 0.50, at the 1% cutoff). |
+| A, interpolation, phase-3 anchor | **Not passed.** One candidate (`alpha` 0.30) went to `test`; the protective half holds there, the improvement half is not shown. | It is not worse than the incumbent on any slice of `test`. Its GAN recall is higher only at its own cutoff, which flags more of the GAN sets' authentic images; at a matched rate it is lower (89.03% against 91.15% at 1%). |
+
+### Part B: pooling
+
+Inputs: the incumbent's all-views score files (`fit.all.tsv`,
+`calibrate.all.tsv`, `test.all.tsv`, scored at `aa2f695` on the GPU
+engine), copied under `runs/ws10-frozen/b/`. No network was run. CPU,
+commit `e128973`.
+
+```bash
+B=runs/ws10-frozen/b; F=<frozen split>     # F holds fit.tsv, calibrate.tsv, test.tsv
+# Clean rows (transform none) and degraded rows (every other transform), by the manifest's column 9.
+awk -F'\t' 'NR==FNR{t[$1]=$9; next} {print > ((t[$1]=="-"||t[$1]=="") ? "calibrate.clean.tsv" : "calibrate.degraded.tsv")}' \
+  $F/calibrate.tsv $B/calibrate.all.tsv       # run inside $B; the same for test, plus test.reposts.tsv for transforms starting repost-
+
+# Stage 1: weights, orders, threshold (1%) and margins on fit; read on calibrate. Twice: one margin per stage, and --asymmetric-margins.
+tintype replay-pool --fit $B/fit.all.tsv --spec models/tintype.json \
+  --test calibrate-clean=$B/calibrate.clean.tsv --test calibrate-degraded=$B/calibrate.degraded.tsv \
+  --test calibrate-all=$B/calibrate.all.tsv \
+  --pool mean,trimmed,median,top2,top3,max,fitted --order shipped --order greedy --target-fpr 0.01
+
+# Stage 2, once, for the mean alone (no pool was eligible): threshold and margins on calibrate, read on test.
+# --spec is the incumbent's recalibrated spec (recal.json; for 0.1% its strict profile moved to the photo
+# fields), so the first row replays the incumbent at the same cutoff with the shipped margins.
+tintype replay-pool --fit $B/calibrate.all.tsv --spec $B/recal-1pct.json \
+  --test test-clean=$B/test.clean.tsv --test test-degraded=$B/test.degraded.tsv \
+  --test test-reposts=$B/test.reposts.tsv --test test-all=$B/test.all.tsv \
+  --pool mean --order shipped --target-fpr 0.01 --slice-by generator --write-scores $B/test-scores-1pct
+# ... and with recal-0.1pct.json, --target-fpr 0.001, --write-scores $B/test-scores-0.1pct
+tintype report --operating-points \
+  --system "shipped-margins=$B/test-scores-1pct/test-clean.shipped.201345.tsv@0.5" \
+  --system "refitted-margins=$B/test-scores-1pct/test-clean.mean.201345.tsv@0.5" \
+  --fpr 0.001,0.01 --prevalence 0.01 --slice-by family --cluster-by parent --groups $F/test.tsv --min-slice 100
+```
+
+**Stage 1, on `calibrate` (7,657 clean rows, 4,800 degraded rows).**
+Everything fitted on `fit` (1,659 authentic, 2,100 generated; two real
+sources). Recall at empirical cutoffs found on each slice's own authentic
+rows, with early exit. The first row is the released spec untouched, for
+orientation; it is not a candidate.
+
+| Pool | Order | Margins | Clean, 1% | Clean, 0.1% | Degraded, 1% | Degraded, 0.1% | Views per image |
+|---|---|---|---|---|---|---|---|
+| shipped spec, as is | 2,0,1,3,4,5 | 6 / 3 / 2 / 1.5 / 1 | 95.07% | 92.31% | 75.71% | 44.67% | 1.66 |
+| **mean, refitted (reference)** | 2,0,1,3,4,5 | one per stage | 95.02% | 72.48% | 72.25% | 41.00% | 1.54 |
+| mean | greedy 4,0,3,1,5,2 | one per stage | 94.57% | 75.83% | 69.33% | 37.29% | 1.36 |
+| trimmed mean | 2,0,1,3,4,5 | one per stage | 94.14% | 90.26% | 71.54% | 61.25% | 3.24 |
+| trimmed mean | greedy 0,1,2,4,5,3 | one per stage | 93.95% | 90.36% | 72.54% | 63.71% | 3.26 |
+| median | 2,0,1,3,4,5 | one per stage | 95.00% | 72.71% | 63.29% | 41.12% | 1.70 |
+| median | greedy 0,4,2,1,5,3 | one per stage | 94.26% | 88.60% | 69.88% | 58.42% | 2.26 |
+| top 2 | 2,0,1,3,4,5 | one per stage | 91.90% | 88.21% | 65.83% | 53.42% | 3.00 |
+| top 2 | greedy 0,1,3,2,4,5 | one per stage | 91.55% | 86.55% | 68.08% | 52.88% | 3.44 |
+| top 3 | 2,0,1,3,4,5 | one per stage | 92.62% | 89.29% | 67.33% | 53.21% | 3.43 |
+| top 3 | greedy 0,1,3,5,2,4 | one per stage | 92.19% | 88.07% | 66.17% | 57.17% | 3.55 |
+| max | 2,0,1,3,4,5 | one per stage | 89.43% | 84.60% | 61.46% | 50.08% | 4.08 |
+| max | greedy 1,3,4,2,5,0 | one per stage | 89.17% | 83.81% | 60.96% | 45.38% | 3.85 |
+| fitted weights | 2,0,1,3,4,5 | one per stage | 94.29% | 75.57% | 78.25% | 45.96% | 1.61 |
+| fitted weights | greedy 0,3,2,4,5,1 | one per stage | 91.93% | 74.74% | 80.42% | 63.38% | 1.18 |
+| trimmed mean | 2,0,1,3,4,5 | separate | 93.74% | 85.88% | 70.83% | 63.12% | 3.09 |
+| trimmed mean | greedy 0,1,2,4,5,3 | separate | 93.40% | 86.05% | 71.50% | 63.21% | 3.07 |
+| median | 2,0,1,3,4,5 | separate | 94.14% | 71.14% | 54.79% | 40.00% | 1.29 |
+| median | greedy 0,4,2,1,5,3 | separate | 92.14% | 75.67% | 75.79% | 63.58% | 1.53 |
+| top 2 | 2,0,1,3,4,5 | separate | 91.90% | 82.14% | 64.33% | 45.67% | 2.40 |
+| top 2 | greedy 0,1,3,2,4,5 | separate | 91.55% | 81.33% | 63.50% | 43.12% | 2.66 |
+| top 3 | 2,0,1,3,4,5 | separate | 92.62% | 87.52% | 64.92% | 53.08% | 3.19 |
+| top 3 | greedy 0,1,3,5,2,4 | separate | 92.19% | 85.29% | 65.08% | 48.25% | 3.25 |
+| max | 2,0,1,3,4,5 | separate | 89.43% | 77.05% | 59.00% | 42.50% | 2.43 |
+| max | greedy 1,3,4,2,5,0 | separate | 89.17% | 75.14% | 55.79% | 35.08% | 2.25 |
+| fitted weights | 2,0,1,3,4,5 | separate | 94.60% | 75.55% | 78.29% | 45.96% | 1.40 |
+| fitted weights | greedy 0,3,2,4,5,1 | separate | 92.14% | 74.74% | 79.17% | 63.38% | 1.18 |
+
+The weights fitted on `fit` are 0.438 for the whole-image view, 0 for the
+centre crop and 0.108 to 0.173 for the four textured crops.
+
+- **No candidate is eligible.** Condition (a) asks for clean recall above
+  the reference's at both rates; at 1% the reference has 95.02% and the
+  best candidate (median, shipped order) 95.00%. So no pool goes to
+  `test`, and the pooling half of the gate has failed on `calibrate`.
+- Top 2, top 3 and the maximum, which ranked better than the mean on the
+  Confirmation sets in the exploratory replay, rank **worse** here at 1%
+  on clean rows (91.90%, 92.62%, 89.43%) and on degraded rows.
+- The fitted weights are the one candidate that helps the degraded rows
+  (78.25% against 72.25% at 1%); they lose 0.73 points of clean recall at
+  1%, which the rule does not allow.
+- **The refit costs the strict point.** The reference's margins were
+  fitted for the 1% threshold on `fit` (5.5 / 1.75 / 1.5 / 0.75 / 0.5).
+  Read at a 0.1% empirical cutoff they give 72.48% clean recall where the
+  shipped margins give 92.31%: an image that stops as soon as it is
+  barely over a low threshold is not ranked above the authentic images
+  that set a strict cutoff. Margins fitted for one operating point do not
+  serve another; the trimmed mean and the top-k pools, which cannot exit
+  before two or three views, keep 84% to 90% there for the same reason.
+
+**Stage 2, one look at `test`, the mean alone.** Threshold and margins
+refitted on all 12,457 rows of `calibrate`: for 1% the raw threshold is
+0.985 and the margins 4.75 / 2 / 0.25 / 0.5 / 0; for 0.1%, 2.965 and
+6.75 / 4.25 / 3.25 / 2.5 / 1.25. The thresholds are the ones
+`tintype calibrate` gave the incumbent. The "shipped margins" rows replay
+the incumbent's recalibrated specs and reproduce its tables exactly (51
+of 7,326 and 95.71%; 5 of 7,326 and 92.72%; 120 and 18 of 9,726 over all
+rows).
+
+| Cutoff frozen on `calibrate` | Slice | Margins | Authentic flagged (upper bound) | Recall (95% interval over parents) | Views per image |
+|---|---|---|---|---|---|
+| 1% | clean | shipped | 51 of 7,326, 0.70% (0.88%) | 95.71% (95.23%–96.17%) | 1.44 |
+| | | refitted | 52 of 7,326, 0.71% (0.89%) | 95.31% (94.83%–95.77%) | 1.24 |
+| | | all six views | 62 of 7,326, 0.85% | 95.76% | 6 |
+| | degraded | shipped | 69 of 2,400, 2.88% (3.50%) | 82.25% (79.60%–85.13%) | 1.96 |
+| | | refitted | 69 of 2,400, 2.88% (3.50%) | 82.71% (79.97%–85.51%) | 1.53 |
+| | | all six views | 76 of 2,400, 3.17% | 81.50% | 6 |
+| | reposts | shipped | 14 of 600, 2.33% (3.62%) | 78.00% (72.94%–83.49%) | 2.28 |
+| | | refitted | 18 of 600, 3.00% (4.42%) | 78.50% (73.40%–83.51%) | 1.72 |
+| | all rows | shipped | 120 of 9,726, 1.23% | 92.34% | 1.57 |
+| | | refitted | 121 of 9,726, 1.24% | 92.16% | 1.31 |
+| 0.1% | clean | shipped | 5 of 7,326, 0.07% (0.14%) | 92.72% (92.15%–93.29%) | 1.41 |
+| | | refitted | 10 of 7,326, 0.14% (0.23%) | 92.82% (92.25%–93.36%) | 1.59 |
+| | | all six views | 11 of 7,326, 0.15% | 92.92% | 6 |
+| | degraded | shipped | 13 of 2,400, 0.54% (0.86%) | 72.62% (69.19%–75.93%) | 1.86 |
+| | | refitted | 19 of 2,400, 0.79% (1.16%) | 72.00% (68.61%–75.35%) | 2.19 |
+| | | all six views | 20 of 2,400, 0.83% | 72.08% | 6 |
+| | reposts | shipped | 2 of 600, 0.33% (1.05%) | 63.50% (57.22%–69.56%) | 2.10 |
+| | | refitted | 2 of 600, 0.33% (1.05%) | 62.17% (56.08%–68.31%) | 2.52 |
+| | all rows | shipped | 18 of 9,726, 0.19% | 87.70% | 1.52 |
+| | | refitted | 29 of 9,726, 0.30% | 87.61% | 1.74 |
+
+Recall at empirical cutoffs on `test` itself (a ranking measure, not a
+transfer result), 1% / 0.1%: clean rows, all six views 95.89% / 92.44%,
+shipped margins 96.39% / 90.36% (1% schedule) and 96.21% / 93.24% (0.1%
+schedule), refitted margins 95.99% / 81.54% and 96.53% / 92.38%;
+degraded rows, all six views 74.08% / 59.00%, shipped margins 76.12% /
+45.50% and 78.67% / 63.62%, refitted margins 61.58% / 43.46% and 75.71% /
+63.12%.
+
+- **The refitted margins are not an improvement.** At the 1% cutoff they
+  save 0.26 views per image over all rows (1.31 against 1.57) and lose
+  0.40 points of clean recall (the refitted figure, 95.31%, is inside the
+  shipped interval, 95.23%–96.17%); 88 generated and 73 authentic
+  verdicts change in total. At the 0.1% cutoff they need *more* views
+  (1.74 against 1.52), flag 10 clean authentic photos where the shipped
+  margins flag 5 and 19 degraded ones against 13, for the same recall.
+- **All six views are not better than early exit at a frozen cutoff
+  here.** They flag more authentic photos at both cutoffs (62 against 51
+  clean at 1%; 11 against 5 at 0.1%) for 0.05 to 0.2 points of clean
+  recall, and lose recall on the degraded rows (81.50% against 82.25%;
+  72.08% against 72.62%). At empirical cutoffs all six views rank the
+  degraded rows better at 0.1% under the 1% schedule (59.00% against
+  45.50%) and worse under the 0.1% schedule (59.00% against 63.62%): the
+  NTIRE all-views gain does not carry over as a rule.
+- The 0.001 criterion held where it was fitted and moved more than that
+  on `test` at 1% (clean recall −0.0040). A margin schedule needs a check
+  on data it was not fitted on, at every cutoff it will be used with.
+
+### Part A: interpolation
+
+Eight candidates under `runs/`, each `(1 − alpha) · released + alpha · B`,
+for two anchors `B` and `alpha` 0.10, 0.20, 0.30, 0.50: Community
+Forensics 224 (the phase-1 initialiser, `baselines/commfor-224.safetensors`,
+prefix `vit.`) and the phase-3 weights (`runs/v4/step_007000.safetensors`,
+SHA-256 `2d11bffd…`, the checkpoint phase 6 continued from; it agrees
+with the released weights on all 152 tensors). The second anchor is not
+in the grid written above; it was added in the pre-registration before
+any score. Every candidate runs through Tintype's six views with the mean
+of all views. `alpha` 0 is the incumbent's all-views scores.
+
+```bash
+tintype interpolate --a models/tintype.safetensors --b <phase-3 weights> \
+  --alpha 0.1,0.2,0.3,0.5 --out-dir runs/ws10-interp-p3/        # the Community Forensics sweep is runs/ws10-interp/, above
+A=runs/ws10-frozen/a; F=<frozen split>
+# Each candidate: calibrate, and the twelve GAN sets of Confirmation 7 (development data), all six views. GPU.
+tintype score --weights runs/ws10-interp-p3/alpha-0.30.safetensors --manifest $F/calibrate.tsv --all-views --out $A/p3-0.30.calibrate.tsv
+tintype score --weights runs/ws10-interp-p3/alpha-0.30.safetensors \
+  $(for s in classic-biggan classic-cyclegan classic-gaugan classic-stargan classic-stylegan classic-stylegan2 \
+     aigibench-ProGAN aigibench-R3GAN aigibench-StyleGAN-XL aigibench-StyleGAN3 aigibench-StyleSwim aigibench-WFIR; do
+     echo --manifest data/fresh8/$s/manifest.tsv; done) --all-views --out $A/p3-0.30.gan.tsv
+# Cutoffs for 1% and 0.1% fitted on calibrate, read on its own clean and degraded rows (in-sample, marked) and on the GAN sets.
+tintype replay-pool --fit $A/p3-0.30.calibrate.tsv --in-sample \
+  --test calibrate-clean=$A/p3-0.30.calibrate.clean.tsv --test calibrate-degraded=$A/p3-0.30.calibrate.degraded.tsv \
+  --test legacy-gan=$A/p3-0.30.gan.tsv --pool mean --order shipped --target-fpr 0.01      # and 0.001
+
+# The chosen candidate only: its cutoffs into its own spec, then test, once.
+tintype calibrate --weights runs/ws10-interp-p3/alpha-0.30.safetensors --scores $A/p3-0.30.calibrate.tsv --profile photo --target-fpr 0.01
+tintype calibrate --weights runs/ws10-interp-p3/alpha-0.30.safetensors --scores $A/p3-0.30.calibrate.tsv --profile strict --target-fpr 0.001
+tintype verify-models
+tintype score --weights runs/ws10-interp-p3/alpha-0.30.safetensors --manifest $F/test.tsv --all-views --out $A/p3-0.30.test.tsv
+tintype replay-pool --fit $A/p3-0.30.calibrate.tsv --test test-clean=… --test test-degraded=… --test test-reposts=… --test test-all=… \
+  --pool mean --order shipped --target-fpr 0.01 --slice-by generator       # "all views" rows; and 0.001; the same for alpha 0
+tintype report --operating-points --system "alpha-0=$A/alpha0.test.clean.tsv@0.3847578" \
+  --system "phase3-0.30=$A/p3-0.30.test.clean.tsv@0.5" --slice-by family,source --cluster-by parent --groups $F/test.tsv
+```
+
+The cutoffs after `@` are the frozen logit cutoffs as probabilities of
+each score file (`alpha` 0: 0.3847578 for 1% and 0.6995432 for 0.1% under
+the shipped calibration; the candidate: 0.5 and 0.7286624 under its own).
+`tintype calibrate` and the replay tool gave the same cutoffs for the
+candidate (raw 1.064 and 2.815), and `verify-models` reported the four
+released files unchanged after each step. Scoring: GPU engine, binary
+of commit `217edfc`. Replay and tables: the code of `e128973` (the
+commits after it up to the looks change documents only).
+
+**Calibrate stage.** Each candidate at its own cutoffs fitted on
+`calibrate`'s 5,857 authentic rows; recall on `calibrate`'s 4,200 clean
+and 2,400 degraded generated rows (in-sample for the cutoff, the same for
+every candidate) and on the GAN sets (4,000 generated, 3,858 authentic).
+The last column is the GAN sets' recall at cutoffs found on their own
+authentic images.
+
+| Candidate | Cutoff | Raw threshold | Clean recall | Degraded recall | GAN recall | GAN authentic flagged | GAN recall at 1% / 0.1% empirical FPR | (a) GAN above `alpha` 0 | (b) within 0.5 points |
+|---|---|---|---|---|---|---|---|---|---|
+| `alpha` 0 (released) | 1% | 0.985 | 93.33% | 77.46% | 95.45% | 74 (1.92%) | 91.15% / 65.25% | – | – |
+| | 0.1% | 2.965 | 89.79% | 68.04% | 87.38% | 25 (0.65%) | | – | – |
+| phase 3, 0.10 | 1% | 0.993 | 93.36% | 77.75% | 95.55% | 79 (2.05%) | 90.75% / 63.68% | yes | yes |
+| | 0.1% | 2.849 | 90.26% | 69.08% | 87.95% | 30 (0.78%) | | yes | yes |
+| phase 3, 0.20 | 1% | 1.021 | 93.57% | 77.92% | 95.60% | 80 (2.07%) | 89.90% / 62.32% | yes | yes |
+| | 0.1% | 2.849 | 90.38% | 69.42% | 87.88% | 30 (0.78%) | | yes | yes |
+| **phase 3, 0.30** | 1% | 1.064 | 93.52% | 77.83% | 95.67% | 81 (2.10%) | 89.03% / 60.62% | yes | yes |
+| | 0.1% | 2.815 | 90.55% | 70.08% | 88.00% | 33 (0.86%) | | yes | yes |
+| phase 3, 0.50 | 1% | 1.246 | 93.38% | 77.83% | 95.35% | 89 (2.31%) | 87.48% / 57.35% | no | yes |
+| | 0.1% | 2.996 | 90.33% | 69.50% | 86.72% | 35 (0.91%) | | no | yes |
+| Community Forensics, 0.10 | 1% | 0.989 | 93.52% | 76.83% | 95.95% | 59 (1.53%) | 93.40% / 66.77% | yes | no |
+| | 0.1% | 2.980 | 89.71% | 66.92% | 88.50% | 21 (0.54%) | | yes | no |
+| Community Forensics, 0.20 | 1% | 0.998 | 93.67% | 75.58% | 96.35% | 49 (1.27%) | 95.03% / 74.20% | yes | no |
+| | 0.1% | 2.961 | 89.60% | 65.21% | 89.20% | 17 (0.44%) | | yes | no |
+| Community Forensics, 0.30 | 1% | 1.124 | 93.40% | 73.83% | 96.65% | 41 (1.06%) | 95.95% / 80.80% | yes | no |
+| | 0.1% | 2.909 | 89.48% | 63.62% | 90.05% | 14 (0.36%) | | yes | no |
+| Community Forensics, 0.50 | 1% | 1.503 | 92.33% | 68.92% | 96.15% | 28 (0.73%) | 97.30% / 87.22% | yes | no |
+| | 0.1% | 2.984 | 88.14% | 59.67% | 90.38% | 8 (0.21%) | | yes | no |
+
+- **Towards Community Forensics, legacy-GAN recall does come back**, at a
+  matched rate on the GAN sets' own authentic images: 91.15% to 93.40%,
+  95.03%, 95.95% and 97.30% at 1% for `alpha` 0.1 to 0.5, and 65.25% to
+  66.77%, 74.20%, 80.80% and 87.22% at 0.1%, with fewer of those authentic
+  images flagged at the frozen cutoffs (74 down to 28). **It is paid for
+  on degraded files**: recall on `calibrate`'s degraded rows falls from
+  77.46% to 76.83%, 75.58%, 73.83% and 68.92% at the 1% cutoff, and from
+  68.04% to 59.67% at the 0.1% cutoff. Every one of the four is outside
+  the half-point allowance, the smallest step by 0.63 points. Clean
+  recall on `calibrate` is flat up to 0.3 and falls at 0.5.
+- **Towards phase 3, nothing much moves.** Clean and degraded recall on
+  `calibrate` are level or slightly up. GAN recall at the candidate's own
+  cutoff is a fraction of a point higher (95.45% to 95.67% at `alpha`
+  0.30) only because that cutoff lets more of the GAN sets' authentic
+  images through (74 to 81); at a matched rate on the GAN sets it is
+  lower at every step (91.15% to 89.03% at 1%, 65.25% to 60.62% at 0.1%).
+  Phase 3 is weaker on GANs than the released weights, which phase 6
+  trained on GAN data.
+- **Chosen by the rule: phase 3 at `alpha` 0.30**, with the weakness of
+  condition (a) written into the pre-registration before the look at
+  `test`.
+
+**One look at `test`: phase 3 at `alpha` 0.30 against `alpha` 0**, all
+six views, each at its own cutoffs frozen on `calibrate`.
+
+| Cutoff | Slice | | Authentic flagged (upper bound) | Recall (95% interval over parents) |
+|---|---|---|---|---|
+| 1% | clean | `alpha` 0 | 62 of 7,326, 0.85% (1.04%) | 95.76% (95.29%–96.22%) |
+| | | phase 3, 0.30 | 52 of 7,326, 0.71% (0.89%) | 95.75% (95.29%–96.21%) |
+| | degraded | `alpha` 0 | 76 of 2,400, 3.17% (3.82%) | 81.50% (78.80%–84.31%) |
+| | | phase 3, 0.30 | 73 of 2,400, 3.04% (3.68%) | 82.25% (79.65%–84.91%) |
+| | reposts | `alpha` 0 | 11 of 600, 1.83% (3.02%) | 77.50% (72.22%–82.87%) |
+| | | phase 3, 0.30 | 11 of 600, 1.83% (3.02%) | 79.33% (74.52%–84.43%) |
+| | current generators (flux, sd3), clean | `alpha` 0 | – | 99.50% (99.08%–99.83%) |
+| | | phase 3, 0.30 | – | 99.75% (99.42%–100.00%) |
+| | current generators, degraded | `alpha` 0 | – | 90.15% (87.37%–92.17%) |
+| | | phase 3, 0.30 | – | 90.66% (88.38%–92.17%) |
+| | held-out families (infinity, rar), clean | `alpha` 0 | – | 99.73% (99.53%–99.90%) |
+| | | phase 3, 0.30 | – | 99.63% (99.40%–99.83%) |
+| | held-out families, degraded | `alpha` 0 | – | 85.06% (81.61%–88.52%) |
+| | | phase 3, 0.30 | – | 85.67% (82.42%–89.02%) |
+| 0.1% | clean | `alpha` 0 | 11 of 7,326, 0.15% (0.25%) | 92.92% (92.34%–93.48%) |
+| | | phase 3, 0.30 | 10 of 7,326, 0.14% (0.23%) | 93.46% (92.92%–93.98%) |
+| | degraded | `alpha` 0 | 20 of 2,400, 0.83% (1.21%) | 72.08% (68.81%–75.35%) |
+| | | phase 3, 0.30 | 20 of 2,400, 0.83% (1.21%) | 74.58% (71.24%–77.61%) |
+| | reposts | `alpha` 0 | 2 of 600, 0.33% (1.05%) | 62.00% (55.88%–67.95%) |
+| | | phase 3, 0.30 | 3 of 600, 0.50% (1.29%) | 66.83% (60.64%–72.64%) |
+| | current generators, clean | `alpha` 0 | – | 97.42% (96.50%–98.25%) |
+| | | phase 3, 0.30 | – | 98.25% (97.50%–99.00%) |
+| | current generators, degraded | `alpha` 0 | – | 78.54% (71.21%–84.85%) |
+| | | phase 3, 0.30 | – | 82.83% (76.26%–87.88%) |
+| | held-out families, clean | `alpha` 0 | – | 98.97% (98.60%–99.30%) |
+| | | phase 3, 0.30 | – | 98.93% (98.57%–99.27%) |
+| | held-out families, degraded | `alpha` 0 | – | 77.74% (73.48%–82.11%) |
+| | | phase 3, 0.30 | – | 78.56% (74.39%–82.62%) |
+
+Over all of `test` the candidate flags 125 of 9,726 authentic files at
+the 1% cutoff and 30 at the 0.1% cutoff (`alpha` 0: 138 and 31), with
+recall 92.38% and 88.74% (92.20% and 87.71%). At empirical cutoffs on
+`test` itself, recall at 1% / 0.1%: clean 96.08% / 93.00% (`alpha` 0:
+95.89% / 92.44%), degraded 76.54% / 61.04% (74.08% / 59.00%), reposts
+75.00% / 60.83% (74.83% / 59.83%).
+
+- **The protective half of the gate holds on `test`.** On every slice the
+  candidate's recall is at or above the lower end of `alpha` 0's
+  interval, and it flags no more authentic files than `alpha` 0's upper
+  bound. Its recall is level with or slightly above `alpha` 0's
+  everywhere except clean rows at the 1% cutoff (−0.01 points) and the
+  held-out families on clean rows (−0.10 and −0.04 points), and it flags
+  one more reposted authentic file at the 0.1% cutoff (3 against 2);
+  every difference is inside the intervals.
+- **The improvement half is not shown.** By the rule as it was written,
+  GAN recall at the candidate's own cutoffs is above `alpha` 0's (95.67%
+  against 95.45%; 88.00% against 87.38%), and the rule is met. But the
+  gate asks for legacy-GAN recall at a fixed false-positive rate, and at
+  a matched rate on the GAN sets the candidate is lower (89.03% against
+  91.15% at 1%; 60.62% against 65.25% at 0.1%): the difference at its own
+  cutoffs is seven more of the GAN sets' authentic images flagged, not
+  more generated images found. **The gate is not passed**: no interpolant
+  recovers legacy-GAN recall without giving up recall on degraded files.
+  The two anchors split the gate between them: Community Forensics
+  recovers GANs and loses degraded recall; phase 3 keeps degraded recall
+  and does not recover GANs.
+- GAN recall rests on development data throughout (Confirmation 7), as
+  the pre-registration says: the frozen split holds no GAN family.
+- Not measured: early exit for any interpolant (none is fitted), the fast
+  profile, latency, and the frontier and reposted development sets.
+
+### Log of looks at the frozen split (workstream 10)
+
+| Date | Commit | What was read on which set |
+|---|---|---|
+| 2026-11-14 | `e128973` | Part B stage 1: 24 pools and orders plus the mean, fitted on `fit` (incumbent's all-views scores), read on `calibrate`. No look at `test` |
+| 2026-11-14 | `c75d92e` | Part B stage 2, the one look at `test`: the mean with threshold and margins refitted on `calibrate` for 1% and 0.1%, beside the incumbent's recalibrated specs replayed (shipped margins) and all six views. Incumbent's `test.all.tsv`; no scoring |
+| 2026-11-14 | `217edfc` (scoring), `c75d92e` (tables) | Part A calibrate stage: eight interpolants scored on `calibrate` and on Confirmation 7's twelve GAN sets, all six views, GPU engine. No look at `test` |
+| 2026-11-14 | `7b95c50` | Part A, the one look at `test`: phase 3 at `alpha` 0.30, scored on `test` with all six views, against `alpha` 0 from the incumbent's `test.all.tsv` |
+
 ## Ready to run
 
-Nothing below was run. All of it is over the 2,000-item limit for the
-shared GPU or needs data that is not there yet.
+Run on the frozen split on 2026-11-14 (above): the pooling procedure, and
+the interpolation grid for both anchors with one candidate read on
+`test`. What is left was not run; each needs data or machine time that
+was not available.
 
 | What | Needs | Commands |
 |---|---|---|
-| The sweep on the frozen split: calibrate each `alpha` on `calibrate`, report on `test` | The frozen split ([frozen-eval.md](frozen-eval.md)); `runs/ws10-interp/` as written above | "Calibrate each candidate" and "Evaluate" |
-| Legacy-GAN, current-generator and reposted diagnostics for each `alpha` | `tintype data confirm7`, `tintype data benchmarks` (frontier images), then `verify-set` | The suite table under "Evaluate" |
-| Distorted diagnostics for each `alpha` and for pooling | NTIRE archives unpacked into a manifest; a re-score with `--all-views` | `tintype score --weights runs/… --manifest <ntire manifest> --all-views --out runs/…`, then `replay-pool --test ntire-clean=… --test ntire-distorted=…` |
-| Pooling on the frozen split | The frozen split; all-views scores of `fit`, `calibrate`, `test` | "Procedure for the gate" |
+| Latency and throughput of any candidate | An unshared machine (the GPU was shared during the frozen-split run) | `tintype latency --weights runs/… --manifest <test manifest> --n 500 --device gpu`, and `--device cpu` |
+| Early exit for an interpolant | All-views scores of the candidate on `calibrate` (they exist for the eight under `runs/ws10-frozen/a/`), then a real run to re-check | `tintype replay-pool --fit <candidate calibrate scores> --pool mean --order shipped`, put the printed `early_exit` block in the candidate's spec under `runs/`, then `tintype score` without `--all-views` |
+| Frontier originals and reposted copies for each `alpha` (development data) | The files are on disk again (`data/vstore/wasitai`); about 3,000 images per candidate | The suite table under "Evaluate" |
+| Distorted diagnostics for the sweep and for pooling | NTIRE archives unpacked into a manifest; a re-score with `--all-views` | `tintype score --weights runs/… --manifest <ntire manifest> --all-views --out runs/…`, then `replay-pool --test ntire-clean=… --test ntire-distorted=…` |
+| Learned-codec and real platform round trips | Not in the frozen split (no licence stated for the codec weights; the one open repost collection was dropped) | – |
 | Averaging of sibling fine-tunes | The fine-tunes of workstreams 1 and 4 | "Checkpoint averaging", then the sweep's calibrate and evaluate commands on the average |
-| Replacement view | A new view kind; the frozen split | The design slot above |
+| Replacement view | A new view kind | The design slot above |
 
 ## Before anything changes
 
