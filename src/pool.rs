@@ -181,7 +181,8 @@ pub struct Item {
 pub fn read_items(files: &[PathBuf], views: usize) -> Result<Vec<Item>> {
     let mut out = Vec::new();
     for f in files {
-        for (path, r) in crate::report::read_scores(f)? {
+        let rows = crate::report::read_scores(f).with_context(|| format!("{} is not a score file (rows of `path label generator dataset prob logits...`, no header)", f.display()))?;
+        for (path, r) in rows {
             ensure!(
                 r.logits.len() == views,
                 "{}: {path} has {} view logits, not {views}. A replay needs every view of every image: files from `score --all-views`, `evaluate` (`*-views.tsv`) or `finalize` (`calib_images.tsv`); the archives in docs/results hold probabilities only",
