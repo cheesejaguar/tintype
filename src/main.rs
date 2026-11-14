@@ -341,6 +341,22 @@ enum Cmd {
         #[command(flatten)]
         aug: AugArgs,
     },
+    /// Write the two sides of the path-hash validation split as manifests:
+    /// `train.tsv` and `val.tsv` in `--out-dir`, with absolute paths. `train`
+    /// holds out `--val-pct` percent of every manifest by a hash of each
+    /// path as spelled on its command line, and `finalize` calibrates on
+    /// that share; pass the manifests here exactly as there. For tooling
+    /// that must know the sides (derivatives of held-out items do not belong
+    /// in training); training on these two files would hash the absolute
+    /// paths into a different split.
+    HashSplit {
+        #[arg(long, required = true)]
+        manifest: Vec<PathBuf>,
+        #[arg(long, default_value_t = 3)]
+        val_pct: u64,
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
     /// Time the CPU side of the training loader (decode and augment) on the photos of a manifest.
     AugmentBench {
         #[arg(long, required = true)]
@@ -844,6 +860,22 @@ fn main() -> Result<()> {
         #[cfg(not(target_os = "macos"))]
         Cmd::Score { .. } | Cmd::ScoreVideo { .. } | Cmd::Evaluate { .. } | Cmd::Finalize { .. } | Cmd::FinalizeVideo { .. } | Cmd::Calibrate { .. } | Cmd::Profile { .. } | Cmd::Train { .. } => {
             anyhow::bail!("this command uses the Apple GPU engine and needs macOS on Apple Silicon; `detect --device cpu` works everywhere")
+        }
+        Cmd::HashSplit { manifest, val_pct, out_dir } => {
+            let items = load_manifests(&manifest)?;
+            anyhow::ensure!(!items.is_empty(), "the manifests list no items");
+            std::fs::create_dir_all(&out_dir)?;
+            let (mut train, mut val, mut counts) = (String::new(), String::new(), [0usize; 2]);
+            for it in &items {
+                let side = tintype::data::is_val(it, val_pct);
+                counts[side as usize] += 1;
+                let line = it.manifest_line(&std::path::absolute(&it.path)?.display().to_string()) + "\n";
+                if side { val.push_str(&line) } else { train.push_str(&line) }
+            }
+            std::fs::write(out_dir.join("train.tsv"), train)?;
+            std::fs::write(out_dir.join("val.tsv"), val)?;
+            println!("{} items on the training side, {} held out ({val_pct}% by path hash)", counts[0], counts[1]);
+            Ok(())
         }
         Cmd::AugmentBench { manifest, images, sampler_alpha, rounds, threads, seed, aug } => {
             let cfg = aug.config()?;

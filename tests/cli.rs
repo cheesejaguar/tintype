@@ -329,3 +329,27 @@ fn augment_bench_times_the_loader_with_and_without_chains() {
     assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("unknown chain operation `webp`"), "{}", String::from_utf8_lossy(&o.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn hash_split_writes_the_two_sides_train_holds_apart() {
+    let dir = common::scratch("cli-hash-split");
+    write_family_manifest(&dir, 300);
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let o = tintype(&["hash-split", "--manifest", &d("manifest.tsv"), "--out-dir", &d("sides")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let side = |name: &str| std::fs::read_to_string(dir.join("sides").join(name)).unwrap();
+    let (train, val) = (side("train.tsv"), side("val.tsv"));
+    assert_eq!(train.lines().count() + val.lines().count(), 600);
+    assert_eq!(stdout(&o), format!("{} items on the training side, {} held out (3% by path hash)\n", train.lines().count(), val.lines().count()));
+    assert!((3..60).contains(&val.lines().count()), "{}", val.lines().count());
+    // Absolute paths, grouping columns kept, and the same sides on a second run.
+    assert!(train.lines().chain(val.lines()).all(|l| std::path::Path::new(l.split('\t').next().unwrap()).is_absolute()));
+    assert!(train.lines().any(|l| l.ends_with("\tjpeg-q70")) && train.lines().any(|l| l.split('\t').count() == 5));
+    let o = tintype(&["hash-split", "--manifest", &d("manifest.tsv"), "--out-dir", &d("again")]);
+    assert!(o.status.success());
+    assert_eq!(std::fs::read_to_string(dir.join("again/val.tsv")).unwrap(), val);
+    // A larger share holds out more; zero holds out nothing.
+    let o = tintype(&["hash-split", "--manifest", &d("manifest.tsv"), "--out-dir", &d("none"), "--val-pct", "0"]);
+    assert!(stdout(&o).starts_with("600 items on the training side, 0 held out"), "{}", stdout(&o));
+    let _ = std::fs::remove_dir_all(&dir);
+}
