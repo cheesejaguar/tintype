@@ -51,8 +51,10 @@ pub fn decode(bytes: &[u8]) -> Result<Rgb> {
 
 pub fn load(path: impl AsRef<Path>) -> Result<Rgb> {
     let p = path.as_ref();
-    decode(&std::fs::read(p).with_context(|| format!("reading {}", p.display()))?)
-        .with_context(|| format!("decoding {}", p.display()))
+    let start = std::time::Instant::now();
+    let img = decode(&std::fs::read(p).with_context(|| format!("reading {}", p.display()))?).with_context(|| format!("decoding {}", p.display()));
+    crate::stats::DECODE_TIME.since(start);
+    img
 }
 
 impl Rgb {
@@ -106,21 +108,35 @@ impl Rgb {
         out
     }
 
-    pub fn center_crop(&self, size: u32) -> Rgb {
+    /// Top-left corner of the centre `size`-square window (negative when the
+    /// image is smaller than it).
+    pub fn center_origin(&self, size: u32) -> (i64, i64) {
         // torchvision rounds the offset: int(round((h - size) / 2))
         let off = |full: u32| ((full as f64 - size as f64) / 2.0).round() as i64;
-        self.crop(off(self.w), off(self.h), size, size)
+        (off(self.w), off(self.h))
     }
 
-    /// torchvision's `CenterCrop`: offsets use Python's `round`, which rounds
-    /// halves to the nearest even integer.
-    pub fn center_crop_torchvision(&self, size: u32) -> Rgb {
+    pub fn center_crop(&self, size: u32) -> Rgb {
+        let (x, y) = self.center_origin(size);
+        self.crop(x, y, size, size)
+    }
+
+    /// As [`Rgb::center_origin`] with torchvision's `CenterCrop` rounding:
+    /// offsets use Python's `round`, which rounds halves to the nearest even
+    /// integer.
+    pub fn center_origin_torchvision(&self, size: u32) -> (i64, i64) {
         let off = |full: u32| {
             let v = (full as f64 - size as f64) / 2.0;
             let r = v.round();
             (if (v - v.trunc()).abs() == 0.5 && r as i64 % 2 != 0 { r - v.signum() } else { r }) as i64
         };
-        self.crop(off(self.w), off(self.h), size, size)
+        (off(self.w), off(self.h))
+    }
+
+    /// torchvision's `CenterCrop` (see [`Rgb::center_origin_torchvision`]).
+    pub fn center_crop_torchvision(&self, size: u32) -> Rgb {
+        let (x, y) = self.center_origin_torchvision(size);
+        self.crop(x, y, size, size)
     }
 
     pub fn flip_h(&mut self) {
@@ -293,6 +309,13 @@ impl Rgb {
 /// windows are taken from a half-crop grid and chosen greedily so that picks
 /// do not overlap while non-overlapping candidates remain.
 pub fn rich_windows(img: &Rgb, crop: u32, k: usize) -> Vec<(i64, i64)> {
+    let start = std::time::Instant::now();
+    let picks = rank_windows(img, crop, k);
+    crate::stats::VIEWS_TIME.since(start);
+    picks
+}
+
+fn rank_windows(img: &Rgb, crop: u32, k: usize) -> Vec<(i64, i64)> {
     let (w, h, c) = (img.w as usize, img.h as usize, crop as usize);
     if w < c || h < c {
         return vec![(0, 0); k.max(1)];
@@ -390,10 +413,25 @@ impl View {
 
     /// As [`View::apply`], reusing precomputed [`rich_windows`] when given.
     pub fn apply_with(self, img: &Rgb, rich: Option<&[(i64, i64)]>) -> Rgb {
+        self.resolve(img, rich).render(img)
+    }
+
+    /// What this view comes to on `img`: where its window lies, or how the
+    /// image is resized first. Two views that resolve to the same thing give
+    /// the same pixels (see [`Pixels`]).
+    pub fn resolve(self, img: &Rgb, rich: Option<&[(i64, i64)]>) -> Pixels {
+        let short = img.w.min(img.h);
+        let centre = |size: u32| {
+            let (x, y) = img.center_origin(size);
+            Pixels::Window { x, y, size }
+        };
+        // Resizing an image whose shorter side is already `to` returns it as
+        // it is, so what follows is a window of the image itself.
+        let resized = |to: u32, size: u32| if short == to { centre(size) } else { Pixels::Resized { short: to, size } };
         match self {
             View::NativeRich { crop, rank } => {
-                if img.w.min(img.h) < crop {
-                    return img.resize_short(crop, Filter::Bilinear).center_crop(crop);
+                if short < crop {
+                    return resized(crop, crop);
                 }
                 let owned;
                 let wins = match rich {
@@ -404,29 +442,76 @@ impl View {
                     }
                 };
                 let (x, y) = wins[(rank as usize).min(wins.len() - 1)];
-                img.crop(x, y, crop, crop)
+                Pixels::Window { x, y, size: crop }
             }
-            View::Fit { resize, crop } => img.resize_short(resize, Filter::Bilinear).center_crop(crop),
-            View::FitPillow { resize, crop } => img.resize_short_pillow(resize).center_crop_torchvision(crop),
-            View::SquashPillow { size } => img.resize_pillow(size, size, PillowFilter::Bicubic),
-            View::CenterPad { crop } => img.center_crop_torchvision(crop),
+            View::Fit { resize, crop } => resized(resize, crop),
+            View::FitPillow { resize, crop } => Pixels::FitPillow { resize, crop },
+            View::SquashPillow { size } => Pixels::SquashPillow { size },
+            View::CenterPad { crop } => {
+                let (x, y) = img.center_origin_torchvision(crop);
+                Pixels::Window { x, y, size: crop }
+            }
             View::Native { crop } => {
-                if img.w.min(img.h) < crop {
-                    img.resize_short(crop, Filter::Bilinear).center_crop(crop)
+                if short < crop {
+                    resized(crop, crop)
                 } else {
-                    img.center_crop(crop)
+                    centre(crop)
                 }
             }
             View::NativeAt { crop, fx, fy } => {
-                if img.w.min(img.h) < crop {
-                    return img.resize_short(crop, Filter::Bilinear).center_crop(crop);
+                if short < crop {
+                    return resized(crop, crop);
                 }
                 // Keep the window inside the image.
                 let pos = |full: u32, f: u32| ((full as i64 * f as i64 / 1000) - crop as i64 / 2).clamp(0, (full - crop) as i64);
-                img.crop(pos(img.w, fx), pos(img.h, fy), crop, crop)
+                Pixels::Window { x: pos(img.w, fx), y: pos(img.h, fy), size: crop }
             }
         }
     }
+}
+
+/// A [`View`] resolved on one particular image: the pixels it takes, with
+/// the view's name for them left out. Different views often come to the same
+/// thing: below the crop size every native view is the same upscaled centre
+/// crop, the texture-ranked windows repeat when an image has fewer positions
+/// than ranks, the centre crop can be one of those windows, and the
+/// whole-image view of an image whose shorter side already has its size is
+/// the centre crop too. Equal values give equal pixels for the same image,
+/// since [`Pixels::render`] reads nothing else, so a score computed for one
+/// can stand for the other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Pixels {
+    /// The `size`-square window of the image itself whose top-left is
+    /// `(x, y)`: no resampling, black outside the image.
+    Window { x: i64, y: i64, size: u32 },
+    /// Shorter side resized to `short` (bilinear), then the centre `size` square.
+    Resized { short: u32, size: u32 },
+    /// torchvision `Resize(resize)` + `CenterCrop(crop)` on a PIL image.
+    FitPillow { resize: u32, crop: u32 },
+    /// `PIL.Image.resize((size, size), BICUBIC)`.
+    SquashPillow { size: u32 },
+}
+
+impl Pixels {
+    /// Cut these pixels out of `img` (the image the view was resolved on).
+    pub fn render(self, img: &Rgb) -> Rgb {
+        crate::stats::MATERIALISED_VIEWS.add(1);
+        let start = std::time::Instant::now();
+        let out = match self {
+            Pixels::Window { x, y, size } => img.crop(x, y, size, size),
+            Pixels::Resized { short, size } => img.resize_short(short, Filter::Bilinear).center_crop(size),
+            Pixels::FitPillow { resize, crop } => img.resize_short_pillow(resize).center_crop_torchvision(crop),
+            Pixels::SquashPillow { size } => img.resize_pillow(size, size, PillowFilter::Bicubic),
+        };
+        crate::stats::VIEWS_TIME.since(start);
+        out
+    }
+}
+
+/// For each entry, the index of the first entry equal to it (its own index
+/// when it is the first): which earlier view, if any, has the same pixels.
+pub fn first_uses(plan: &[Pixels]) -> Vec<usize> {
+    (0..plan.len()).map(|i| (0..i).find(|&j| plan[j] == plan[i]).unwrap_or(i)).collect()
 }
 
 #[cfg(test)]
@@ -529,6 +614,142 @@ mod tests {
         // small images still yield a view of the right size
         let v = View::NativeRich { crop: 224, rank: 3 }.apply(&gradient(300, 240));
         assert_eq!((v.w, v.h), (224, 224));
+    }
+
+    /// A picture with grain everywhere, so that different windows differ.
+    fn textured(w: u32, h: u32, seed: u64) -> Rgb {
+        let mut im = gradient(w, h);
+        let mut rng = crate::rng::Rng::new(seed);
+        for v in im.data.iter_mut() {
+            *v = v.wrapping_add(rng.below(64) as u8);
+        }
+        im
+    }
+
+    /// Every view the way it was written before views were resolved first:
+    /// the reference the resolved form has to reproduce byte for byte.
+    fn apply_directly(v: View, img: &Rgb, rich: Option<&[(i64, i64)]>) -> Rgb {
+        match v {
+            View::NativeRich { crop, rank } => {
+                if img.w.min(img.h) < crop {
+                    return img.resize_short(crop, Filter::Bilinear).center_crop(crop);
+                }
+                let owned;
+                let wins = match rich {
+                    Some(w) => w,
+                    None => {
+                        owned = rich_windows(img, crop, rank as usize + 1);
+                        &owned
+                    }
+                };
+                let (x, y) = wins[(rank as usize).min(wins.len() - 1)];
+                img.crop(x, y, crop, crop)
+            }
+            View::Fit { resize, crop } => img.resize_short(resize, Filter::Bilinear).center_crop(crop),
+            View::FitPillow { resize, crop } => img.resize_short_pillow(resize).center_crop_torchvision(crop),
+            View::SquashPillow { size } => img.resize_pillow(size, size, PillowFilter::Bicubic),
+            View::CenterPad { crop } => img.center_crop_torchvision(crop),
+            View::Native { crop } => {
+                if img.w.min(img.h) < crop {
+                    img.resize_short(crop, Filter::Bilinear).center_crop(crop)
+                } else {
+                    img.center_crop(crop)
+                }
+            }
+            View::NativeAt { crop, fx, fy } => {
+                if img.w.min(img.h) < crop {
+                    return img.resize_short(crop, Filter::Bilinear).center_crop(crop);
+                }
+                let pos = |full: u32, f: u32| ((full as i64 * f as i64 / 1000) - crop as i64 / 2).clamp(0, (full - crop) as i64);
+                img.crop(pos(img.w, fx), pos(img.h, fy), crop, crop)
+            }
+        }
+    }
+
+    const SHAPES: [(u32, u32); 22] = [
+        (64, 64), (120, 90), (200, 300), (223, 223), (100, 400), (223, 500), (224, 224), (224, 225), (225, 225), (224, 300), (230, 230),
+        (448, 224), (335, 224), (336, 336), (256, 256), (320, 256), (256, 400), (255, 257), (300, 240), (448, 448), (640, 480), (1024, 768),
+    ];
+
+    fn all_views() -> Vec<View> {
+        let mut v = vec![View::Fit { resize: 256, crop: 224 }, View::Native { crop: 224 }];
+        v.extend((0..4).map(|rank| View::NativeRich { crop: 224, rank }));
+        v.extend([(280, 280), (500, 500), (720, 720), (1000, 0)].map(|(fx, fy)| View::NativeAt { crop: 224, fx, fy }));
+        v.extend([View::Fit { resize: 224, crop: 224 }, View::FitPillow { resize: 256, crop: 224 }, View::SquashPillow { size: 224 }, View::CenterPad { crop: 224 }]);
+        v
+    }
+
+    #[test]
+    fn resolved_views_give_the_pixels_the_views_gave_and_equal_ones_give_equal_pixels() {
+        for (k, &(w, h)) in SHAPES.iter().enumerate() {
+            let im = textured(w, h, k as u64 + 1);
+            let rich = (w.min(h) >= 224).then(|| rich_windows(&im, 224, 4));
+            let views = all_views();
+            let plan: Vec<Pixels> = views.iter().map(|v| v.resolve(&im, rich.as_deref())).collect();
+            let crops: Vec<Rgb> = views.iter().map(|&v| apply_directly(v, &im, rich.as_deref())).collect();
+            for (i, v) in views.iter().enumerate() {
+                assert_eq!(plan[i].render(&im).data, crops[i].data, "{w}x{h} {v:?} resolved to {:?}", plan[i]);
+                assert_eq!(v.apply_with(&im, rich.as_deref()).data, crops[i].data, "{w}x{h} {v:?}");
+                // Without the shared ranking a rich view ranks for itself and lands on the same window.
+                assert_eq!(v.resolve(&im, None), plan[i], "{w}x{h} {v:?}");
+                for j in 0..i {
+                    if plan[i] == plan[j] {
+                        assert_eq!(crops[i].data, crops[j].data, "{w}x{h}: {:?} and {:?} both resolve to {:?}", views[i], views[j], plan[i]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// `first_uses` of the six default views on an image of this size.
+    fn default_first_uses(w: u32, h: u32) -> Vec<usize> {
+        let im = textured(w, h, 9);
+        let rich = (w.min(h) >= 224).then(|| rich_windows(&im, 224, 4));
+        first_uses(&all_views()[..6].iter().map(|v| v.resolve(&im, rich.as_deref())).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn views_that_coincide_are_found_and_others_are_not() {
+        // Below the crop size the centre crop and every ranked window are one upscaled crop.
+        for (w, h) in [(64, 64), (120, 90), (223, 500)] {
+            assert_eq!(default_first_uses(w, h), [0, 1, 1, 1, 1, 1], "{w}x{h}");
+        }
+        // Exactly the crop size: one window position, which is the centre crop too.
+        assert_eq!(default_first_uses(224, 224), [0, 1, 1, 1, 1, 1]);
+        // Two positions for four ranks: the last two ranks repeat the richest window.
+        assert_eq!(default_first_uses(224, 300), [0, 1, 2, 3, 2, 2]);
+        // Three positions, the middle one being the centre crop: one of the first three
+        // ranks is the centre crop and the fourth repeats the richest.
+        let u = default_first_uses(448, 224);
+        assert_eq!(u[5], u[2], "{u:?}");
+        assert_eq!(u[2..5].iter().filter(|&&i| i == 1).count(), 1, "{u:?}");
+        // Four positions and an off-grid centre: nothing coincides.
+        assert_eq!(default_first_uses(230, 230), [0, 1, 2, 3, 4, 5]);
+        // Shorter side 256: the whole-image view is not resized, so it is the centre crop.
+        for (w, h) in [(256, 256), (320, 256), (256, 400)] {
+            let u = default_first_uses(w, h);
+            assert_eq!(&u[..2], [0, 0], "{w}x{h} {u:?}");
+        }
+        // An ordinary photo: six different views.
+        assert_eq!(default_first_uses(1024, 768), [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn rich_windows_repeat_only_when_positions_run_out() {
+        for &(w, h) in &SHAPES {
+            let im = textured(w, h, 3);
+            let wins = rich_windows(&im, 224, 4);
+            assert_eq!(wins.len(), 4);
+            if w < 224 || h < 224 {
+                continue;
+            }
+            // Positions on the half-crop grid, the last one flush with the far edge.
+            let positions = |full: u32| ((full - 224) / 112 + 1 + u32::from((full - 224) % 112 != 0)) as usize;
+            let distinct = wins.iter().collect::<std::collections::HashSet<_>>().len();
+            assert_eq!(distinct, (positions(w) * positions(h)).min(4), "{w}x{h} {wins:?}");
+            // Whatever is left over repeats the richest window.
+            assert!(wins[distinct..].iter().all(|p| *p == wins[0]), "{w}x{h} {wins:?}");
+        }
     }
 
     #[test]

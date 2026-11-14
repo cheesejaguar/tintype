@@ -333,6 +333,20 @@ fallback that also runs on Linux and Windows (an MP4/MOV parser written for
 this project feeding the `rust_h264` and `rust_h265` decoders). The YCbCr→RGB conversion
 is done in Rust either way.
 
+Some views of an image are the same pixels: below 224 pixels the centre crop
+and the four textured crops are one upscaled crop, an image with few crop
+positions repeats them, and at a shorter side of exactly 256 pixels the
+whole-image view is the centre crop. Such a view goes through the network
+once and its score counts in each of its places, so the number of views, the
+early-exit checks and the mean are unchanged. This is on wherever it leaves
+every score bit for bit the same: always on the GPU engines and the pure-Rust
+CPU kernels, and with Accelerate for one photo at a time (there a logit
+depends in its last bits on how many views run together).
+`TINTYPE_VIEW_REUSE=off` turns it off and `=on` forces it on everywhere;
+`TINTYPE_STATS=1` prints how many frames were decoded and how many views were
+prepared, scored and reused, on standard error
+([measurements](docs/runbooks/view-reuse.md)).
+
 ## 📦 Build from source
 
 ```bash

@@ -401,15 +401,14 @@ fn score_uploads(
             .filter(|e| e.covers(photo.spec.views.len()));
         let (scores, _) = match exit {
             Some(exit) => {
-                let pre = photo.preprocessor();
-                photo.score_staged(images.len(), 2, exit, photo.spec.views.len(), |i| {
+                photo.score_staged(images.len(), 2, exit, 1, |i| {
                     if cancelled() {
                         return None;
                     }
                     decode_image(&images[i].1.bytes)
                         .ok()
                         .filter(|_| !cancelled())
-                        .map(|image| pre.crops(&image))
+                        .map(|image| vec![image])
                 })
             }
             None => {
