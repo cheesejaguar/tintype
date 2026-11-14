@@ -9,12 +9,12 @@ the next model.
 
 **Status.** The tooling exists and is tested (`split-groups`,
 `verify-split`, frozen-record format 2, `report --operating-points`,
-`latency` with p95 on every platform). The split itself does not exist yet:
-it needs sources that Tintype has never trained on, calibrated on or
-scored, which means new downloads. The candidate sources are listed below;
-the choice, and the licence check for each, are recorded in
-[PREREGISTRATION.md](../PREREGISTRATION.md) before the first download. No
-number in this file was measured on the split.
+`latency` with p95 on every platform). The sources, sampling, grouping and
+held-out groups were fixed on 2026-11-14 in
+[PREREGISTRATION.md](../PREREGISTRATION.md#the-frozen-independent-split-what-was-fixed-before-the-first-download),
+before the first download; that entry replaces the proposed composition
+below where they differ (two proposed sources turned out not to be
+independent). What has been built and scored is in the [log](#log).
 
 ## Why the archived suites are not enough
 
@@ -40,7 +40,7 @@ families that appear in **no** training manifest
 | Generated, held-out families | AI | Whole generator families that no training store has, across diffusion, autoregressive and hybrid decoders, with prompts or scenes recorded | New-family recall |
 | Generated and authentic, degraded pairs | both | Every item above, also through the processing chains of [processing-chains.md](processing-chains.md) (resize, JPEG, blur, noise, sharpening, repost simulation), each derivative carrying its parent's `parent_id` | "Independent degraded files" is what selects the next model |
 
-**Candidate sources.** None has been downloaded. The table records what
+**Candidate sources.** The table records what
 a read of each collection's own pages found on 2026-11-13 (licence, access,
 size, and which source pools it draws on). It is a survey, not a licence
 review: before downloading a collection, read its licence at the source
@@ -52,8 +52,11 @@ replacement is written into the pre-registration.
 
 | Role | Collection | Access and terms as read | Size | Fit for this split |
 |---|---|---|---|---|
-| Authentic, phone, native and as shared | [Forchheim Image Database](https://faui1-files.cs.fau.de/public/mmsec/datasets/fodb/) | Open directory. Free for research with citation; no modification, commercial use or redistribution without an agreement | 23,106 JPEGs, about 21 GB: 143 scenes by 27 phone cameras, each camera-native and through Facebook, Instagram, Telegram, Twitter and WhatsApp | **Proposed.** Real platform round trips with parents known. Ask the authors whether "may not be modified" covers applying our processing chains to copies. Exclude its `inspection/` folder |
-| Authentic, phone, native | [VISION](https://lesc.dinfo.unifi.it/VISION/) | Open directory. CC BY-SA 4.0 | Over 35,000 images and videos from 35 devices; image count and size not confirmed | **Proposed** |
+| Authentic, phone, native and as shared | [Forchheim Image Database](https://faui1-files.cs.fau.de/public/mmsec/datasets/fodb/) | Open directory. Free for research with citation; no modification, commercial use or redistribution without an agreement | 23,106 JPEGs, about 21 GB: 143 scenes by 27 phone cameras, each camera-native and through Facebook, Instagram, Telegram, Twitter and WhatsApp | **Rejected on 2026-11-14**: a real-image source of Community Forensics, the checkpoint phase 1 started from; and "may not be modified" rules out processed copies |
+| Authentic, phone, native | [VISION](https://lesc.dinfo.unifi.it/VISION/) | Open directory. CC BY-SA 4.0 | Over 35,000 images and videos from 35 devices; image count and size not confirmed | **Rejected on 2026-11-14**: a real-image source of Community Forensics, and present in the `commfor-small2` training store |
+| Authentic, phone | [HDR+ burst photography dataset](https://hdrplusdata.org/dataset.html) | Open bucket. CC BY-SA 4.0 | 3,640 bursts; the `final.jpg` of each is 16.4 GB in all | **Chosen.** Nexus and Pixel phones; the file is the HDR+ pipeline's output at JPEG quality 95, not the phone's own |
+| Authentic, phone, native | [FloreView](https://lesc.dinfo.unifi.it/FloreView/) | Open directory. CC BY-SA 4.0 | 4,806 natural-scene JPEGs from 46 phones of 11 brands (126 GB with flat fields, HEIC and video) | **Chosen.** Phones photograph the same scenes, so the scene is the `scene_id` |
+| Authentic, phone, native | [CSAFE Multi-camera Smartphone Image Database](https://doi.org/10.25380/iastate.26932084.v1) | Open. CC BY 4.0 | 49,543 JPEGs from 60 phones of six models, 133 GB in six archives | **Chosen**, the iPhone 14 Pro archive only, natural scenes only, held out to `test` whole |
 | Authentic, camera originals | [RAISE](http://loki.disi.unitn.it/RAISE/), all 8,156 | Form on download. Non-commercial research and education, with citation | About 350 GB as RAW and TIFF | Possible. The 1,000 images of RAISE-1k (`benchmarks` plan) must be excluded by id, and RAW needs one stated development and encoding step |
 | Authentic, camera originals | Dresden Image Database | Host unreachable on 2026-11-13 | not confirmed | Not usable until it can be read |
 | Authentic, phone | [LAION-Mobile](https://huggingface.co/datasets/laionmobile/laion-mobile) | Open, metadata only (CC BY 4.0); images are fetched from their own hosts | 935 k URLs | **Rejected**: drawn from LAION, which the OpenFake training reals also are |
@@ -73,7 +76,8 @@ Infinity, RAR, Switti or Open-MAGVIT2; `janus-7b` appears 95 times. The
 public NTIRE 2026 distortion code and its licence could not be found, so
 the processing chains are written here rather than borrowed.
 
-**Proposed composition**, to be confirmed in the pre-registration entry:
+**Proposed composition** (superseded by the pre-registration entry, which
+drops Forchheim and VISION and takes HDR+, FloreView and CSAFE instead):
 authentic items from the Forchheim database (native files, and their five
 platform versions as the shared part) and VISION; generated items from
 the ARForensics test split and a sample of GenImage++; learned-codec and
@@ -169,6 +173,70 @@ earlier records stay as they are.
 **No manifest already pinned by `docs/manifests/*.frozen.tsv.gz` is
 rewritten.** Grouped copies of older sets are written as new manifests.
 
+### As built on 2026-11-14
+
+The split exists. Its three records are
+`docs/manifests/frozen-eval-{fit,calibrate,test}.frozen.tsv.gz`; the
+pre-registration entry gives the sources, licences and counts.
+
+| Set | Authentic originals | Generated originals | Processed copies | Files | Size |
+|---|---|---|---|---|---|
+| `fit` | 1,659 | 2,100 | none | 3,759 | 8.9 GB |
+| `calibrate` | 3,457 | 4,200 | 2,400 + 2,400 | 12,457 | 40.8 GB |
+| `test` | 7,326 | 7,200 | 2,400 + 2,400 | 19,326 | 53.0 GB |
+
+`scripts/build-frozen-eval.py` is the recipe (it prints its steps with no
+arguments). From the directory that holds `data/`:
+
+```bash
+B="python3 -I scripts/build-frozen-eval.py"
+# 1. Fetch. The archives go under data/raw/frozen and are deleted after step 2.
+$B list-hdrplus hdrplus.list   && $B fetch hdrplus.list   data/frozen-src/hdrplus 16
+$B list-floreview floreview.list && $B fetch floreview.list data/frozen-src/floreview 12
+$B fetch-ranges https://ndownloader.figshare.com/files/49389769 data/raw/frozen/iPhone14.zip 20428338922 20
+#    ARForensics (four test archives) and GenImage++ (three archives): curl from the
+#    commits named in the pre-registration; check each SHA-256 against the listing.
+# 2. Cut down to the selection, then write the nine-column manifests.
+$B extract csafe       data/raw/frozen             data/frozen-src/csafe-iphone14pro
+$B extract arforensics data/raw/frozen/arforensics data/frozen-src/arforensics
+$B extract genimagepp  data/raw/frozen/genimagepp  data/frozen-src/genimagepp
+$B manifests data/frozen-src
+# 3. The sets, straight from the records (their rows carry every column):
+for set in fit calibrate test; do
+  $B sets-from-record docs/manifests/frozen-eval-$set.frozen.tsv.gz data/frozen-eval/$set.tsv
+done
+# 4. The processed copies, if they are not on disk: the parents of each set's
+#    copies are the rows of the record with a transform; render them with
+#    scripts/stress-photo.py (FFmpeg 9.0.2 made the recorded bytes) into
+#    data/frozen-src/processed-{calibrate,test}/ with the twelve --transform
+#    names of the pre-registration.
+tintype verify-set docs/manifests/frozen-eval-{fit,calibrate,test}.frozen.tsv.gz
+```
+
+Three things to know:
+
+- **The sets come from the records, not from running `split-groups`
+  again.** `split-groups` places a group by a hash that includes the
+  absolute path of one of its files, so the same command run from another
+  directory divides the items differently. The division recorded here was
+  made once (`--fractions 0.2,0.4,0.4 --seed 1 --together parent,scene`,
+  holding out `infinity`, `rar` and `csafe-iphone14pro`), the processed
+  copies were added with `--existing` together with their parents'
+  manifests (it pins by path, so the originals must be in the input), and
+  the result was frozen. A placement that does not depend on where the
+  files sit is a fix for a later change.
+- **The set manifests hold absolute paths.** A record's file rows are
+  relative and verify anywhere; its manifest line matches only when the
+  set is rebuilt at the same absolute location, so on another machine
+  `verify-set` reports the three manifests as changed and nothing else.
+- **`verify-split` passes**: no parent or scene crosses sets, the held-out
+  families and source are in `test` only, and no two sets share a file's
+  bytes.
+
+The files themselves are large (103 GB with the processed copies) and are
+not kept on the machine that built them once the runs logged below were
+done; the steps above bring them back.
+
 ### Models trained on the old split
 
 The phase-6 weights, and anything initialised from them, were trained on
@@ -201,14 +269,19 @@ Fixed before any candidate is scored. Every table is printed by
 # A candidate lives under runs/, never under models/.
 W=runs/<experiment>/<name>.safetensors      # with <name>.json beside it
 
-# Scores (Apple GPU). --all-views writes every view logit, which the
-# offline tools need.
+# 1. Score the calibration set (Apple GPU). --all-views writes every view
+#    logit, which calibration and the offline tools need.
 tintype score --weights $W --manifest data/frozen-eval/calibrate.tsv --out runs/<experiment>/calibrate.tsv --all-views
-tintype score --weights $W --manifest data/frozen-eval/test.tsv      --out runs/<experiment>/test.tsv
 
-# Cutoffs come from the calibration set's authentic items only.
+# 2. Fit the cutoff from the calibration set's authentic items only. This
+#    rewrites the spec beside $W.
 tintype calibrate --weights $W --scores runs/<experiment>/calibrate.tsv --profile photo --target-fpr 0.01
 tintype verify-models                          # the released files are untouched
+
+# 3. Only now score the test set: the probabilities in a score file come
+#    from the spec as it stood when the file was written, so a test file
+#    scored before step 2 would not carry the frozen cutoff at 0.5.
+tintype score --weights $W --manifest data/frozen-eval/test.tsv --out runs/<experiment>/test.tsv
 
 # The tables. A frozen cutoff is the probability after `@`.
 tintype report --operating-points \
@@ -265,8 +338,44 @@ logged below; it is not a blind batch after the first look.
 The gates in the report are proposed decision criteria. A runbook that
 changes one says so in its pre-registration entry before it runs.
 
+## The incumbent on the split
+
+The released photo model, scored on 2026-11-14 at commit `aa2f695` on an
+Apple M6 (GPU engine, macOS 27.2), every file readable. Tables:
+[shipped cutoff](../results/frozen-eval-incumbent/report-shipped.md),
+[refitted cutoffs](../results/frozen-eval-incumbent/report-recal.md); the
+score files are beside them. `test` at each frozen cutoff:
+
+| Cutoff | Clean authentic flagged | Clean recall | Processed authentic flagged | Processed recall |
+|---|---|---|---|---|
+| Shipped, default profile | 26 of 7,326 (0.35%) | 94.76% | 39 of 2,400 (1.62%) | 79.29% |
+| Shipped, all six views | 35 of 7,326 (0.48%) | 94.83% | 50 of 2,400 (2.08%) | 78.71% |
+| Refitted on `calibrate` for 1% | 51 of 7,326 (0.70%) | 95.71% | 69 of 2,400 (2.88%) | 82.25% |
+| Refitted on `calibrate` for 0.1% (strict profile) | 5 of 7,326 (0.07%) | 92.72% | 13 of 2,400 (0.54%) | 72.62% |
+
+Over all of `test`, the cutoff refitted for 1% flags 120 of 9,726
+authentic files (1.23%, upper bound 1.43%) and the one refitted for 0.1%
+flags 18 (0.19%, upper bound 0.27%): both overshoot their targets on the
+test set, and the held-out phone source carries most of it (CSAFE: 1.56%
+and 0.25%; HDR+: 0.52% and 0.05%).
+
+What stands out at the shipped cutoff:
+
+- **Added noise is where authentic photos are flagged**: 16 of 200 at
+  `noise-a10` and 12 of 200 at `noise-a40`, against 0 to 3 of 200 on every
+  other operation.
+- **Recall falls most under JPEG and reposts**: 68.5% at `jpeg-qv12` and
+  `repost-960-qv12x1`, 73.0% at `repost-720-qv9x1`, 18.5% at `noise-a40`.
+- **Two of the new families are the weakest**: Open-MAGVIT2 62.2% and VAR
+  68.9%, both 256 px; the other families are at 93% or above.
+
+Read the clean rows with the confound of the pre-registration in mind:
+every authentic original is a camera JPEG of 12 megapixels or more and
+every generated original is a PNG of 256 to 1,024 px.
+
 ## Log
 
 | Date | Commit | What was scored on which set | By |
 |---|---|---|---|
-| – | – | Nothing yet: the split has not been built. | – |
+| 2026-11-14 | `aa2f695` | The released photo model (`models/tintype.safetensors`, a copy under `runs/`), unchanged spec: `fit`, `calibrate` and `test` with `--all-views`, and `test` with the default profile. Apple M6, GPU engine | incumbent, first look |
+| 2026-11-14 | `aa2f695` | Two more copies of the released model with cutoffs refitted on `calibrate` (`--profile photo --target-fpr 0.01`; `--profile strict --target-fpr 0.001`), then `test` with each | incumbent, recalibrated |
