@@ -1,6 +1,6 @@
 //! The detector: weights + preprocessing views + calibration, and a
 //! multi-threaded decode -> batch -> GPU scoring pipeline.
-use crate::image_io::{self, Rgb, View};
+use crate::image_io::{self, Pixels, Rgb, View};
 use crate::metrics::sigmoid;
 #[cfg(target_os = "macos")]
 use crate::mps::{Graph, Precision, T};
@@ -453,10 +453,79 @@ impl Preprocessor {
 
     /// Every view of `img` as a cropped image, in view order.
     pub fn crops(&self, img: &Rgb) -> Vec<Rgb> {
+        self.plan(img).into_iter().map(|p| p.render(img)).collect()
+    }
+
+    /// What every view comes to on `img`, in view order, without cutting
+    /// anything out yet. Views with equal entries have the same pixels.
+    pub fn plan(&self, img: &Rgb) -> Vec<Pixels> {
         // Texture ranking is computed once and shared by all "rich" views.
         let need = self.views.iter().filter_map(|v| if let View::NativeRich { crop, rank } = v { Some((*crop, *rank as usize + 1)) } else { None }).max_by_key(|x| x.1);
         let rich = need.filter(|(crop, _)| img.w.min(img.h) >= *crop).map(|(crop, k)| image_io::rich_windows(img, crop, k));
-        self.views.iter().map(|v| v.apply_with(img, rich.as_deref())).collect()
+        self.views.iter().map(|v| v.resolve(img, rich.as_deref())).collect()
+    }
+
+    /// The views of `img` that have to go through the network, one after
+    /// another (in the engine's form when `fed`, as plain RGB otherwise), and
+    /// for each view of the profile the index of its score among them. With
+    /// `reuse`, views that come to the same pixels share one; without, every
+    /// view is its own.
+    fn distinct(&self, img: &Rgb, reuse: bool, fed: bool) -> (Vec<usize>, Vec<u8>) {
+        let plan = self.plan(img);
+        let n = if fed { self.fed_len() } else { self.view_len };
+        let mut at: Vec<usize> = Vec::with_capacity(plan.len());
+        let mut out = Vec::with_capacity(plan.len() * n);
+        for (k, p) in plan.iter().enumerate() {
+            match (0..k).find(|&j| reuse && plan[j] == *p) {
+                Some(j) => at.push(at[j]),
+                None => {
+                    at.push(out.len() / n);
+                    let crop = p.render(img);
+                    if fed {
+                        let start = out.len();
+                        out.resize(start + n, 0);
+                        self.encode(&crop, &mut out[start..]);
+                    } else {
+                        out.extend_from_slice(&crop.data);
+                    }
+                }
+            }
+        }
+        crate::stats::REUSED_VIEWS.add(plan.len() - out.len() / n);
+        (at, out)
+    }
+}
+
+/// When views of one image that come to the same pixels (see
+/// [`image_io::Pixels`]) are scored once, the score standing in the place of
+/// each of them. The mean over views, the number of views looked at and the
+/// early-exit checks are the same either way; only the repeated network runs
+/// go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewReuse {
+    /// Wherever every score stays bit for bit what it was (the default): on
+    /// the GPU engine and the pure-Rust CPU kernels, where a view's logit
+    /// does not depend on what it is run with, always; with Accelerate, where
+    /// it depends on the size of the run, only where every run holds a single
+    /// view anyway (one photo going through early exit).
+    WhenExact,
+    /// Never: every view goes through the network.
+    Never,
+    /// Always. With Accelerate this moves logits by about 1e-6 where the
+    /// default would not reuse, because runs get smaller.
+    Always,
+}
+
+impl ViewReuse {
+    /// `TINTYPE_VIEW_REUSE=off` or `=on` selects [`ViewReuse::Never`] or
+    /// [`ViewReuse::Always`]; unset or anything else, the default. For
+    /// checking that reuse leaves scores alone, and for measuring it.
+    pub fn from_env() -> Self {
+        match std::env::var("TINTYPE_VIEW_REUSE").as_deref() {
+            Ok("off") => ViewReuse::Never,
+            Ok("on") => ViewReuse::Always,
+            _ => ViewReuse::WhenExact,
+        }
     }
 }
 
@@ -554,10 +623,31 @@ impl VideoFrames {
     }
 }
 
+/// One item of the early-exit pipeline between stages. A unit is one view of
+/// one of the item's images.
+struct Staged {
+    /// For each unit, the first unit of the same image with the same pixels
+    /// (the unit itself when there is none, or when scores are not reused).
+    same: Vec<usize>,
+    /// The units' views in the engine's form, until they are scored. Only
+    /// units that are their own `same` ever have one.
+    fed: Vec<Option<Vec<u8>>>,
+    /// Logits of the units that went through the network.
+    logit: Vec<Option<f32>>,
+    /// Logits of the units looked at so far, in looking order.
+    seen: Vec<f32>,
+    /// Index of the checkpoint the item is working towards.
+    stage: usize,
+    /// Units that stage still has to put through the network.
+    todo: Vec<usize>,
+}
+
 pub struct Detector {
     engine: Engine,
     pub batch: usize,
     pub spec: ModelSpec,
+    /// Whether identical views of one image are scored once.
+    pub reuse: ViewReuse,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -578,7 +668,7 @@ impl Detector {
             let inp = g.placeholder_native(&[batch as isize, 3, s, s]);
             let out = g.cast_out(&crate::swin::build_swin(&g, w, &crate::swin::SwinConfig::large_w16_256(), &inp, batch)?);
             let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
-            return Ok(Self { engine: Engine::Mps { g, inp, out, pixels }, batch, spec });
+            return Ok(Self { engine: Engine::Mps { g, inp, out, pixels }, batch, spec, reuse: ViewReuse::from_env() });
         }
         let cfg = VitConfig::by_name(&spec.arch, spec.img).ok_or_else(|| anyhow::anyhow!("unknown architecture `{}`", spec.arch))?;
         let engine = match device {
@@ -596,7 +686,7 @@ impl Detector {
             Device::Gpu | Device::GpuF32 => anyhow::bail!("the GPU engine is only available on macOS; use the CPU engine"),
             Device::Cpu => Engine::Cpu { vit: crate::cpu_vit::CpuVit::new(w, cfg)? },
         };
-        Ok(Self { engine, batch, spec })
+        Ok(Self { engine, batch, spec, reuse: ViewReuse::from_env() })
     }
 
     pub fn load(weights: &Path, spec: Option<ModelSpec>, batch: usize, device: Device) -> Result<Self> {
@@ -611,6 +701,29 @@ impl Detector {
 
     fn view_len(&self) -> usize {
         3 * self.spec.img * self.spec.img
+    }
+
+    /// Whether a view's logit depends on what is run with it. The GPU graph
+    /// has a fixed batch (short runs are padded), and a view's logit there is
+    /// the same in every slot and beside any neighbours (measured bit for
+    /// bit in both precisions); the CPU engine says for itself.
+    fn run_size_changes_logits(&self) -> bool {
+        match &self.engine {
+            #[cfg(target_os = "macos")]
+            Engine::Mps { .. } => false,
+            Engine::Cpu { .. } => crate::cpu_vit::RUN_SIZE_CHANGES_LOGITS,
+        }
+    }
+
+    /// Whether identical views share a score here. `single_view_runs` says
+    /// that every network run of the work at hand holds one view whether or
+    /// not scores are reused.
+    fn reuses(&self, single_view_runs: bool) -> bool {
+        match self.reuse {
+            ViewReuse::Never => false,
+            ViewReuse::Always => true,
+            ViewReuse::WhenExact => !self.run_size_changes_logits() || self.batch == 1 || single_view_runs,
+        }
     }
 
     /// Raw logits for `batch` views given as interleaved 8-bit RGB, one
@@ -731,28 +844,58 @@ impl Detector {
 
     /// Early exit for one image whose views are already prepared (all of
     /// them, in the profile's order): the logits of the views looked at.
+    /// Every view looked at goes through the network.
     pub fn logits_adaptive(&self, all_views: &[u8], exit: &EarlyExit) -> Vec<f32> {
+        let (nv, vl) = (self.spec.views.len(), self.view_len());
+        let own: Vec<usize> = (0..nv).collect();
+        self.logits_adaptive_with(exit, &own, |v, out| out.copy_from_slice(&all_views[v * vl..(v + 1) * vl]))
+    }
+
+    /// Early exit for one image: the logits of the views looked at, in
+    /// looking order. `same[v]` is the first view with the same pixels as
+    /// view `v` ([`image_io::first_uses`] of the image's
+    /// [`Preprocessor::plan`]), and `view(v, out)` writes view `v` as
+    /// interleaved 8-bit RGB; it is asked only for views that go through the
+    /// network. A view whose pixels were scored already takes that score
+    /// where that is exact (see [`ViewReuse`]).
+    pub fn logits_adaptive_with(&self, exit: &EarlyExit, same: &[usize], mut view: impl FnMut(usize, &mut [u8])) -> Vec<f32> {
         let (nv, vl, thr) = (self.spec.views.len(), self.view_len(), self.threshold_logit());
+        let checkpoints = exit.checkpoints(nv);
+        let reuse = self.reuses(checkpoints.iter().scan(0, |from, &c| Some(c - std::mem::replace(from, c))).all(|per| per == 1));
+        let of = |v: usize| if reuse { same[v] } else { v };
+        let mut logit: Vec<Option<f32>> = vec![None; nv];
         let mut seen: Vec<f32> = Vec::with_capacity(nv);
         let mut buf = Vec::new();
-        for upto in exit.checkpoints(nv) {
-            buf.clear();
-            for k in seen.len()..upto {
-                let v = exit.order[k];
-                buf.extend_from_slice(&all_views[v * vl..(v + 1) * vl]);
-            }
-            let n = upto - seen.len();
-            let l = match &self.engine {
-                #[cfg(target_os = "macos")]
-                Engine::Mps { .. } => {
-                    crate::stats::SCORED_VIEWS.add(n);
-                    let mut padded = buf.clone();
-                    padded.resize(self.batch.max(n).div_ceil(self.batch) * self.batch * vl, 0);
-                    padded.chunks(self.batch * vl).flat_map(|c| self.logits(c)).take(n).collect::<Vec<f32>>()
+        for upto in checkpoints {
+            let stage = &exit.order[seen.len()..upto];
+            let mut todo: Vec<usize> = Vec::with_capacity(stage.len());
+            for &v in stage {
+                if logit[of(v)].is_none() && !todo.contains(&of(v)) {
+                    todo.push(of(v));
                 }
-                Engine::Cpu { .. } => self.logits_n(&buf, n, vl),
-            };
-            seen.extend(l);
+            }
+            let n = todo.len();
+            buf.resize(n * vl, 0);
+            for (o, &v) in buf.chunks_exact_mut(vl).zip(&todo) {
+                view(v, o);
+            }
+            if n > 0 {
+                let l = match &self.engine {
+                    #[cfg(target_os = "macos")]
+                    Engine::Mps { .. } => {
+                        crate::stats::SCORED_VIEWS.add(n);
+                        let mut padded = buf.clone();
+                        padded.resize(self.batch.max(n).div_ceil(self.batch) * self.batch * vl, 0);
+                        padded.chunks(self.batch * vl).flat_map(|c| self.logits(c)).take(n).collect::<Vec<f32>>()
+                    }
+                    Engine::Cpu { .. } => self.logits_n(&buf, n, vl),
+                };
+                for (&v, l) in todo.iter().zip(l) {
+                    logit[v] = Some(l);
+                }
+            }
+            crate::stats::REUSED_VIEWS.add(stage.len() - n);
+            seen.extend(stage.iter().map(|&v| logit[of(v)].expect("scored in this stage or an earlier one")));
             if exit.decided(&seen, thr) {
                 break;
             }
@@ -763,8 +906,7 @@ impl Detector {
     /// Score image files with early exit: per file, the logits of the views
     /// that were looked at, in the order they were looked at.
     pub fn score_files_adaptive(&self, paths: &[PathBuf], threads: usize, exit: &EarlyExit) -> (Vec<Option<Vec<f32>>>, Timing) {
-        let pre = self.preprocessor();
-        self.score_staged(paths.len(), threads, exit, self.spec.views.len(), |i| image_io::load(&paths[i]).ok().map(|img| pre.crops(&img)))
+        self.score_staged(paths.len(), threads, exit, 1, |i| image_io::load(&paths[i]).ok().map(|img| vec![img]))
     }
 
     /// Score clips with early exit over frames. `exit` is written in frames:
@@ -803,7 +945,7 @@ impl Detector {
             let (plain, t) = self.score_videos(paths, sampling, threads);
             return (plain.into_iter().map(|r| r.map(VideoFrames::plain)).collect(), t);
         };
-        let (pre, thr) = (self.preprocessor(), self.threshold_logit());
+        let thr = self.threshold_logit();
         let order = &exit.order;
         let half = nf / 2;
         let halves = half > 0 && order[..half].iter().all(|&f| f < half) && exit.stages.iter().any(|st| st.views == half);
@@ -815,13 +957,13 @@ impl Detector {
         };
         // Clips that do not yield the usual number of frames go the plain way.
         let odd = std::sync::Mutex::new(Vec::new());
-        let (res, mut t) = self.score_staged(paths.len(), threads, &by_view, first * nv, |i| {
+        let (res, mut t) = self.score_staged(paths.len(), threads, &by_view, first, |i| {
             let frames = crate::video::sample_frames_range(&paths[i], sampling, 0, first).ok()?;
             if frames.len() != first {
                 odd.lock().unwrap().push(i);
                 return None;
             }
-            Some(frames.iter().flat_map(|f| pre.crops(f)).collect())
+            Some(frames)
         });
         // Clips that saw the whole first half and are still undecided.
         let more: Vec<usize> = (0..paths.len()).filter(|&i| halves && res[i].as_ref().is_some_and(|l| l.len() == first * nv && !by_view.decided(l, thr))).collect();
@@ -859,29 +1001,52 @@ impl Detector {
         (out, t)
     }
 
-    /// The early-exit pipeline. `load(i)` yields item `i` as `units` crops (a
-    /// photo's views, or every view of every frame of a clip) on worker
-    /// threads, once; the crops wait in memory while the item moves from
-    /// stage to stage, and every batch is filled with the next crops of
-    /// whichever items are waiting, whatever stage they are at. Returns, per item, the logits of
-    /// the crops looked at, in looking order.
-    pub fn score_staged<F>(&self, n_items: usize, threads: usize, exit: &EarlyExit, units: usize, load: F) -> (Vec<Option<Vec<f32>>>, Timing)
+    /// The early-exit pipeline. `load(i)` yields the `images` images of item
+    /// `i` (a photo, or the frames of a clip) on worker threads, once; `exit`
+    /// is counted in views over all of them, image after image. The views
+    /// wait in memory while the item moves from stage to stage, and every
+    /// batch is filled with the next views of whichever items are waiting,
+    /// whatever stage they are at. Returns, per item, the logits of the views
+    /// looked at, in looking order.
+    ///
+    /// Views of one image that come to the same pixels are prepared and
+    /// scored once where that is exact (see [`ViewReuse`]): the score then
+    /// stands in every place the view has, so the list of logits, the checks
+    /// and the point where an item stops are what they would have been.
+    pub fn score_staged<F>(&self, n_items: usize, threads: usize, exit: &EarlyExit, images: usize, load: F) -> (Vec<Option<Vec<f32>>>, Timing)
     where
         F: Fn(usize) -> Option<Vec<Rgb>> + Sync,
     {
         use std::collections::{HashMap, VecDeque};
+        let nv = self.spec.views.len();
+        let units = images * nv;
         let thr = self.threshold_logit();
         let pre = self.preprocessor();
         let vl = pre.fed_len();
         let checkpoints = exit.checkpoints(units);
+        // Views an item at stage k looks at next: order[from(k)..checkpoints[k]].
+        let from = |k: usize| if k == 0 { 0 } else { checkpoints[k - 1] };
+        let reuse = self.reuses(n_items == 1 && (0..checkpoints.len()).all(|k| checkpoints[k] - from(k) == 1));
+        // Of those, the ones to put through the network: not the ones whose
+        // pixels were scored already, and each distinct view once.
+        let todo = |it: &Staged, k: usize| {
+            let mut t: Vec<usize> = Vec::new();
+            for &u in &exit.order[from(k)..checkpoints[k]] {
+                let first = it.same[u];
+                if it.logit[first].is_none() && !t.contains(&first) {
+                    t.push(first);
+                }
+            }
+            t
+        };
         // About four batches' worth of photos, fewer of anything larger.
-        let in_flight_cap = (4 * self.batch.max(16) * self.spec.views.len() / units).max(8);
+        let in_flight_cap = (4 * self.batch.max(16) / images.max(1)).max(8);
         let start = std::time::Instant::now();
         let mut model_s = 0f64;
         let mut results: Vec<Option<Vec<f32>>> = vec![None; n_items];
         let next = AtomicUsize::new(0);
         std::thread::scope(|s| {
-            let (tx, rx) = crossbeam_channel::bounded::<(usize, Vec<u8>)>(threads.max(1) * 2);
+            let (tx, rx) = crossbeam_channel::bounded::<(usize, Staged)>(threads.max(1) * 2);
             for _ in 0..threads.max(1) {
                 let tx = tx.clone();
                 let (next, load, pre) = (&next, &load, &pre);
@@ -890,35 +1055,44 @@ impl Detector {
                     if i >= n_items {
                         break;
                     }
-                    let Some(crops) = load(i) else { continue };
-                    debug_assert_eq!(crops.len(), units);
-                    // In the engine's own form, so a batch is put together by copying.
-                    let mut fed = vec![0u8; units * vl];
-                    for (c, o) in crops.iter().zip(fed.chunks_exact_mut(vl)) {
-                        pre.encode(c, o);
+                    let Some(imgs) = load(i).filter(|imgs| imgs.len() == images) else { continue };
+                    let mut same = Vec::with_capacity(units);
+                    let mut fed: Vec<Option<Vec<u8>>> = Vec::with_capacity(units);
+                    for (f, im) in imgs.iter().enumerate() {
+                        let plan = pre.plan(im);
+                        let first = if reuse { image_io::first_uses(&plan) } else { (0..nv).collect() };
+                        for (v, p) in plan.iter().enumerate() {
+                            same.push(f * nv + first[v]);
+                            // In the engine's own form, so a batch is put together by copying.
+                            fed.push((first[v] == v).then(|| {
+                                let mut o = vec![0u8; vl];
+                                pre.encode(&p.render(im), &mut o);
+                                o
+                            }));
+                        }
                     }
-                    if tx.send((i, fed)).is_err() {
+                    let item = Staged { same, fed, logit: vec![None; units], seen: Vec::with_capacity(units), stage: 0, todo: Vec::new() };
+                    if tx.send((i, item)).is_err() {
                         break;
                     }
                 });
             }
             drop(tx);
-            let mut crops: HashMap<usize, Vec<u8>> = HashMap::new();
-            let mut seen: HashMap<usize, Vec<f32>> = HashMap::new();
-            // Items waiting for stage k (their next crops are order[checkpoints[k-1]..checkpoints[k]]).
+            let mut items: HashMap<usize, Staged> = HashMap::new();
+            // Items waiting for stage k.
             let mut waiting: Vec<VecDeque<usize>> = vec![VecDeque::new(); checkpoints.len()];
+            // Views the waiting items have to put through the network.
+            let mut pending = 0;
             let mut buf = vec![0u8; self.batch * vl];
             let mut open = true;
-            // Crops an item at stage k needs next: order[from(k)..checkpoints[k]].
-            let from = |k: usize| if k == 0 { 0 } else { checkpoints[k - 1] };
             loop {
-                let pending: usize = waiting.iter().enumerate().map(|(k, q)| q.len() * (checkpoints[k] - from(k))).sum();
-                if pending < self.batch && open && crops.len() < in_flight_cap {
+                if pending < self.batch && open && items.len() < in_flight_cap {
                     match rx.recv() {
-                        Ok((i, c)) => {
-                            crops.insert(i, c);
-                            seen.insert(i, Vec::with_capacity(units));
+                        Ok((i, mut it)) => {
+                            it.todo = todo(&it, 0);
+                            pending += it.todo.len();
                             waiting[0].push_back(i);
+                            items.insert(i, it);
                         }
                         Err(_) => open = false,
                     }
@@ -928,14 +1102,17 @@ impl Detector {
                     break;
                 }
                 // One batch, filled from every stage: later stages first, to
-                // finish items and free their crops.
-                let mut plan: Vec<(usize, usize)> = Vec::new();
+                // finish items and free their views.
+                let mut plan: Vec<usize> = Vec::new();
                 let mut n = 0;
                 for k in (0..waiting.len()).rev() {
-                    let per = checkpoints[k] - from(k);
-                    while n + per <= self.batch.max(per) && (n == 0 || n + per <= self.batch) {
-                        let Some(i) = waiting[k].pop_front() else { break };
-                        plan.push((i, k));
+                    while let Some(&i) = waiting[k].front() {
+                        let per = items[&i].todo.len();
+                        if !(n + per <= self.batch.max(per) && (n == 0 || n + per <= self.batch)) {
+                            break;
+                        }
+                        waiting[k].pop_front();
+                        plan.push(i);
                         n += per;
                     }
                 }
@@ -943,26 +1120,47 @@ impl Detector {
                     buf.resize(n * vl, 0);
                 }
                 let mut slot = 0;
-                for &(i, k) in &plan {
-                    for &u in &exit.order[from(k)..checkpoints[k]] {
-                        buf[slot * vl..(slot + 1) * vl].copy_from_slice(&crops[&i][u * vl..(u + 1) * vl]);
+                for i in &plan {
+                    let it = items.get_mut(i).unwrap();
+                    for &u in &it.todo {
+                        buf[slot * vl..(slot + 1) * vl].copy_from_slice(&it.fed[u].take().expect("a view is prepared until it is scored"));
                         slot += 1;
                     }
                 }
                 let t = std::time::Instant::now();
                 let logits = self.logits_n(&buf, n, vl);
                 model_s += t.elapsed().as_secs_f64();
+                pending -= n;
                 let mut at = 0;
-                for (i, k) in plan {
-                    let per = checkpoints[k] - from(k);
-                    let l = seen.get_mut(&i).unwrap();
-                    l.extend_from_slice(&logits[at..at + per]);
-                    at += per;
-                    if l.len() == units || exit.decided(l, thr) {
-                        results[i] = seen.remove(&i);
-                        crops.remove(&i);
+                for i in plan {
+                    let it = items.get_mut(&i).unwrap();
+                    let mut scored = it.todo.len();
+                    for u in std::mem::take(&mut it.todo) {
+                        it.logit[u] = Some(logits[at]);
+                        at += 1;
+                    }
+                    // The stage's views in looking order, each with its own
+                    // score or that of the view it repeats; then on through
+                    // any stages that need nothing new from the network.
+                    let done = loop {
+                        let looked = &exit.order[from(it.stage)..checkpoints[it.stage]];
+                        crate::stats::REUSED_VIEWS.add(looked.len() - scored);
+                        scored = 0;
+                        it.seen.extend(looked.iter().map(|&u| it.logit[it.same[u]].expect("scored in this stage or an earlier one")));
+                        if it.seen.len() == units || exit.decided(&it.seen, thr) {
+                            break true;
+                        }
+                        it.stage += 1;
+                        it.todo = todo(it, it.stage);
+                        if !it.todo.is_empty() {
+                            break false;
+                        }
+                    };
+                    if done {
+                        results[i] = items.remove(&i).map(|it| it.seen);
                     } else {
-                        waiting[k + 1].push_back(i);
+                        pending += it.todo.len();
+                        waiting[it.stage].push_back(i);
                     }
                 }
             }
@@ -998,19 +1196,29 @@ impl Detector {
     /// Score already-decoded images (e.g. video frames). Returns per-image
     /// per-view logits.
     pub fn score_images(&self, imgs: &[Rgb]) -> Vec<Vec<f32>> {
-        let (nv, vl) = (self.spec.views.len(), self.view_len());
-        let mut flat = vec![0u8; imgs.len() * nv * vl];
+        let vl = self.view_len();
         use rayon::prelude::*;
         let pre = self.preprocessor();
-        flat.par_chunks_exact_mut(nv * vl).zip(imgs.par_iter()).for_each(|(o, im)| pre.apply(im, o));
-        let mut logits = Vec::with_capacity(imgs.len() * nv);
+        let reuse = self.reuses(false);
+        // Per image: the views to score, and where each of its views finds its score among them.
+        let prepared: Vec<(Vec<usize>, Vec<u8>)> = imgs.par_iter().map(|im| pre.distinct(im, reuse, false)).collect();
+        let flat: Vec<u8> = prepared.iter().flat_map(|(_, views)| views.iter().copied()).collect();
+        let mut logits = Vec::with_capacity(flat.len() / vl);
         let mut buf = vec![0u8; self.batch * vl];
         for chunk in flat.chunks(self.batch * vl) {
             buf[..chunk.len()].copy_from_slice(chunk);
             crate::stats::SCORED_VIEWS.add(chunk.len() / vl);
             logits.extend_from_slice(&self.logits(&buf)[..chunk.len() / vl]);
         }
-        logits.chunks_exact(nv).map(|c| c.to_vec()).collect()
+        let mut start = 0;
+        prepared
+            .iter()
+            .map(|(at, views)| {
+                let own = &logits[start..start + views.len() / vl];
+                start += own.len();
+                at.iter().map(|&k| own[k]).collect()
+            })
+            .collect()
     }
 
     /// Score image files end to end. Decoding and preprocessing run on
@@ -1030,6 +1238,8 @@ impl Detector {
     /// Generic pipeline: `load(i)` yields the images of item `i` (one for a
     /// photo, several frames for a clip) on worker threads; views are batched
     /// across items on the GPU. Returns per-item, per-image, per-view logits.
+    /// Views of one image that come to the same pixels are scored once where
+    /// that is exact (see [`ViewReuse`]), and the score is given to each.
     pub fn score_stream<F>(&self, n_items: usize, threads: usize, load: F) -> (Vec<Option<Vec<Vec<f32>>>>, Timing)
     where
         F: Fn(usize) -> Option<Vec<Rgb>> + Sync,
@@ -1037,9 +1247,11 @@ impl Detector {
         let nv = self.spec.views.len();
         let pre = self.preprocessor();
         let vl = pre.fed_len();
+        let reuse = self.reuses(false);
         let next = AtomicUsize::new(0);
-        // (item, number of images, all views of all images in fed form)
-        let (tx, rx) = crossbeam_channel::bounded::<(usize, usize, Vec<u8>)>(threads.max(1) * 2);
+        // (item, where each view of each image finds its score among the
+        // item's scored views, those views in fed form)
+        let (tx, rx) = crossbeam_channel::bounded::<(usize, Vec<usize>, Vec<u8>)>(threads.max(1) * 2);
         let mut results: Vec<Option<Vec<Vec<f32>>>> = vec![None; n_items];
         let start = std::time::Instant::now();
         let mut model_s = 0f64;
@@ -1053,11 +1265,14 @@ impl Detector {
                         break;
                     }
                     let Some(imgs) = load(i) else { continue };
+                    let mut at = Vec::with_capacity(imgs.len() * nv);
                     let mut v = Vec::with_capacity(imgs.len() * nv * vl);
                     for im in &imgs {
-                        v.extend_from_slice(&pre.encoded(im));
+                        let (own, views) = pre.distinct(im, reuse, true);
+                        at.extend(own.iter().map(|k| v.len() / vl + k));
+                        v.extend_from_slice(&views);
                     }
-                    if tx.send((i, imgs.len(), v)).is_err() {
+                    if tx.send((i, at, v)).is_err() {
                         break;
                     }
                 });
@@ -1079,9 +1294,12 @@ impl Detector {
                 }
                 owners.clear();
             };
-            let mut expect: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
-            for (i, n_img, v) in rx {
-                expect.insert(i, n_img * nv);
+            // Per item: how many views it has in the network's queue, and its map.
+            let mut expect: std::collections::HashMap<usize, (usize, Vec<usize>)> = std::collections::HashMap::new();
+            // An item's logits per image and view, from the logits of its scored views.
+            let spread = |l: &[f32], at: &[usize]| at.chunks_exact(nv).map(|c| c.iter().map(|&k| l[k]).collect()).collect::<Vec<Vec<f32>>>();
+            for (i, at, v) in rx {
+                expect.insert(i, (v.len() / vl, at));
                 for view in v.chunks_exact(vl) {
                     let k = owners.len();
                     buf[k * vl..(k + 1) * vl].copy_from_slice(view);
@@ -1091,16 +1309,16 @@ impl Detector {
                     }
                 }
                 // Hand back any item whose views are all scored.
-                let done: Vec<usize> = acc.iter().filter(|(k, l)| expect.get(k) == Some(&l.len())).map(|(k, _)| *k).collect();
+                let done: Vec<usize> = acc.iter().filter(|(k, l)| expect.get(k).map(|e| e.0) == Some(l.len())).map(|(k, _)| *k).collect();
                 for k in done {
                     let l = acc.remove(&k).unwrap();
-                    expect.remove(&k);
-                    results[k] = Some(l.chunks_exact(nv).map(|c| c.to_vec()).collect());
+                    let (_, at) = expect.remove(&k).unwrap();
+                    results[k] = Some(spread(&l, &at));
                 }
             }
             flush(&mut owners, &buf, &mut acc);
             for (k, l) in acc.drain() {
-                results[k] = Some(l.chunks_exact(nv).map(|c| c.to_vec()).collect());
+                results[k] = expect.remove(&k).map(|(_, at)| spread(&l, &at));
             }
         });
         (results, Timing { images: n_items, wall_s: start.elapsed().as_secs_f64(), model_s })

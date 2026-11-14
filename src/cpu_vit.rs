@@ -129,6 +129,16 @@ mod kernels {
 
 use kernels::{exp_inplace, gemm, on_one_thread, ONE_VIEW_PER_THREAD};
 
+/// Whether a view's logit depends on what [`CpuVit::forward`] is given with
+/// it. With Accelerate it does: every linear layer is one product over all
+/// rows of the batch, and the library rounds differently for different row
+/// counts and positions, so the same view scored alone and in a batch of six
+/// differs in the last bits (up to 2.4e-6 on the logit, measured on an M6).
+/// The same run always gives the same bits. The pure-Rust kernels run a
+/// batch one view at a time, so there a view's logit is the same whatever it
+/// is run with.
+pub const RUN_SIZE_CHANGES_LOGITS: bool = !ONE_VIEW_PER_THREAD;
+
 struct Lin {
     /// `[out, in]`, as stored in the checkpoint.
     w: Vec<f32>,

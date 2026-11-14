@@ -342,3 +342,49 @@ fn work_counters_go_to_standard_error_only_when_asked_for() {
     assert_eq!((value("frames_decoded"), value("frames_converted"), value("clips_reopened")), (0, 0, 0), "{line}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_photo_below_the_crop_size_is_scored_once_per_distinct_view_with_the_same_output() {
+    let dir = common::scratch("cli-reuse");
+    let png = dir.join("small.png");
+    // 120 x 96: the centre crop and the four ranked windows are one upscaled crop.
+    image::imageops::resize(&common::fixture_pixels(), 120, 96, image::imageops::FilterType::Triangle).save(&png).unwrap();
+    let weights = common::photo_weights();
+    let run = |reuse: Option<&str>, extra: &[&str]| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        c.args(["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap()]).args(extra).arg(&png).current_dir(common::repo());
+        c.env("TINTYPE_STATS", "1").env_remove("TINTYPE_VIEW_REUSE");
+        if let Some(v) = reuse {
+            c.env("TINTYPE_VIEW_REUSE", v);
+        }
+        let o = c.output().expect("running the tintype binary");
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let err = String::from_utf8_lossy(&o.stderr).to_string();
+        let line = err.lines().find(|l| l.starts_with("stats: ")).unwrap_or_else(|| panic!("no stats line in: {err}")).to_string();
+        let value = move |name: &str| -> u64 { line.split_whitespace().find_map(|f| f.strip_prefix(&format!("{name}="))).unwrap().parse().unwrap() };
+        (stdout(&o), value)
+    };
+    // One photo through early exit: every run is one view, so reuse is on by
+    // default on every engine and the output is the same bytes as without it.
+    let (default_out, default) = run(None, &[]);
+    let (off_out, off) = run(Some("off"), &[]);
+    assert_eq!(default_out, off_out);
+    let looked = json_lines_of(&default_out)[0]["views"].as_u64().unwrap();
+    assert_eq!(off("views_scored"), looked);
+    assert_eq!(off("views_reused"), 0);
+    assert_eq!(default("views_scored") + default("views_reused"), looked);
+    assert!(default("views_scored") <= 2 && default("views_materialised") <= 2, "scored {}, materialised {}", default("views_scored"), default("views_materialised"));
+    // Every view looked at, reuse forced on: two runs through the network stand for six views.
+    let (on_out, on) = run(Some("on"), &["--all-views"]);
+    let (all_out, all) = run(Some("off"), &["--all-views"]);
+    assert_eq!((on("views_scored"), on("views_reused"), on("views_materialised")), (2, 4, 2));
+    assert_eq!((all("views_scored"), all("views_reused"), all("views_materialised")), (6, 0, 6));
+    let (a, b) = (&json_lines_of(&on_out)[0], &json_lines_of(&all_out)[0]);
+    assert_eq!((a["views"].as_u64(), a["verdict"].as_str()), (Some(6), b["verdict"].as_str()));
+    assert!((a["logit"].as_f64().unwrap() - b["logit"].as_f64().unwrap()).abs() < 1e-4, "{on_out} {all_out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn json_lines_of(out: &str) -> Vec<serde_json::Value> {
+    out.lines().map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not one JSON object per line ({e}): {l}"))).collect()
+}

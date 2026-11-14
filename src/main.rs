@@ -664,9 +664,17 @@ fn main() -> Result<()> {
             for (k, it) in items.iter().take(n + 5).enumerate() {
                 let t = std::time::Instant::now();
                 let Ok(img) = tintype::image_io::load(&it.path) else { continue };
-                pre.apply(&img, &mut buf);
+                if !stepwise {
+                    pre.apply(&img, &mut buf);
+                }
                 match &exit {
-                    Some(e) if stepwise => std::hint::black_box(det.probability(&det.logits_adaptive(&buf, e))),
+                    Some(e) if stepwise => {
+                        // Views that repeat an earlier one are not cut out a second time.
+                        let plan = pre.plan(&img);
+                        let same = tintype::image_io::first_uses(&plan);
+                        let crops: Vec<Option<tintype::image_io::Rgb>> = plan.iter().enumerate().map(|(v, p)| (same[v] == v).then(|| p.render(&img))).collect();
+                        std::hint::black_box(det.probability(&det.logits_adaptive_with(e, &same, |v, out| out.copy_from_slice(&crops[same[v]].as_ref().expect("first uses are cut out").data))))
+                    }
                     Some(e) => std::hint::black_box(det.probability(&e.looked_at(&det.logits(&buf)[..nv], det.threshold_logit()))),
                     None => std::hint::black_box(det.probability(&det.logits(&buf)[..nv])),
                 };
