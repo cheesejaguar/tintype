@@ -330,7 +330,8 @@ fn feature_dump_head_fit_and_comparison_run_end_to_end_on_the_cpu_engine() {
     // Rows in manifest order, with the grouping columns, real timestamps and stream positions.
     let clips = std::fs::read_to_string(dump.join("clips.tsv")).unwrap();
     let rows: Vec<Vec<&str>> = clips.lines().skip(1).map(|l| l.split('\t').collect()).collect();
-    assert_eq!(rows.iter().map(|r| (r[0].rsplit('/').next().unwrap(), r[1], r[5])).collect::<Vec<_>>(), vec![("a.mp4", "0", "scene-a.mp4"), ("b.mp4", "1", "scene-b.mp4"), ("c.mp4", "1", "scene-c.mp4"), ("d.mp4", "0", "scene-d.mp4")], "{clips}");
+    let name = |p: &str| Path::new(p).file_name().unwrap().to_str().unwrap().to_string();
+    assert_eq!(rows.iter().map(|r| (name(r[0]), r[1], r[5])).collect::<Vec<_>>(), [("a.mp4", "0", "scene-a.mp4"), ("b.mp4", "1", "scene-b.mp4"), ("c.mp4", "1", "scene-c.mp4"), ("d.mp4", "0", "scene-d.mp4")].map(|(n, l, s)| (n.to_string(), l, s)), "{clips}");
     let frames = std::fs::read_to_string(dump.join("frames.tsv")).unwrap();
     let first: Vec<Vec<&str>> = frames.lines().skip(1).take(4).map(|l| l.split('\t').collect()).collect();
     // The one-second, twelve-frame clip sampled at 0, 0.25, 0.5 and 0.75 s: frames 0, 3, 6 and 9.

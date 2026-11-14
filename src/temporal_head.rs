@@ -792,6 +792,14 @@ pub fn evaluate(test: &FeatureSet, cal: Option<&FeatureSet>, heads: &[(String, H
     // Real clips each arm's cutoffs were set on.
     let set_on: Vec<usize> = arms.iter().map(|a| a.cal.as_ref().map_or(n_real, |(_, l)| l.iter().filter(|&&x| x == 0).count())).collect();
 
+    // Clips that share a scene (or else a parent) are one piece of evidence: resample them together.
+    let key_of = |c: usize| {
+        let it = &test.clips[c].item;
+        it.scene_id().map(|s| format!("scene:{s}")).or_else(|| it.parent_id().map(|p| format!("parent:{p}"))).unwrap_or_else(|| format!("path:{}", it.path.display()))
+    };
+    let clusters = metrics::cluster_ids(&common.iter().map(|&c| key_of(c)).collect::<Vec<_>>());
+    let n_clusters = clusters.iter().max().map_or(0, |m| m + 1);
+
     let mut out = String::new();
     let w = &mut out;
     writeln!(w, "{} clips scored by all {} arms: {n_ai} AI, {n_real} real ({} in the dump, {} unreadable when it was made).", common.len(), arms.len(), test.clips.len(), m.unreadable)?;
@@ -804,21 +812,29 @@ pub fn evaluate(test: &FeatureSet, cal: Option<&FeatureSet>, heads: &[(String, H
     let base = 0usize;
     for (fi, &f) in o.fprs.iter().enumerate() {
         writeln!(w, "\n### Operating at a {}% false-positive cutoff\n", 100.0 * f)?;
-        writeln!(w, "| Arm | Cost per clip | Cutoff (logit) | Cutoff from | Real clips flagged | FPR | FPR upper bound | AI clips caught | Recall (95% interval) | Against {} | AUROC |", arms[base].name)?;
-        writeln!(w, "|---|---|---|---|---|---|---|---|---|---|---|")?;
+        writeln!(w, "| Arm | Cost per clip | Cutoff (logit) | Cutoff from | Real clips flagged | FPR | FPR upper bound | AI clips caught | Recall (95% interval) | Against {} | Recall difference (95% interval, clustered) | AUROC |", arms[base].name)?;
+        writeln!(w, "|---|---|---|---|---|---|---|---|---|---|---|---|")?;
         for (ai, (a, s)) in arms.iter().zip(&scores).enumerate() {
             let Some((cut, frozen)) = cutoffs[ai][fi] else {
-                writeln!(w, "| {} | {} | – | no real clips to set it on | – | – | – | – | – | – | – |", a.name, a.cost)?;
+                writeln!(w, "| {} | {} | – | no real clips to set it on | – | – | – | – | – | – | – | – |", a.name, a.cost)?;
                 continue;
             };
             let flagged = s.iter().zip(&labels).filter(|(&z, &l)| l == 0 && z > cut).count();
             let caught = s.iter().zip(&labels).filter(|(&z, &l)| l == 1 && z > cut).count();
-            let against = match cutoffs[base][fi] {
-                Some((bcut, _)) if ai != base => {
+            let (against, difference) = match cutoffs[base][fi] {
+                Some((bcut, _)) if ai != base && n_ai > 0 => {
                     let (gained, lost) = s.iter().zip(&scores[base]).zip(&labels).filter(|(_, &l)| l == 1).fold((0, 0), |(g, lo), ((&z, &bz), _)| (g + (z > cut && bz <= bcut) as usize, lo + (z <= cut && bz > bcut) as usize));
-                    format!("+{gained} / -{lost} AI clips")
+                    // Per clip: +1 caught by this arm only, -1 by the baseline only. Its mean over AI clips is the recall difference.
+                    let paired: Vec<f32> = s.iter().zip(&scores[base]).map(|(&z, &bz)| (z > cut) as i32 as f32 - (bz > bcut) as i32 as f32).collect();
+                    let mean = |v: &[f32], l: &[u8]| {
+                        let (sum, n) = v.iter().zip(l).filter(|(_, &y)| y == 1).fold((0f64, 0usize), |(a, n), (&x, _)| (a + x as f64, n + 1));
+                        if n > 0 { sum / n as f64 } else { f64::NAN }
+                    };
+                    let (lo, hi) = metrics::bootstrap_ci_clustered(&paired, &labels, Some(&clusters), mean, 1000, 12);
+                    let points = |x: f64| format!("{:+.2}", 100.0 * x);
+                    (format!("+{gained} / -{lost} AI clips"), format!("{} ({} to {}) points", points(mean(&paired, &labels)), points(lo), points(hi)))
                 }
-                _ => "–".into(),
+                _ => ("–".into(), "–".into()),
             };
             let real_cells = if n_real > 0 { (format!("{flagged} of {n_real}"), pct(flagged as f64 / n_real as f64), pct(metrics::clopper_pearson_upper(flagged, n_real, 0.95))) } else { ("–".into(), "–".into(), "–".into()) };
             let ai_cells = if n_ai > 0 { (format!("{caught} of {n_ai}"), format!("{} ({}–{})", pct(caught as f64 / n_ai as f64), pct(metrics::clopper_pearson_lower(caught, n_ai, 0.975)), pct(metrics::clopper_pearson_upper(caught, n_ai, 0.975)))) } else { ("–".into(), "–".into()) };
@@ -826,13 +842,13 @@ pub fn evaluate(test: &FeatureSet, cal: Option<&FeatureSet>, heads: &[(String, H
             // How many of the real clips the cutoff was set on may lie above it at this rate.
             let allowed = (f * set_on[ai] as f64).floor() as usize;
             let from = format!("{} ({allowed} of {} real allowed above)", if frozen { "calibration clips" } else { "these clips (exploratory)" }, set_on[ai]);
-            writeln!(w, "| {} | {} | {cut:.4} | {from} | {} | {} | {} | {} | {} | {against} | {} |", a.name, a.cost, real_cells.0, real_cells.1, real_cells.2, ai_cells.0, ai_cells.1, if auroc.is_finite() { format!("{auroc:.4}") } else { "–".into() })?;
+            writeln!(w, "| {} | {} | {cut:.4} | {from} | {} | {} | {} | {} | {} | {against} | {difference} | {} |", a.name, a.cost, real_cells.0, real_cells.1, real_cells.2, ai_cells.0, ai_cells.1, if auroc.is_finite() { format!("{auroc:.4}") } else { "–".into() })?;
         }
         if let Some(most) = set_on.iter().max().filter(|&&n| (f * n as f64) < 1.0) {
             writeln!(w, "\n**Not resolved.** A {}% rate allows no false alarm among {most} real clips (it takes {} for one): these cutoffs sit at the highest real score they were set on, and the rows say what that cutoff does, not what a {}% cutoff would.", 100.0 * f, (1.0 / f).ceil(), 100.0 * f)?;
         }
     }
-    writeln!(w, "\nFPR upper bound: one-sided 95% Clopper–Pearson; recall interval: two-sided 95% Clopper–Pearson. Both take clips as independent, which clips that share a source or a scene are not: for intervals that respect that, run `tintype report --operating-points --cluster-by` on the score files.")?;
+    writeln!(w, "\nFPR upper bound: one-sided 95% Clopper–Pearson; recall interval: two-sided 95% Clopper–Pearson. Both take clips as independent, which clips that share a source or a scene are not. The recall difference is this arm's recall minus {}'s on the same AI clips, each at its own cutoff, with a 95% bootstrap interval over {n_clusters} clusters (clips of one `scene_id`, or else one `parent_id`, together){}. For clustered intervals on each arm's own recall, run `tintype report --operating-points --cluster-by` on the score files.", arms[base].name, if n_clusters < 20 { ": fewer than 20 clusters, too few for the interval to mean much" } else { "" })?;
 
     if o.shuffle_seed.is_some() && !heads.is_empty() {
         writeln!(w, "\n### Shuffled-order control\n")?;
@@ -1159,7 +1175,7 @@ mod tests {
         std::fs::write(&ext, test.clips.iter().take(50).map(|c| format!("{}\t{}\tg\td\t0.5\t{}\t{}\n", c.item.path.display(), c.item.label, c.item.label as f32 * 2.0 - 1.0, 0.25)).collect::<String>()).unwrap();
         let report = evaluate(&test, Some(&cal), &heads, &[External { name: "more-frames".into(), test: ext, calibrate: None }], &EvalOptions { out_dir: Some(dir.join("scores")), ..Default::default() }).unwrap();
         assert!(report.starts_with("50 clips scored by all 7 arms: 25 AI, 25 real"), "{report}");
-        for needle in ["| frame-mean |", "| fit-mean |", "| diff |", "| diff+shuffled |", "| patch+shuffled |", "| more-frames |", "### Operating at a 1% false-positive cutoff", "### Operating at a 0.1% false-positive cutoff", "### Shuffled-order control", "By cuts", "By repeated frames", "By motion", "By frame rate", "By time between samples", "calibration clips", "these clips (exploratory)", "**Exploratory.**", "**Not resolved.**", "(0 of 30 real allowed above)", "| log frame rate |"] {
+        for needle in ["| frame-mean |", "| fit-mean |", "| diff |", "| diff+shuffled |", "| patch+shuffled |", "| more-frames |", "### Operating at a 1% false-positive cutoff", "### Operating at a 0.1% false-positive cutoff", "### Shuffled-order control", "By cuts", "By repeated frames", "By motion", "By frame rate", "By time between samples", "calibration clips", "these clips (exploratory)", "**Exploratory.**", "**Not resolved.**", "(0 of 30 real allowed above)", "| log frame rate |", "Recall difference (95% interval, clustered)", "bootstrap interval over 50 clusters", " points |"] {
             assert!(report.contains(needle), "missing `{needle}` in:\n{report}");
         }
         // The outside system is perfect on these clips; the temporal head catches the AI clips at a cutoff frozen on other clips.
