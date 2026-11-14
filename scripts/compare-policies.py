@@ -23,7 +23,8 @@ each false-positive count, the counts at the policy's own cutoff, the
 number of sets on which precision and recall both reach a reference
 detector, and the first-stage errors a gate leaves outside. With
 `--set calibrate=...` it also freezes each cutoff on that set and prints
-the actual rates on the test set.
+the cutoff (the logit of the policy's score) and the actual rates on the
+test set.
 
 Everything computed from the archives in docs/results is exploratory: those
 suites were used to develop the detector, and a cutoff chosen on a cohort
@@ -614,14 +615,14 @@ def report_cohort(title, items, policies, scores, opts, out, frozen=None, chosen
 
     if frozen is not None:
         out.write(f"\nCutoffs frozen on the calibration set ({frozen['n_real']} authentic photos there), applied here unchanged:\n\n")
-        header = ["Policy"] + [c for fpr in opts["fprs"] for c in (f"target {100 * fpr:g}% FPR: actual FP (FPR)", "recall")]
+        header = ["Policy"] + [c for fpr in opts["fprs"] for c in (f"target {100 * fpr:g}% FPR: cutoff (logit)", "actual FP (FPR)", "recall")]
         rows = []
         for policy in policies:
             samples = samples_of(policy)
             row = [policy.name]
             for cutoff in frozen["cutoffs"][policy]:
                 tp, fp = operate(samples, cutoff)
-                row += [f"{fp}/{n_real} ({pct(fp, n_real)})", cell(tp, n_gen)]
+                row += [f"{cutoff:.5f}", f"{fp}/{n_real} ({pct(fp, n_real)})", cell(tp, n_gen)]
             rows.append(row)
         table(header, rows, out)
     return results
@@ -1132,7 +1133,7 @@ def self_test():
     calibrate = sorted((it["z"]["a"] for it in items if it["set"] == "calibrate" and it["label"] == 0), reverse=True)
     test = [(it["label"], it["z"]["a"]) for it in items if it["set"] == "test"]
     tp, fp = operate(test, calibrate[3])
-    assert f"| a | {fp}/30 ({pct(fp, 30)}) | {cell(tp, 30)} |" in report, report
+    assert f"| a | {calibrate[3]:.5f} | {fp}/30 ({pct(fp, 30)}) | {cell(tp, 30)} |" in report, report
     # The fitted full fusion scores the test photos with the weights of the fit set alone.
     fitted = next(p for p in policies if p.name == "a + b, fitted full fusion")
     weights, _ = fit_logistic([(it["z"]["a"], it["z"]["b"]) for it in items if it["set"] == "fit"], [it["label"] for it in items if it["set"] == "fit"])
