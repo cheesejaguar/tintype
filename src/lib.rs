@@ -16,6 +16,7 @@ pub mod video;
 pub mod cpu_vit;
 pub mod embed;
 pub mod temporal;
+pub mod temporal_head;
 pub mod fetch;
 pub mod integrity;
 pub mod split;
