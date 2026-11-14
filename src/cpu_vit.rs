@@ -9,10 +9,12 @@
 //! crate (NEON, AVX2 or AVX-512 kernels picked at run time) everywhere else;
 //! the `portable-cpu` feature selects the latter on macOS too.
 
+use crate::stats::{ATTENTION_TIME, FC1_TIME, FC2_TIME, FORWARD_TIME, GATHER_TIME, GELU_TIME, HEAD_TIME, NORM_TIME, PATCH_TIME, PROJ_TIME, QKV_TIME, RESIDUAL_TIME, SOFTMAX_TIME};
 use crate::vit::VitConfig;
 use crate::weights::Weights;
 use anyhow::Result;
 use rayon::prelude::*;
+use std::time::Instant;
 
 #[cfg(all(target_os = "macos", not(feature = "portable-cpu")))]
 mod kernels {
@@ -256,6 +258,8 @@ impl CpuVit {
         if ONE_VIEW_PER_THREAD && b > 1 {
             return x.par_chunks(view).flat_map_iter(|v| on_one_thread(|| self.forward(v))).collect();
         }
+        // Timed on this thread from here on: one pass, however many views it holds.
+        let started = Instant::now();
         let pdim = 3 * p * p;
         let (k, o) = crate::image_io::norm_consts();
 
@@ -290,6 +294,7 @@ impl CpuVit {
             }
         });
         drop(emb);
+        PATCH_TIME.since(started);
 
         let rows = b * n;
         let (h, hd) = (c.heads, d / c.heads);
@@ -299,8 +304,11 @@ impl CpuVit {
         let mut att = vec![0f32; rows * d];
         let mut hid = vec![0f32; rows * d * c.mlp_ratio];
         // `s[i, j] = softmax_j(scale * q_i . k_j)` for `nq` queries against `n` keys.
-        let attend = |q: &[f32], k: &[f32], s: &mut [f32], nq: usize| {
+        // `spent` takes the nanoseconds of the product and of the softmax.
+        let attend = |q: &[f32], k: &[f32], s: &mut [f32], nq: usize, spent: &mut [u64; 2]| {
+            let t = Instant::now();
             gemm(q, k, s, nq, n, hd, true, 0.0);
+            let product = t.elapsed();
             for row in s.chunks_mut(n) {
                 let m = row.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
                 for e in row.iter_mut() {
@@ -312,13 +320,34 @@ impl CpuVit {
                 let inv = 1.0 / row.iter().sum::<f32>();
                 row.iter_mut().for_each(|e| *e *= inv);
             }
+            spent[0] += product.as_nanos() as u64;
+            spent[1] += (t.elapsed() - product).as_nanos() as u64;
         };
+        // The attention of a block runs one task per view, side by side, so
+        // the time its parts take on their threads can add up to more than
+        // the block's attention took on this one. Divide the latter between
+        // products, softmax and the rest (copying each head's rows together
+        // and its output back) in the proportions of the former; with one
+        // view, that is the time itself.
+        let attention_took = |t: Instant, spent: [u64; 2], tasks: u64| {
+            let wall = t.elapsed().as_nanos() as u64;
+            let share = |part: u64| if tasks == 0 { 0 } else { (wall as u128 * part as u128 / tasks as u128) as u64 };
+            let (products, softmax) = (share(spent[0]), share(spent[1]));
+            ATTENTION_TIME.add_nanos(products);
+            SOFTMAX_TIME.add_nanos(softmax);
+            GATHER_TIME.add_nanos(wall.saturating_sub(products + softmax));
+        };
+        let add = |a: [u64; 3], b: [u64; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
         let last = self.blocks.len() - 1;
         for blk in &self.blocks[..last] {
-            blk.norm1.apply(&t, &mut y);
-            blk.qkv.apply(&y, &mut qkv, rows);
-            // One task per view.
-            att.par_chunks_mut(n * d).zip(qkv.par_chunks(n * 3 * d)).for_each(|(out, src)| {
+            NORM_TIME.time(|| blk.norm1.apply(&t, &mut y));
+            QKV_TIME.time(|| blk.qkv.apply(&y, &mut qkv, rows));
+            // One task per view. Each hands back the nanoseconds of its
+            // products, of its softmax and of the whole task.
+            let at = Instant::now();
+            let spent = att.par_chunks_mut(n * d).zip(qkv.par_chunks(n * 3 * d)).map(|(out, src)| {
+                let task = Instant::now();
+                let mut spent = [0u64; 2];
                 let (mut q, mut k, mut v) = (vec![0f32; n * hd], vec![0f32; n * hd], vec![0f32; n * hd]);
                 let (mut s, mut o) = (vec![0f32; n * n], vec![0f32; n * hd]);
                 for head in 0..h {
@@ -328,21 +357,26 @@ impl CpuVit {
                         k[i * hd..][..hd].copy_from_slice(&r[d + head * hd..][..hd]);
                         v[i * hd..][..hd].copy_from_slice(&r[2 * d + head * hd..][..hd]);
                     }
-                    attend(&q, &k, &mut s, n);
+                    attend(&q, &k, &mut s, n, &mut spent);
+                    let t = Instant::now();
                     gemm(&s, &v, &mut o, n, hd, n, false, 0.0);
+                    spent[0] += t.elapsed().as_nanos() as u64;
                     for i in 0..n {
                         out[i * d + head * hd..][..hd].copy_from_slice(&o[i * hd..][..hd]);
                     }
                 }
+                [spent[0], spent[1], task.elapsed().as_nanos() as u64]
             });
-            blk.proj.apply(&att, &mut y, rows);
-            t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b);
+            let spent = spent.reduce(|| [0; 3], add);
+            attention_took(at, [spent[0], spent[1]], spent[2]);
+            PROJ_TIME.time(|| blk.proj.apply(&att, &mut y, rows));
+            RESIDUAL_TIME.time(|| t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b));
 
-            blk.norm2.apply(&t, &mut y);
-            blk.fc1.apply(&y, &mut hid, rows);
-            gelu_inplace(&mut hid);
-            blk.fc2.apply(&hid, &mut y, rows);
-            t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b);
+            NORM_TIME.time(|| blk.norm2.apply(&t, &mut y));
+            FC1_TIME.time(|| blk.fc1.apply(&y, &mut hid, rows));
+            GELU_TIME.time(|| gelu_inplace(&mut hid));
+            FC2_TIME.time(|| blk.fc2.apply(&hid, &mut y, rows));
+            RESIDUAL_TIME.time(|| t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b));
         }
 
         // Last block: only its class-token output is read, so only the class
@@ -350,10 +384,13 @@ impl CpuVit {
         // that one token goes through the projection and the MLP. Same
         // result as running the block in full, at about a quarter of the cost.
         let blk = &self.blocks[last];
-        blk.norm1.apply(&t, &mut y);
-        blk.qkv.apply(&y, &mut qkv, rows);
+        NORM_TIME.time(|| blk.norm1.apply(&t, &mut y));
+        QKV_TIME.time(|| blk.qkv.apply(&y, &mut qkv, rows));
         let mut cls_att = vec![0f32; b * d];
-        cls_att.par_chunks_mut(d).zip(qkv.par_chunks(n * 3 * d)).for_each(|(out, src)| {
+        let at = Instant::now();
+        let spent = cls_att.par_chunks_mut(d).zip(qkv.par_chunks(n * 3 * d)).map(|(out, src)| {
+            let task = Instant::now();
+            let mut spent = [0u64; 2];
             let (mut k, mut v) = (vec![0f32; n * hd], vec![0f32; n * hd]);
             let mut s = vec![0f32; n];
             for head in 0..h {
@@ -362,26 +399,32 @@ impl CpuVit {
                     k[i * hd..][..hd].copy_from_slice(&r[d + head * hd..][..hd]);
                     v[i * hd..][..hd].copy_from_slice(&r[2 * d + head * hd..][..hd]);
                 }
-                attend(&src[head * hd..][..hd], &k, &mut s, 1);
+                attend(&src[head * hd..][..hd], &k, &mut s, 1, &mut spent);
+                let t = Instant::now();
                 gemm(&s, &v, &mut out[head * hd..][..hd], 1, hd, n, false, 0.0);
+                spent[0] += t.elapsed().as_nanos() as u64;
             }
+            [spent[0], spent[1], task.elapsed().as_nanos() as u64]
         });
+        let spent = spent.reduce(|| [0; 3], add);
+        attention_took(at, [spent[0], spent[1]], spent[2]);
         // Class tokens only from here on: `[b, d]`.
         let mut cls: Vec<f32> = (0..b).flat_map(|i| t[i * n * d..][..d].iter().copied()).collect();
         let mut yc = vec![0f32; b * d];
-        blk.proj.apply(&cls_att, &mut yc, b);
+        PROJ_TIME.time(|| blk.proj.apply(&cls_att, &mut yc, b));
         cls.iter_mut().zip(&yc).for_each(|(a, v)| *a += v);
-        blk.norm2.apply(&cls, &mut yc);
+        NORM_TIME.time(|| blk.norm2.apply(&cls, &mut yc));
         let mut hc = vec![0f32; b * d * c.mlp_ratio];
-        blk.fc1.apply(&yc, &mut hc, b);
-        gelu_inplace(&mut hc);
-        blk.fc2.apply(&hc, &mut yc, b);
+        FC1_TIME.time(|| blk.fc1.apply(&yc, &mut hc, b));
+        GELU_TIME.time(|| gelu_inplace(&mut hc));
+        FC2_TIME.time(|| blk.fc2.apply(&hc, &mut yc, b));
         cls.iter_mut().zip(&yc).for_each(|(a, v)| *a += v);
 
         let mut cn = vec![0f32; b * d];
-        self.norm.apply(&cls, &mut cn);
+        NORM_TIME.time(|| self.norm.apply(&cls, &mut cn));
         let mut out = vec![0f32; b * self.head.out];
-        self.head.apply(&cn, &mut out, b);
+        HEAD_TIME.time(|| self.head.apply(&cn, &mut out, b));
+        FORWARD_TIME.since(started);
         out
     }
 }

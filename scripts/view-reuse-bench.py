@@ -24,9 +24,13 @@ binary, e.g. `--env new:TINTYPE_VIEW_REUSE=off`.
 Every report also gives the counters the binary prints with TINTYPE_STATS=1
 for one pass over the list (frames decoded and converted, views
 materialised, scored and reused, clips reopened, and the milliseconds spent
-decoding, converting, preparing views and in the network, summed over
-threads and averaged over passes), and the largest resident set size of any
-of its processes. See docs/runbooks/view-reuse.md.
+decoding, converting, preparing views and in the network and its parts,
+summed over threads and averaged over passes; with `--latency` also
+`file_to_verdict_ms`, the images' own times added up, warm-up included as in
+the counters), the largest resident set size of any of its processes, and
+the one-minute load average before and after. See
+docs/runbooks/view-reuse.md; `scripts/cpu-profile.py` turns the JSON lines
+into the table of docs/runbooks/cpu-profile-int8.md.
 """
 import argparse
 import json
@@ -73,6 +77,8 @@ def run(binary, files, device, extra, env, latency=None):
             counters = {k: int(v) for k, v in (f.split("=") for f in line.split()[1:])}
     if latency:
         rows = [(int(f[1]), float(f[2])) for f in (l.split() for l in stderr.splitlines()) if f and f[0] == "latency_ms"]
+        # The counters cover the warm-up images too; so does this, to set beside them.
+        counters["file_to_verdict_ms"] = round(sum(float(f[2]) for f in (l.split() for l in stderr.splitlines()) if f and f[0] in ("latency_ms", "warmup_ms")))
     else:
         rows = [json.loads(l) for l in stdout.splitlines() if l]
     # Resident set size: bytes on macOS, kilobytes on Linux.
@@ -125,6 +131,7 @@ def main():
         if first_pass and not a.latency:
             b["rows"].extend(rows)
 
+    load_before = os.getloadavg()
     # One untimed run each first, so nobody pays for a cold file cache.
     for b in bins:
         if not a.latency:
@@ -157,6 +164,7 @@ def main():
             "files": len(files), "passes": a.repeat, "scored_rows": len(looked),
             "mean_views_or_frames_looked_at": round(sum(looked) / len(looked), 3) if looked else None,
             "peak_rss_mb": round(b["peak"], 1), "counters": b["counters"],
+            "load_average_before_and_after": [round(load_before[0], 2), round(os.getloadavg()[0], 2)],
         }
         if a.each or a.latency:
             # An image `latency` could not read has no times.

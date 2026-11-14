@@ -680,12 +680,13 @@ fn main() -> Result<()> {
                 if !stepwise {
                     tintype::stats::SCORED_VIEWS.add(nv);
                 }
+                let elapsed = t.elapsed().as_secs_f64() * 1e3;
+                // With TINTYPE_STATS, each image's own time too, so that runs can be compared image by image
+                // (and the warm-up images', which the counters include, so that the two can be set side by side).
+                if per_image {
+                    eprintln!("{} {k} {elapsed:.3}", if k >= 5 { "latency_ms" } else { "warmup_ms" });
+                }
                 if k >= 5 {
-                    let elapsed = t.elapsed().as_secs_f64() * 1e3;
-                    // With TINTYPE_STATS, each image's own time too, so that runs can be compared image by image.
-                    if per_image {
-                        eprintln!("latency_ms {k} {elapsed:.3}");
-                    }
                     ms.push(elapsed);
                 }
             }

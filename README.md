@@ -345,7 +345,8 @@ depends in its last bits on how many views run together).
 `TINTYPE_VIEW_REUSE=off` turns it off and `=on` forces it on everywhere;
 `TINTYPE_STATS=1` prints how many frames were decoded and how many views were
 prepared, scored and reused, on standard error
-([measurements](docs/runbooks/view-reuse.md)).
+([measurements](docs/runbooks/view-reuse.md)), and where the time of a CPU
+run goes, layer by layer ([profile](docs/runbooks/cpu-profile-int8.md)).
 
 Early exit also prepares only what it gets to: a view is cut out, and a
 video frame converted to RGB, when a stage is about to score it, so a clip

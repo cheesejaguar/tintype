@@ -308,6 +308,8 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
         .unwrap();
     let err = String::from_utf8_lossy(&o.stderr).to_string();
     assert_eq!(err.lines().filter(|l| l.starts_with("latency_ms ")).count(), 3, "{err}");
+    // The warm-up images' times too: the counters include them.
+    assert_eq!(err.lines().filter(|l| l.starts_with("warmup_ms ")).count(), 5, "{err}");
     assert!(err.lines().any(|l| l.starts_with("stats: ")), "{err}");
     assert_eq!(stdout(&o).split(':').next(), out.split(':').next());
     let _ = std::fs::remove_dir_all(&dir);
@@ -340,6 +342,12 @@ fn work_counters_go_to_standard_error_only_when_asked_for() {
     assert_eq!(value("views_scored") + value("views_reused"), 6, "{line}");
     assert!(value("views_materialised") <= 6 && value("views_materialised") >= 1, "{line}");
     assert_eq!((value("frames_decoded"), value("frames_converted"), value("clips_reopened")), (0, 0, 0), "{line}");
+    // The forward pass is divided among its parts: they are all there and
+    // add up to no more than the pass (each is rounded to a millisecond).
+    let parts = ["patch_ms", "norm_ms", "qkv_ms", "attention_ms", "softmax_ms", "gather_ms", "proj_ms", "fc1_ms", "gelu_ms", "fc2_ms", "head_ms", "residual_ms"];
+    let sum: u64 = parts.iter().map(|p| value(p)).sum();
+    assert!(value("forward_ms") >= 1 && sum <= value("forward_ms") + parts.len() as u64, "{line}");
+    assert!(value("qkv_ms") + value("proj_ms") + value("fc1_ms") + value("fc2_ms") >= 1, "{line}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
