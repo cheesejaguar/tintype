@@ -1,11 +1,12 @@
 //! `tintype train`: fine-tune the detector on the Apple GPU.
 #![cfg(target_os = "macos")]
 
-use crate::data::{is_val, spawn_loader, AugConfig, Sampler};
+use crate::data::{spawn_loader, AugConfig};
 use crate::detector::{ModelSpec, ViewSpec};
 use crate::image_io::{self, View};
-use crate::ingest::{read_manifest, Item};
+use crate::ingest::Item;
 use crate::metrics::{self, sigmoid};
+use crate::sampling::{self, Recipe};
 use crate::trainer::{OptConfig, Trainer};
 use crate::vit::VitConfig;
 use crate::weights::Weights;
@@ -33,6 +34,11 @@ pub struct TrainArgs {
     pub aug: AugConfig,
     pub opt: OptConfig,
     pub sampler_alpha: f64,
+    /// Explicit manifest and family weights and the replay pool; the default
+    /// is the plain `count^alpha` sampler.
+    pub sampling: sampling::Options,
+    /// Print the effective sampling shares of the recipe and stop.
+    pub print_sampling: bool,
 }
 
 struct ValSet {
@@ -103,6 +109,14 @@ fn eval(tr: &Trainer, val: &ValSet) -> (Vec<Vec<f32>>, String) {
 }
 
 pub fn run(a: TrainArgs) -> Result<()> {
+    if a.print_sampling {
+        // A dry run: nothing is written and the GPU is not touched.
+        let (recipe, val_items) = Recipe::load(&a.manifests, &a.sampling, a.sampler_alpha)?.split_validation(a.val_pct);
+        let sampler = recipe.sampler()?;
+        println!("train {} images ({}), val pool {}\n", recipe.items.len(), sampler.summary(), val_items.len());
+        print!("{}", recipe.shares_report(&sampler, 15));
+        return Ok(());
+    }
     std::fs::create_dir_all(&a.out)?;
     let mut log = std::fs::OpenOptions::new().create(true).append(true).open(a.out.join("train.log"))?;
     let mut say = |s: String| {
@@ -110,12 +124,14 @@ pub fn run(a: TrainArgs) -> Result<()> {
         let _ = writeln!(log, "{s}");
     };
 
-    let mut items = Vec::new();
-    for m in &a.manifests {
-        items.extend(read_manifest(m)?);
+    // With no weights and no replay manifests this is the items of the manifests in the
+    // order given, the path-hash validation split, and `Sampler::new`, as it always was.
+    let (recipe, val_items) = Recipe::load(&a.manifests, &a.sampling, a.sampler_alpha)?.split_validation(a.val_pct);
+    let sampler = Arc::new(recipe.sampler()?);
+    if !recipe.is_plain() {
+        say(format!("sampling: {} manifest weights, {} family weights, {} replay manifests at share {}", a.sampling.manifest_weights.len(), a.sampling.family_weights.len(), a.sampling.replay_manifests.len(), a.sampling.replay_share));
     }
-    let (val_items, train_items): (Vec<Item>, Vec<Item>) = items.into_iter().partition(|it| is_val(it, a.val_pct));
-    let sampler = Arc::new(Sampler::new(&train_items, a.sampler_alpha));
+    let train_items = recipe.items;
     say(format!("train {} images ({}), val pool {}", train_items.len(), sampler.summary(), val_items.len()));
 
     let size = a.aug.size;

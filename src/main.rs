@@ -343,6 +343,39 @@ enum Cmd {
         /// Probability of the messenger-style downscale + JPEG augmentation.
         #[arg(long, default_value_t = 0.25)]
         p_messenger: f32,
+        #[command(flatten)]
+        sampling: SamplingFlags,
+        /// Print the effective sampling shares of this recipe (per manifest,
+        /// generator family and generator) and stop: nothing is trained or written.
+        #[arg(long)]
+        print_sampling: bool,
+    },
+    /// Print the effective sampling shares of a training recipe: how often
+    /// each manifest, generator family and generator is drawn, per class.
+    /// Takes the manifests and sampling flags of `train` and runs on every
+    /// platform; nothing is trained or written.
+    SamplingShares {
+        #[arg(long, required = true)]
+        manifest: Vec<PathBuf>,
+        /// Percent of every manifest held out for validation by path hash, as in `train`.
+        #[arg(long, default_value_t = 3)]
+        val_pct: u64,
+        /// Generator sampling weight exponent (count^alpha).
+        #[arg(long, default_value_t = 0.5)]
+        sampler_alpha: f64,
+        #[command(flatten)]
+        sampling: SamplingFlags,
+        /// Rows of the family and generator tables, largest shares first (0 = all).
+        #[arg(long, default_value_t = 15)]
+        top: usize,
+        /// With `--write-weights`: family weights that move each AI family's
+        /// share of AI draws to `share^GAMMA`, renormalised (0 = equal
+        /// shares, 1 = no change). Real sources are left alone.
+        #[arg(long, value_name = "GAMMA", requires = "write_weights")]
+        rebalance_families: Option<f64>,
+        /// Where to write the weights file that `--rebalance-families` suggests.
+        #[arg(long, requires = "rebalance_families")]
+        write_weights: Option<PathBuf>,
     },
     /// Download and prepare a dataset plan (`tintype data list` shows them).
     Data {
@@ -511,6 +544,58 @@ enum Cmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+}
+
+/// Explicit sampling weights and the replay pool of a training recipe. With
+/// none of them given, sampling is what it always was: both classes equally
+/// often and, within a class, a generator with weight `count^alpha`.
+#[derive(clap::Args, Clone, Debug)]
+struct SamplingFlags {
+    /// `MANIFEST=WEIGHT`: multiply the sampling mass of every item of a
+    /// manifest (named by its path as given, or by its store directory).
+    /// Repeatable.
+    #[arg(long, value_name = "MANIFEST=WEIGHT")]
+    manifest_weight: Vec<String>,
+    /// `FAMILY=WEIGHT`: multiply the sampling mass of every item of a
+    /// generator family (manifest column 8, or else `--family-map`, or else
+    /// the generator name; `real:<source>` for real items). Repeatable.
+    #[arg(long, value_name = "FAMILY=WEIGHT")]
+    family_weight: Vec<String>,
+    /// A file of weights: tab-separated `manifest|family  name  weight` rows.
+    #[arg(long)]
+    weights_file: Option<PathBuf>,
+    /// Tab-separated `generator  family` rows naming the family of
+    /// generators whose manifests have no `generator_family` column.
+    #[arg(long)]
+    family_map: Option<PathBuf>,
+    /// A manifest of the replay pool (older generators, reposted images):
+    /// `--replay-share` of the draws come from these instead. Repeatable.
+    #[arg(long)]
+    replay_manifest: Vec<PathBuf>,
+    /// The share of draws taken from the replay pool.
+    #[arg(long, default_value_t = 0.2)]
+    replay_share: f32,
+}
+
+impl SamplingFlags {
+    fn options(&self) -> Result<tintype::sampling::Options> {
+        use tintype::sampling;
+        let (mut manifest_weights, mut family_weights) = match &self.weights_file {
+            Some(f) => sampling::read_weights_file(f)?,
+            None => (Vec::new(), Vec::new()),
+        };
+        for w in &self.manifest_weight {
+            manifest_weights.push(sampling::parse_weight(w)?);
+        }
+        for w in &self.family_weight {
+            family_weights.push(sampling::parse_weight(w)?);
+        }
+        let family_map = match &self.family_map {
+            Some(f) => sampling::read_family_map(f)?,
+            None => Default::default(),
+        };
+        Ok(sampling::Options { manifest_weights, family_weights, family_map, replay_manifests: self.replay_manifest.clone(), replay_share: self.replay_share })
+    }
 }
 
 fn parse_device(s: &str) -> Result<Device> {
@@ -717,7 +802,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         #[cfg(target_os = "macos")]
-        Cmd::Train { init, init_prefix, manifest, out, steps, batch, lr, warmup, val_pct, val_max, eval_every, threads, seed, p_native, layer_decay, weight_decay, smoothing, sampler_alpha, p_messenger } => {
+        Cmd::Train { init, init_prefix, manifest, out, steps, batch, lr, warmup, val_pct, val_max, eval_every, threads, seed, p_native, layer_decay, weight_decay, smoothing, sampler_alpha, p_messenger, sampling, print_sampling } => {
             tintype::train_cmd::run(tintype::train_cmd::TrainArgs {
                 init,
                 init_prefix,
@@ -735,7 +820,22 @@ fn main() -> Result<()> {
                 aug: tintype::data::AugConfig { p_native, p_messenger, ..Default::default() },
                 opt: tintype::trainer::OptConfig { layer_decay, weight_decay, smoothing, ..Default::default() },
                 sampler_alpha,
+                sampling: sampling.options()?,
+                print_sampling,
             })
+        }
+        Cmd::SamplingShares { manifest, val_pct, sampler_alpha, sampling, top, rebalance_families, write_weights } => {
+            let (recipe, val_items) = tintype::sampling::Recipe::load(&manifest, &sampling.options()?, sampler_alpha)?.split_validation(val_pct);
+            let sampler = recipe.sampler()?;
+            println!("train {} images ({}), val pool {}\n", recipe.items.len(), sampler.summary(), val_items.len());
+            print!("{}", recipe.shares_report(&sampler, top));
+            if let (Some(gamma), Some(out)) = (rebalance_families, write_weights) {
+                let weights = recipe.rebalance_families(&sampler, gamma)?;
+                let header = format!("Family weights that move each AI family's share of AI draws to share^{gamma}, renormalised.\nWritten by `tintype sampling-shares --rebalance-families {gamma}` from {} manifests, alpha {sampler_alpha}, validation {val_pct}%.", manifest.len());
+                std::fs::write(&out, tintype::sampling::weights_file_text(&header, &weights))?;
+                println!("\n{}: weights for {} AI families", out.display(), weights.len());
+            }
+            Ok(())
         }
         #[cfg(not(target_os = "macos"))]
         Cmd::Score { .. } | Cmd::ScoreVideo { .. } | Cmd::Evaluate { .. } | Cmd::Finalize { .. } | Cmd::FinalizeVideo { .. } | Cmd::Calibrate { .. } | Cmd::Profile { .. } | Cmd::Train { .. } => {
