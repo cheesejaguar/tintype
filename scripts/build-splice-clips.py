@@ -77,12 +77,22 @@ def canvas(width, height, max_height):
     return even(width), even(height)
 
 
-def chain(index, start, length, size, fps, label):
-    """Bring input `index` to the canvas and frame rate and cut `length` seconds from `start`."""
+def window(first, count, fps):
+    """A `trim` that keeps exactly frames `first .. first + count - 1` of a stream at `fps`.
+
+    The bounds sit half a frame before the first frame kept and half a frame
+    before the first one dropped, so rounding cannot move a frame across
+    them and every recorded time is a whole number of frames.
+    """
+    return f"trim=start={(first - 0.5) / fps:.6f}:end={(first + count - 0.5) / fps:.6f},setpts=PTS-STARTPTS"
+
+
+def chain(index, first, count, size, fps, label):
+    """Bring input `index` to the canvas and frame rate and keep `count` frames from frame `first`."""
     w, h = size
     return (
         f"[{index}:v]fps={fps:.6g},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,format=yuv420p,"
-        f"trim=start={start:.4f}:duration={length:.4f},setpts=PTS-STARTPTS[{label}]"
+        f"{window(first, count, fps)}[{label}]"
     )
 
 
@@ -98,8 +108,8 @@ def encode(ffmpeg, inputs, graph, out, fps, crf):
 
 
 def parent_graph(parts, size, fps):
-    """Filter chains that assemble the parent timeline from `parts` (inputs 0..K-1) as [parent]."""
-    graph = [chain(i, 0.0, length, size, fps, f"p{i}") for i, (_, length) in enumerate(parts)]
+    """Filter chains that assemble the parent timeline from `parts` (inputs 0..K-1, each a path and a frame count) as [parent]."""
+    graph = [chain(i, 0, count, size, fps, f"p{i}") for i, (_, count) in enumerate(parts)]
     if len(parts) == 1:
         graph.append("[p0]null[parent]")
     else:
@@ -127,14 +137,14 @@ def build(args):
             info[key] = probe(args.ffprobe, row["path"])
         return info[key]
 
-    def donor(pool, need, avoid):
-        """A clip of `pool` at least `need` seconds long that is not in `avoid`, and a start time in it."""
+    def donor(pool, need, avoid, fps):
+        """A clip of `pool` at least `need` seconds long that is not in `avoid`, and the frame (at the parent's rate) to start from."""
         for _ in range(40):
             row = rng.choice(pool)
             meta = known(row)
             if str(row["path"]) in avoid or meta is None or meta[3] < need + 0.2:
                 continue
-            return row, rng.uniform(0.0, meta[3] - need - 0.1)
+            return row, int(rng.uniform(0.0, meta[3] - need - 0.1) * fps)
         return None
 
     manifest, edits = [], ["# path\tkind\tgenerated\tstart_s\tend_s\tduration_s\tdonor\tdonor_generator\tparent_cuts"]
@@ -154,16 +164,18 @@ def build(args):
         metas = [known(r) for r in group]
         if len(group) < args.parent_clips or any(m is None for m in metas):
             continue
-        parts = [(r["path"], min(m[3] - 0.05, args.max_part_seconds)) for r, m in zip(group, metas)]
-        total = sum(length for _, length in parts)
-        if any(length < 1.0 for _, length in parts) or total < args.min_seconds:
-            continue
         fps = metas[0][2] if 1.0 <= metas[0][2] <= 120.0 else 25.0
+        # Everything is counted in frames at the parent's rate, so that the times written down are the times in the file.
+        parts = [(r["path"], int(min(m[3] - 0.05, args.max_part_seconds) * fps)) for r, m in zip(group, metas)]
+        frames = sum(count for _, count in parts)
+        total = frames / fps
+        if any(count < fps for _, count in parts) or total < args.min_seconds:
+            continue
         size = canvas(metas[0][0], metas[0][1], args.max_height)
-        cuts, at = [], 0.0
-        for _, length in parts[:-1]:
-            at += length
-            cuts.append(round(at, 3))
+        cuts, at = [], 0
+        for _, count in parts[:-1]:
+            at += count
+            cuts.append(round(at / fps, 3))
         key = f"{made:05d}"
         folder = out / "clips" / key
         folder.mkdir(exist_ok=True)
@@ -177,8 +189,9 @@ def build(args):
         for d in durations:
             if total < d + 2 * args.margin_seconds + 2 * fade:
                 continue
-            start = rng.uniform(args.margin_seconds, total - d - args.margin_seconds - fade)
-            generated, authentic = donor(fake, d + fade, used), donor(real, d + fade, used)
+            # The edit starts at frame `start` and replaces `d` frames; a dissolve takes `fade` frames at each end.
+            start = round(rng.uniform(args.margin_seconds, total - d - args.margin_seconds - fade) * fps)
+            generated, authentic = donor(fake, d + fade, used, fps), donor(real, d + fade, used, fps)
             if generated:
                 plan.append((f"generated-splice-{d:g}s", "generated-splice", start, d, generated))
             if authentic:
@@ -193,29 +206,31 @@ def build(args):
                     encode(args.ffmpeg, inputs, base + ["[parent]null[out]"], path, fps, args.crf)
                     row = ("reencode", 0, "-", "-", "-", "-", "-")
                 elif kind == "authentic-dissolve":
-                    # Fade from the parent into the inserted clip at `start` and back out at `start + d`.
+                    # Fade from the parent into the inserted clip from frame `start` and back out from frame `start + n`.
+                    n, f = round(d * fps), max(1, round(fade * fps))
                     graph = base + [
                         "[parent]split=2[a][b]",
                         # The cross-fade wants one time base and frame rate on both sides.
-                        f"[a]trim=start=0:duration={start + fade:.4f},setpts=PTS-STARTPTS,settb=AVTB,fps={fps:.6g}[head]",
-                        f"[b]trim=start={start + d:.4f},setpts=PTS-STARTPTS,settb=AVTB,fps={fps:.6g}[tail]",
-                        chain(k, source[1], d + fade, size, fps, "raw"),
+                        f"[a]{window(0, start + f, fps)},settb=AVTB,fps={fps:.6g}[head]",
+                        f"[b]{window(start + n, frames - start - n, fps)},settb=AVTB,fps={fps:.6g}[tail]",
+                        chain(k, source[1], n + f, size, fps, "raw"),
                         f"[raw]settb=AVTB,fps={fps:.6g}[ins]",
-                        f"[head][ins]xfade=transition=fade:duration={fade:.4f}:offset={start:.4f}[x]",
-                        f"[x][tail]xfade=transition=fade:duration={fade:.4f}:offset={start + d:.4f}[out]",
+                        f"[head][ins]xfade=transition=fade:duration={f / fps:.6f}:offset={(start - 0.25) / fps:.6f}[x]",
+                        f"[x][tail]xfade=transition=fade:duration={f / fps:.6f}:offset={(start + n - 0.25) / fps:.6f}[out]",
                     ]
                     encode(args.ffmpeg, inputs + [source[0]["path"]], graph, path, fps, args.crf)
-                    row = (kind, 0, f"{start:.3f}", f"{start + d + fade:.3f}", f"{d + fade:.3f}", str(source[0]["path"]), source[0]["generator"])
+                    row = (kind, 0, f"{start / fps:.3f}", f"{(start + n + f) / fps:.3f}", f"{(n + f) / fps:.3f}", str(source[0]["path"]), source[0]["generator"])
                 else:
+                    n = round(d * fps)
                     graph = base + [
                         "[parent]split=2[a][b]",
-                        f"[a]trim=start=0:duration={start:.4f},setpts=PTS-STARTPTS[head]",
-                        f"[b]trim=start={start + d:.4f},setpts=PTS-STARTPTS[tail]",
-                        chain(k, source[1], d, size, fps, "ins"),
+                        f"[a]{window(0, start, fps)}[head]",
+                        f"[b]{window(start + n, frames - start - n, fps)}[tail]",
+                        chain(k, source[1], n, size, fps, "ins"),
                         "[head][ins][tail]concat=n=3:v=1:a=0[out]",
                     ]
                     encode(args.ffmpeg, inputs + [source[0]["path"]], graph, path, fps, args.crf)
-                    row = (kind, int(kind == "generated-splice"), f"{start:.3f}", f"{start + d:.3f}", f"{d:.3f}", str(source[0]["path"]), source[0]["generator"])
+                    row = (kind, int(kind == "generated-splice"), f"{start / fps:.3f}", f"{(start + n) / fps:.3f}", f"{n / fps:.3f}", str(source[0]["path"]), source[0]["generator"])
                 rel = f"clips/{key}/{transform}.mp4"
                 is_generated = row[1] == 1
                 generator = f"partial:{row[6]}" if is_generated else first["generator"]
