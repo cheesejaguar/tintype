@@ -26,6 +26,15 @@ score column), plain or gzip. With `--pair-by-name` no manifest is needed:
 `original/x.jpg` is the parent of `<transform>/x.jpg` (the layout of
 docs/results/frontier-jpeg-stress-scores.tsv.gz).
 
+`--versus OTHER` compares two score columns of one archive (two
+checkpoints scored on the same files): it adds the difference in recall at
+1% FPR, `--column` minus `OTHER`, with a paired percentile bootstrap over
+parents. Authentic and generated parents are resampled separately, both
+columns see the same draws, and each column's cutoff is refitted in every
+draw, so the interval carries the uncertainty of the cutoff too. It says
+how much of a difference the choice of test images could explain; it says
+nothing about how much two training runs of the same recipe differ.
+
 Standard library only.
 """
 
@@ -33,6 +42,7 @@ import argparse
 import csv
 import gzip
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -79,6 +89,23 @@ def auroc(real, generated):
     return (rank_sum - n * (n + 1) / 2) / (n * len(real))
 
 
+def recall_at(real, generated, fpr):
+    """How many of `generated` are flagged at the cutoff `fpr` gives on `real`."""
+    cut = cutoff_at(real, fpr)
+    return sum(s > cut for s in generated)
+
+
+def paired_difference(real, generated, fpr, draws, seed):
+    """Recall at `fpr` of the first score minus the second, in points, with a
+    95% percentile interval. `real` and `generated` are lists of
+    `(first, second)` score pairs of the same items."""
+    def difference(r, g):
+        return 100 * (recall_at([a for a, _ in r], [a for a, _ in g], fpr) - recall_at([b for _, b in r], [b for _, b in g], fpr)) / len(g)
+    rng = random.Random(seed)
+    resampled = sorted(difference(rng.choices(real, k=len(real)), rng.choices(generated, k=len(generated))) for _ in range(draws))
+    return difference(real, generated), resampled[int(0.025 * draws)], resampled[min(int(0.975 * draws), draws - 1)]
+
+
 def share(count, total):
     return f"{count}/{total} ({100 * count / total:.1f}%)" if total else "–"
 
@@ -91,20 +118,33 @@ def main():
     parser.add_argument("--pair-by-name", action="store_true", help="pair `original/<name>` with `<transform>/<name>` instead of reading manifests")
     parser.add_argument("--column", default="tintype", help="score column of a file with a header row [tintype]")
     parser.add_argument("--frozen", type=float, default=0.5, help="the frozen cutoff; items are flagged strictly above it [0.5]")
+    parser.add_argument("--versus", metavar="COLUMN", help="a second score column: add recall at 1%% FPR of --column minus this one, with a paired bootstrap interval")
+    parser.add_argument("--draws", type=int, default=2000, help="bootstrap draws for --versus [2000]")
+    parser.add_argument("--seed", type=int, default=20261114, help="bootstrap seed for --versus")
+    parser.add_argument("--self-test", action="store_true", help="check the bootstrap on made-up scores and exit")
+    if "--self-test" in sys.argv[1:]:
+        self_test()
+        return
     args = parser.parse_args()
     if bool(args.manifest) == args.pair_by_name:
         parser.error("give either --manifest (one or more) or --pair-by-name")
+    if args.versus and args.draws < 40:
+        parser.error("--draws must be at least 40 for a 95% interval")
 
-    scores = {}
+    scores, other = {}, {}
     for path in args.scores:
         scores.update(read_scores(path, args.column))
+        if args.versus:
+            other.update(read_scores(path, args.versus))
+    if args.versus and other.keys() != scores.keys():
+        parser.error(f"--versus {args.versus}: not the same rows as --column {args.column}")
 
     # transform -> {parent: (label, score)}; "" is the original.
     suite, unscored = {}, 0
     if args.pair_by_name:
         for path, (label, score) in scores.items():
             transform, _, name = path.partition(os.sep)
-            suite.setdefault("" if transform == "original" else transform, {})[name] = (label, score)
+            suite.setdefault("" if transform == "original" else transform, {})[name] = (label, score, other.get(path, (label, None))[1])
     else:
         for manifest in args.manifest:
             root = args.root if args.root else manifest.parent
@@ -119,7 +159,7 @@ def main():
                     continue
                 if scored[0] != int(fields[1]):
                     parser.error(f"{manifest}: label of {fields[0]} differs from the score file")
-                suite.setdefault(transform, {})[fields[4]] = scored
+                suite.setdefault(transform, {})[fields[4]] = (*scored, other.get(os.path.normpath(os.path.join(root, fields[0])), (None, None))[1])
     originals = suite.pop("", {})
     if not originals or not suite:
         parser.error("found no scored originals, or no scored processed copies")
@@ -131,8 +171,9 @@ def main():
     print("Each row uses the parents scored both as originals and under that transform.\n")
     print("| Transform | Pairs: AI / real | Real flagged, original → processed | FPR shift (newly flagged, cleared) "
           "| Recall, original → processed | Recall at 1% FPR | Recall at 0.1% FPR | AUROC "
-          "| Originals' 1% cutoff on processed: FPR, recall |")
-    print("|---|---|---|---|---|---|---|---|---|")
+          "| Originals' 1% cutoff on processed: FPR, recall |"
+          + (f" Recall at 1% FPR, {args.column} − {args.versus} (95% paired bootstrap) |" if args.versus else ""))
+    print("|---|---|---|---|---|---|---|---|---|" + ("---|" if args.versus else ""))
     for transform, copies in [("original", originals), *suite.items()]:
         parents = [p for p in copies if p in originals]
         if any(originals[p][0] != copies[p][0] for p in parents):
@@ -161,7 +202,32 @@ def main():
             cells.append(f"{share(sum(s > cut for s in real), len(real))}, {share(sum(s > cut for s in generated), len(generated))}")
         else:
             cells.append("–")
+        if args.versus:
+            both = {label: [(copies[p][1], copies[p][2]) for p in parents if copies[p][0] == label] for label in (0, 1)}
+            if both[0] and both[1]:
+                point, low, high = paired_difference(both[0], both[1], 0.01, args.draws, args.seed)
+                cells.append(f"{point:+.1f} pt ({low:+.1f} to {high:+.1f})")
+            else:
+                cells.append("–")
         print("| " + " | ".join(cells) + " |")
+
+
+def self_test():
+    real = [(i / 200, i / 200) for i in range(200)]
+    # The first score separates every generated item; the second puts half of them under the authentic ones.
+    generated = [(2.0 + i, 2.0 + i if i % 2 else -1.0) for i in range(100)]
+    assert recall_at([a for a, _ in real], [a for a, _ in generated], 0.01) == 100
+    assert recall_at([b for _, b in real], [b for _, b in generated], 0.01) == 50
+    point, low, high = paired_difference(real, generated, 0.01, 400, 1)
+    assert point == 50.0 and 35.0 < low <= point <= high < 65.0, (point, low, high)
+    assert paired_difference(real, generated, 0.01, 400, 1) == (point, low, high), "the same seed must give the same interval"
+    same = [(a, a) for a, _ in generated]
+    assert paired_difference(real, same, 0.01, 400, 1) == (0.0, 0.0, 0.0)
+    # One authentic item above everything: at 1% of 200 two may pass, so nothing is lost; at 0.1% none may.
+    spiked = real[:-1] + [(1000.0, 1000.0)]
+    assert recall_at([a for a, _ in spiked], [a for a, _ in generated], 0.01) == 100
+    assert recall_at([a for a, _ in spiked], [a for a, _ in generated], 0.001) == 0
+    print("report-stress self-test: ok")
 
 
 if __name__ == "__main__":
