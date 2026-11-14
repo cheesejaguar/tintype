@@ -728,6 +728,16 @@ def write_scores(directory, items, policies, scores):
     return written
 
 
+def write_manifest(path, items):
+    """`path label generator dataset parent_id scene_id source_id generator_family transform`, gaps as `-`."""
+    with open(path, "w", encoding="utf-8", newline="") as stream:
+        for it in items:
+            columns = [it["groups"].get(name, "-") for name in GROUP_COLUMNS]
+            while columns and columns[-1] == "-":
+                columns.pop()
+            stream.write("\t".join([it["key"], str(it["label"]), it["generator"], it["dataset"]] + columns) + "\n")
+
+
 # ---------------------------------------------------------------- the comparison
 
 def split_cohorts(items, key):
@@ -1086,6 +1096,11 @@ def self_test():
             f.write("img/a.jpg\t1\tflux\tdemo\tp1\t-\tsrc\t\tjpeg-q70\n/abs/b.jpg\t0\treal:x\tdemo\n")
         groups = read_manifest(manifest)
         assert groups[os.path.join(scratch, "img/a.jpg")] == {"parent": "p1", "source": "src", "transform": "jpeg-q70"} and groups["/abs/b.jpg"] == {}
+        # A manifest written from loaded photos reads back with the same groups.
+        photos = [dict(new_item("/x/a.jpg", 1, "flux", "demo"), groups={"parent": "p1", "transform": "jpeg"}), new_item("/x/b.jpg", 0, "real:x", "demo")]
+        write_manifest(manifest, photos)
+        assert Path(manifest).read_text() == "/x/a.jpg\t1\tflux\tdemo\tp1\t-\t-\t-\tjpeg\n/x/b.jpg\t0\treal:x\tdemo\n"
+        assert read_manifest(manifest) == {"/x/a.jpg": {"parent": "p1", "transform": "jpeg"}, "/x/b.jpg": {}}
 
     # A whole comparison on a toy split: weights from the fit set, cutoffs from the calibration set, counts on the test set.
     def toy(seed, split):
@@ -1179,6 +1194,7 @@ def main():
     parser.add_argument("--view-spread", metavar="NAME", help="analyse the spread of this system's view logits as a routing feature (needs --all-views score files)")
     parser.add_argument("--slice-by", choices=["dataset", "generator", "source", "family", "transform"], help="break the misses outside the first gate down by this")
     parser.add_argument("--write-scores", metavar="DIR", help="write each policy's scores as a `tintype report` score file")
+    parser.add_argument("--write-manifest", metavar="FILE", help="write the loaded photos as a manifest with their grouping columns (for `tintype split-groups`) and stop")
     args = parser.parse_args()
 
     if args.self_test or args.check_replay:
@@ -1219,6 +1235,10 @@ def main():
         out.write(f"{len(items)} photos scored by every system ({', '.join(sorted(systems))}).")
         out.write("".join(f" {n} photos of {name} have no partner and are left out." for name, n in dropped.items()) + "\n")
 
+    if args.write_manifest:
+        write_manifest(args.write_manifest, items)
+        out.write(f"\nWrote {len(items)} manifest rows to {args.write_manifest}.\n")
+        return 0
     if args.groups:
         groups = {}
         for manifest in args.groups:
