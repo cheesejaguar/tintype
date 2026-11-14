@@ -1,0 +1,18 @@
+=== cutoffs frozen on calibrate for 1%
+4800 items scored by all 3 systems: 2400 AI, 2400 real; grouping columns found for 4800
+Recall intervals: 95% bootstrap over 400 parent clusters (200 of them hold AI items).
+**default**
+| frozen cutoff | 0.279070 | 82 of 2400 | 3.42% | 4.09% | 84.79% (82.36%–87.32%) | 20.04% |
+**strict**
+| frozen cutoff | 0.179429 | 73 of 2400 | 3.04% | 3.68% | 85.17% (82.65%–87.76%) | 22.05% |
+**fused**
+| frozen cutoff | 0.415647 | 68 of 2400 | 2.83% | 3.46% | 84.79% (82.50%–87.13%) | 23.21% |
+=== cutoffs frozen on calibrate for 0.1%
+4800 items scored by all 3 systems: 2400 AI, 2400 real; grouping columns found for 4800
+Recall intervals: 95% bootstrap over 400 parent clusters (200 of them hold AI items).
+**default**
+| frozen cutoff | 0.982164 | 3 of 2400 | 0.12% | 0.32% | 48.96% (44.73%–53.15%) | 79.82% |
+**strict**
+| frozen cutoff | 0.370687 | 13 of 2400 | 0.54% | 0.86% | 74.92% (71.61%–78.03%) | 58.28% |
+**fused**
+| frozen cutoff | 0.998585 | 4 of 2400 | 0.17% | 0.38% | 56.75% (53.09%–60.58%) | 77.47% |

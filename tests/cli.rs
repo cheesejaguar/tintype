@@ -298,5 +298,66 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = stdout(&o);
     assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
+    assert_eq!(out.lines().count(), 1, "without --photo-second-opinion there is no second line: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn detect_gives_the_photo_second_opinion_weights_to_the_photo_stage() {
+    let dir = common::scratch("cli-detect-second");
+    let photo = dir.join("photo.png");
+    common::write_fixture(&photo);
+    // A copy of the released model whose band takes in every photo: the shipped files are never edited.
+    let weights = dir.join("copy.safetensors");
+    std::fs::copy(common::photo_weights(), &weights).unwrap();
+    std::fs::copy(common::photo_weights().with_extension("json"), weights.with_extension("json")).unwrap();
+    let o = tintype(&["set-photo-second-opinion", "--weights", weights.to_str().unwrap(), "--band", "-1000,1000,0.5,0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let missing = dir.join("no-such-weights.safetensors");
+    let base = ["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap(), photo.to_str().unwrap()];
+    // The photo is inside the band, so the second network is needed and its missing weights are an error.
+    let mut args = base.to_vec();
+    args.extend_from_slice(&["--photo-second-opinion", missing.to_str().unwrap()]);
+    let o = tintype(&args);
+    assert!(!o.status.success(), "a photo inside the band must reach the second stage: {}", stdout(&o));
+    // The video second opinion has nothing to do with a photo (and exists on macOS only).
+    #[cfg(target_os = "macos")]
+    {
+        let mut args = base.to_vec();
+        args.extend_from_slice(&["--second-opinion", missing.to_str().unwrap()]);
+        let o = tintype(&args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(json_lines(&o)[0]["second_opinion"], false);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn latency_with_a_photo_second_opinion_needs_a_band_and_the_default_profile() {
+    let dir = common::scratch("cli-latency-second");
+    common::write_fixture(&dir.join("0.png"));
+    std::fs::write(dir.join("manifest.tsv"), "0.png\t0\treal:fixture\tdemo\n").unwrap();
+    let manifest = dir.join("manifest.tsv");
+    // A copy of the released model without its band: the shipped files are never edited.
+    let weights = dir.join("copy.safetensors");
+    std::fs::copy(common::photo_weights(), &weights).unwrap();
+    std::fs::copy(common::photo_weights().with_extension("json"), weights.with_extension("json")).unwrap();
+    let o = tintype(&["set-photo-second-opinion", "--weights", weights.to_str().unwrap(), "--band", "none"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let second = dir.join("no-such-weights.safetensors");
+    let run = |weights: &Path, extra: &[&str]| {
+        let mut args = vec!["latency", "--weights", weights.to_str().unwrap(), "--manifest", manifest.to_str().unwrap(), "--n", "1", "--device", "cpu", "--photo-second-opinion", second.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        tintype(&args)
+    };
+    let o = run(&weights, &[]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("has no second-opinion band for photos"), "{}", String::from_utf8_lossy(&o.stderr));
+    // With the band of the released spec, the second network is needed, and its weights are missing here.
+    let o = run(&common::photo_weights(), &[]);
+    assert!(!o.status.success() && !String::from_utf8_lossy(&o.stderr).contains("second-opinion band"), "{}", String::from_utf8_lossy(&o.stderr));
+    for conflicting in [&["--fast"][..], &["--reference", "commfor"][..]] {
+        let o = run(&common::photo_weights(), conflicting);
+        assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("cannot be used with"), "{}", String::from_utf8_lossy(&o.stderr));
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
