@@ -466,6 +466,8 @@ class Policy:
         self.weight, self.threshold = weight, threshold
         self.fitted = fitted
         self.single_model = single_model
+        self.stored = False  # a column that already holds a fused policy, e.g. a real two-stage run
+        self.band = False    # a Community Forensics band computed from the two separate scores
 
     def routed(self, item):
         if self.gate is None:
@@ -518,11 +520,14 @@ def fold_of(key, folds):
 def build_policies(systems, first, profiles, stored, cf, bands, seconds, margins, with_fitted):
     policies = [Policy(display(first), first, single_model=True)]
     policies += [Policy(display(p), p, single_model=True) for p in profiles]
-    policies += [Policy(display(s), s) for s in stored]
+    for name in stored:
+        policies.append(Policy(display(name), name))
+        policies[-1].stored = True
     if cf:
         for label, (lo, hi, weight, threshold) in bands:
             name = f"{label} CF blend: band ({lo:g}, {hi:g}), weight {weight:g}, threshold {threshold:g}"
             policies.append(Policy(name, first, cf, (lo, hi, False), weight, threshold))
+            policies[-1].band = True
     for second in seconds:
         pair = f"{display(first)} + {display(second)}"
         policies.append(Policy(f"{display(second)} alone", second, single_model=False))
@@ -779,6 +784,24 @@ def gate_report(items, policies, opts, out):
                   [[k, str(counts[k]["generated"]), str(counts[k]["misses"]), str(counts[k]["outside"]), str(counts[k]["caught"])] for k in order[:opts["max_slices"]]], out)
 
 
+def stored_report(items, policies, scores, out):
+    """A stored policy (a real two-stage run) against each band computed from the separate score files:
+    how many verdicts at the own cutoff differ, and how many photos each sent on or changed."""
+    stored = [p for p in policies if p.stored]
+    bands = [p for p in policies if p.band]
+    if not stored or not bands:
+        return
+    out.write("\nStored policies against the bands computed from the separate scores (verdicts at the own cutoff):\n\n")
+    rows = []
+    for a in stored:
+        for b in bands:
+            differ = sum((x > 0.0) != (y > 0.0) for x, y in zip(scores[a], scores[b]))
+            moved = sum(abs(sigmoid(x) - sigmoid(it["z"][b.first])) > 5e-6 for x, it in zip(scores[a], items))
+            routed = sum(b.routed(it) for it in items)
+            rows.append([a.name, b.name, f"{differ}/{len(items)}", str(moved), str(routed)])
+    table(["Stored policy", "Computed band", "Verdicts that differ", "Stored: probabilities that differ from the first stage", "Computed: photos inside the band"], rows, out)
+
+
 def write_scores(directory, items, policies, scores):
     """One `tintype score`-style file per policy (`path label generator dataset prob`), for
     `tintype report --operating-points --system name=file`: intervals, slices and clustered bootstraps."""
@@ -890,6 +913,7 @@ def compare(items, opts, out):
         title = {"test": "Test set", "calibrate": "Calibration set", "fit": "Fit set"}[report]
         chosen_on = f"the {report} set itself (a ranking comparison, not a frozen operating point)"
         report_cohort(title, report_items, policies, report_scores, opts, out, frozen, chosen_on, whole=True)
+        stored_report(report_items, policies, report_scores, out)
         if opts["gates"]:
             gate_report(report_items, policies, opts, out)
         if opts["cohort_by"] != "all":
@@ -906,6 +930,7 @@ def compare(items, opts, out):
             part, part_scores = subset(lambda it: it["key"] in keys)
             title = "All photos" if opts["cohort_by"] == "all" else name
             report_cohort(title, part, policies, part_scores, opts, out, None, "this cohort, so exploratory", whole=opts["cohort_by"] == "all")
+            stored_report(part, policies, part_scores, out)
             if opts["gates"]:
                 gate_report(part, policies, opts, out)
     if opts["write_scores"]:
@@ -1253,6 +1278,14 @@ def self_test():
     assert worst_slice(photos, flags, "source", 0, 1) == ("s", 1, 3) and worst_slice(photos, flags, "family", 1, 1) == ("b", 0, 2)
     assert worst_slice(photos, flags, "transform", 0, 1) == ("-", 1, 3) and worst_slice(photos, flags, "source", 0, 4) is None
     assert [group_value(it, "processing") for it in (photos[0], photos[3])] == ["original", "processed"] and group_value(item(0.0, 0.0), "processing") == "original"
+
+    # A stored two-stage run against the band computed from the two scores: one photo inside the band (-7, 0.5) whose
+    # stored score is on the other side of the cutoff, one identical, one outside the band.
+    trio = [dict(item(-1.0, 4.0), z={"a": -1.0, "b": 4.0, "run": -2.0}), dict(item(0.0, 2.0), z={"a": 0.0, "b": 2.0, "run": 1.0}), dict(item(3.0, 0.0), z={"a": 3.0, "b": 0.0, "run": 3.0})]
+    trio_opts = dict(default_opts(), first="a", cf="b", stored=["run"], bands=[("Shipped", (-7.0, 0.5, 0.5, 0.0))], sweep=[])
+    text = io.StringIO()
+    compare(trio, trio_opts, text)
+    assert "| run | Shipped CF blend: band (-7, 0.5), weight 0.5, threshold 0 | 1/3 | 2 | 2 |" in text.getvalue(), text.getvalue()
 
     # The gate table on five photos: misses at -0.5 (inside |z| <= 2) and -3 (outside, second model flags it),
     # one false alarm at 2.5 (outside, second model clears it).
