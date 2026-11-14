@@ -445,6 +445,7 @@ shipped here. The Community Forensics weights are MIT.
 | `score`, `score-video` | Score one manifest (`--reference commfor|swinv2|waverep` runs a reference detector) |
 | `report` | Precision, recall, F1, FPR, AUROC, recall at 1% FPR, bootstrap intervals; `--at-rate-of` compares systems at one system's false-positive rate; `--operating-points` gives recall at 0.1% and 1% FPR, the rates at each frozen cutoff with a Clopper–Pearson bound, precision at a stated prevalence, and per-slice tables |
 | `latency` | Single-image latency, file to verdict: median, p90 and p95. Runs on every platform with `--device cpu` |
+| `dump-video-features`, `fit-temporal-head`, `eval-temporal-head` | Offline experiment tooling, not part of detection: per-frame patch tokens with actual timestamps, shallow clip heads fitted on them, and their comparison with the frame mean under shuffled-order, blur and cadence controls ([runbook](docs/runbooks/temporal-head.md)) |
 | `profile` | Decoding, cropping and the network timed separately, the network at several batch sizes |
 | `ingest`, `index-folder`, `overlap`, `check-videos`, `parquet-info` | Dataset tooling |
 

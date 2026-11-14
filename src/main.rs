@@ -504,6 +504,129 @@ enum Cmd {
         #[arg(long)]
         held_out_family: Vec<String>,
     },
+    /// Write the frame features the temporal-head experiment reads
+    /// (docs/runbooks/temporal-head.md): per clip and sampled frame, the
+    /// actual presentation time, the position in the stream, the logits, and
+    /// the patch tokens of the whole-frame view pooled to a grid. Offline
+    /// tooling: nothing in `detect` uses it. Runs on every platform with
+    /// `--device cpu`.
+    DumpVideoFeatures {
+        /// The video checkpoint (a copy under runs/, with its .json beside it).
+        #[arg(long)]
+        weights: PathBuf,
+        #[arg(long, required = true)]
+        manifest: Vec<PathBuf>,
+        /// Directory to write meta.json, clips.tsv, frames.tsv and features.f32 to.
+        #[arg(long)]
+        out: PathBuf,
+        /// Frames sampled per clip (default: the model's video profile).
+        #[arg(long)]
+        frames: Option<usize>,
+        /// Spread samples over the first N seconds. Use 0 for the whole clip.
+        #[arg(long, default_value_t = 30.0)]
+        max_seconds: f64,
+        /// Cells along one side of the pooled token map; must divide 14 (1, 2, 7 or 14).
+        #[arg(long, default_value_t = 7)]
+        grid: usize,
+        /// Blocks whose tokens to store (default: the last block).
+        #[arg(long, value_delimiter = ',')]
+        blocks: Vec<usize>,
+        /// Sample pairs instead: half as many positions, each followed by the frame N frames later in the stream.
+        #[arg(long, default_value_t = 0)]
+        pairs: usize,
+        /// Control: make every sample the mean of itself and the N-1 frames before it (synthetic motion blur).
+        #[arg(long, default_value_t = 1)]
+        temporal_blur: usize,
+        /// Score the whole-frame view only (one view per frame instead of the profile's).
+        #[arg(long)]
+        fit_only: bool,
+        /// auto, gpu-f32, gpu or cpu. `auto` is the GPU in single precision where there is one: half precision (`gpu`) is what scoring uses, but it moves some patch tokens a long way.
+        #[arg(long, default_value = "auto")]
+        device: String,
+        /// Decode threads.
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+    },
+    /// Fit a shallow clip head to dumped frame features, on the CPU. Heads
+    /// start as the frame mean and learn a correction to it.
+    FitTemporalHead {
+        /// A `dump-video-features` directory of the fit set.
+        #[arg(long)]
+        features: PathBuf,
+        /// covariates, pool-linear, attn-pool, patch (order-invariant), diff or concat (temporal).
+        #[arg(long)]
+        kind: String,
+        /// Where to write `<out>.json` and `<out>.safetensors`.
+        #[arg(long)]
+        out: PathBuf,
+        /// A second dump to report on after every epoch (for watching the fit only).
+        #[arg(long)]
+        watch: Option<PathBuf>,
+        /// The per-frame logit the head corrects: frame (every view) or fit (the whole-frame view alone).
+        #[arg(long, default_value = "frame")]
+        base: String,
+        /// The stored block to read (default: the last one in the dump).
+        #[arg(long)]
+        block: Option<usize>,
+        #[arg(long, default_value_t = 32)]
+        hidden: usize,
+        /// How `diff` scales a difference by the time between its frames: none, sqrt or rate.
+        #[arg(long, default_value = "none")]
+        time_norm: String,
+        #[arg(long, default_value_t = 20)]
+        epochs: usize,
+        #[arg(long, default_value_t = 1e-3)]
+        lr: f32,
+        #[arg(long, default_value_t = 1e-4)]
+        weight_decay: f32,
+        #[arg(long, default_value_t = 64)]
+        batch: usize,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Control: fit with every clip's frames in random order (an order-blind twin of the head).
+        #[arg(long)]
+        shuffle_frames: bool,
+        /// A stretch holds a cut when its largest frame-to-frame difference is above this many levels ...
+        #[arg(long, default_value_t = 12.0)]
+        cut_above: f32,
+        /// ... and above this many times the clip's median difference.
+        #[arg(long, default_value_t = 6.0)]
+        cut_ratio: f32,
+    },
+    /// Compare the frame mean, fitted heads and other score files on dumped
+    /// frame features: operating points at cutoffs from a calibration dump,
+    /// the shuffled-order control, and results by cuts, repeated frames,
+    /// motion and cadence.
+    EvalTemporalHead {
+        /// A `dump-video-features` directory of the clips to report on.
+        #[arg(long)]
+        features: PathBuf,
+        /// The dump of the calibration clips: cutoffs come from it. Without it they come from `--features` and every rate is exploratory.
+        #[arg(long)]
+        calibrate: Option<PathBuf>,
+        /// `name=path` of a head written by `fit-temporal-head`. Repeatable.
+        #[arg(long)]
+        head: Vec<String>,
+        /// `name=test.tsv[,calibrate.tsv]`: `score-video` files of another system on the same clips (more frames, fewer views). Repeatable.
+        #[arg(long)]
+        scores: Vec<String>,
+        /// False-positive rates to operate at.
+        #[arg(long, value_delimiter = ',', default_value = "0.01,0.001")]
+        fpr: Vec<f64>,
+        /// Seed of the shuffled-order control.
+        #[arg(long, default_value_t = 1)]
+        shuffle_seed: u64,
+        /// Skip the shuffled-order control.
+        #[arg(long)]
+        no_shuffle: bool,
+        /// Write one score file per arm here, for `tintype report --operating-points`.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        #[arg(long, default_value_t = 12.0)]
+        cut_above: f32,
+        #[arg(long, default_value_t = 6.0)]
+        cut_ratio: f32,
+    },
     /// Check the released model files (weights and specs) against the
     /// SHA-256 values recorded in the source and in docs/DATA.md.
     VerifyModels {
@@ -965,6 +1088,73 @@ fn main() -> Result<()> {
                 println!("note: identical bytes across sets are only checked between freeze-set records");
             }
             anyhow::ensure!(problems.is_empty(), "{} groups or files cross the sets", problems.len());
+            Ok(())
+        }
+        Cmd::DumpVideoFeatures { weights, manifest, out, frames, max_seconds, grid, blocks, pairs, temporal_blur, fit_only, device, threads } => {
+            anyhow::ensure!(max_seconds.is_finite() && max_seconds >= 0.0 && frames.is_none_or(|n| (1..=256).contains(&n)), "--frames is 1 to 256 and --max-seconds is not negative");
+            // Tokens in single precision unless half precision is asked for by name.
+            let device = match parse_device(&device)? {
+                Device::Gpu if device == "auto" => Device::GpuF32,
+                d => d,
+            };
+            let o = tintype::temporal::DumpOptions { frames, max_seconds, grid, blocks, follow: pairs, blur: temporal_blur.max(1), fit_only, device, threads };
+            let m = tintype::temporal::dump(&weights, &manifest, &out, &o)?;
+            let bytes = m.frame_records * m.record as u64 * 4;
+            println!(
+                "{}: {} clips ({} unreadable), {} frame records of {} values ({:.1} MB) in {:.1}s: {:.1} ms per clip end to end, {:.1} ms per clip in the network, {:.1} ms per clip decoding and cropping on {} threads",
+                out.display(),
+                m.clips,
+                m.unreadable,
+                m.frame_records,
+                m.record,
+                bytes as f64 / 1e6,
+                m.wall_s,
+                1000.0 * m.wall_s / m.clips.max(1) as f64,
+                1000.0 * m.model_s / m.clips.max(1) as f64,
+                1000.0 * m.decode_s / m.clips.max(1) as f64,
+                m.threads
+            );
+            Ok(())
+        }
+        Cmd::FitTemporalHead { features, kind, out, watch, base, block, hidden, time_norm, epochs, lr, weight_decay, batch, seed, shuffle_frames, cut_above, cut_ratio } => {
+            use tintype::temporal_head as th;
+            let set = tintype::temporal::FeatureSet::open(&features)?;
+            let watch = watch.map(|w| tintype::temporal::FeatureSet::open(&w)).transpose()?;
+            let base = match base.as_str() {
+                "frame" => th::Base::Frame,
+                "fit" => th::Base::Fit,
+                other => anyhow::bail!("unknown base `{other}` (use frame or fit)"),
+            };
+            anyhow::ensure!(base == th::Base::Fit || set.meta.views.len() > 1, "this dump scored the whole-frame view only: use --base fit");
+            let block = block.or(set.meta.blocks.last().copied()).unwrap_or(0);
+            let spec = th::HeadSpec { format: th::FORMAT, kind: th::Kind::parse(&kind)?, base, block, grid: set.meta.grid, dim: set.meta.dim, hidden, follow: set.meta.follow, time_norm: th::TimeNorm::parse(&time_norm)?, trained_shuffled: false, cut_rule: th::CutRule { above: cut_above, ratio: cut_ratio }, fit: None };
+            let t = std::time::Instant::now();
+            let head = th::fit(&set, spec, &th::FitOptions { epochs, lr, weight_decay, batch, seed, shuffle_frames }, watch.as_ref(), |line| println!("{line}"))?;
+            head.save(&out)?;
+            println!("{}: {} head, {} parameters, fitted on {} clips in {:.1}s", out.display(), head.spec.kind.name(), head.parameters(), set.clips.len(), t.elapsed().as_secs_f64());
+            Ok(())
+        }
+        Cmd::EvalTemporalHead { features, calibrate, head, scores, fpr, shuffle_seed, no_shuffle, out_dir, cut_above, cut_ratio } => {
+            use tintype::temporal_head as th;
+            anyhow::ensure!(!fpr.is_empty() && fpr.iter().all(|f| (0.0..1.0).contains(f)), "--fpr takes fractions, e.g. 0.01,0.001");
+            let set = tintype::temporal::FeatureSet::open(&features)?;
+            let calibrate = calibrate.map(|c| tintype::temporal::FeatureSet::open(&c)).transpose()?;
+            let mut heads = Vec::new();
+            for h in &head {
+                let (name, path) = h.split_once('=').ok_or_else(|| anyhow::anyhow!("use --head name=path"))?;
+                heads.push((name.to_string(), th::Head::load(std::path::Path::new(path))?));
+            }
+            let mut external = Vec::new();
+            for s in &scores {
+                let (name, files) = s.split_once('=').ok_or_else(|| anyhow::anyhow!("use --scores name=test.tsv[,calibrate.tsv]"))?;
+                let (test, cal) = match files.split_once(',') {
+                    Some((t, c)) => (t, Some(PathBuf::from(c))),
+                    None => (files, None),
+                };
+                external.push(th::External { name: name.to_string(), test: test.into(), calibrate: cal });
+            }
+            let o = th::EvalOptions { fprs: fpr, shuffle_seed: (!no_shuffle).then_some(shuffle_seed), cut_rule: th::CutRule { above: cut_above, ratio: cut_ratio }, out_dir };
+            print!("{}", th::evaluate(&set, calibrate.as_ref(), &heads, &external, &o)?);
             Ok(())
         }
         Cmd::VerifyModels { root } => {

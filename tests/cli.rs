@@ -300,3 +300,69 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn feature_dump_head_fit_and_comparison_run_end_to_end_on_the_cpu_engine() {
+    let dir = common::scratch("cli-temporal");
+    // Four clips: the two fixtures, each once as real and once as AI (a pipeline check, not a detector).
+    let fixtures = common::repo().join("tests/fixtures");
+    let mut manifest = String::new();
+    for (name, label) in [("a.mp4", 0), ("b.mp4", 1), ("c.mp4", 1), ("d.mp4", 0)] {
+        std::fs::copy(fixtures.join(if label == 0 { "video.mp4" } else { "hevc.mp4" }), dir.join(name)).unwrap();
+        manifest.push_str(&format!("{name}\t{label}\t{}\tfixture\t-\tscene-{name}\n", if label == 1 { "gen" } else { "real:fixture" }));
+    }
+    std::fs::write(dir.join("manifest.tsv"), manifest).unwrap();
+    let weights = common::photo_weights();
+    let (dump, pairs) = (dir.join("dump"), dir.join("pairs"));
+    let path = |p: &Path| p.to_str().unwrap().to_string();
+    let run = |args: &[&str]| {
+        let o = tintype(args);
+        assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        stdout(&o)
+    };
+    // Four frames, the whole-frame view only, tokens pooled to 2 x 2.
+    let common_args = ["--weights", weights.to_str().unwrap(), "--manifest", &path(&dir.join("manifest.tsv")), "--frames", "4", "--max-seconds", "0", "--grid", "2", "--fit-only", "--device", "cpu", "--threads", "2"];
+    let out = run(&[&["dump-video-features", "--out", &path(&dump)], &common_args[..]].concat());
+    assert!(out.contains("4 clips (0 unreadable), 16 frame records of 1920 values"), "{out}");
+    assert_eq!(std::fs::metadata(dump.join("features.f32")).unwrap().len(), 16 * 1920 * 4);
+    let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dump.join("meta.json")).unwrap()).unwrap();
+    assert_eq!((meta["frames"].as_u64(), meta["grid"].as_u64(), meta["blocks"][0].as_u64(), meta["views"].as_array().map(|v| v.len())), (Some(4), Some(2), Some(12), Some(1)), "{meta}");
+    // Rows in manifest order, with the grouping columns, real timestamps and stream positions.
+    let clips = std::fs::read_to_string(dump.join("clips.tsv")).unwrap();
+    let rows: Vec<Vec<&str>> = clips.lines().skip(1).map(|l| l.split('\t').collect()).collect();
+    let name = |p: &str| Path::new(p).file_name().unwrap().to_str().unwrap().to_string();
+    assert_eq!(rows.iter().map(|r| (name(r[0]), r[1], r[5])).collect::<Vec<_>>(), [("a.mp4", "0", "scene-a.mp4"), ("b.mp4", "1", "scene-b.mp4"), ("c.mp4", "1", "scene-c.mp4"), ("d.mp4", "0", "scene-d.mp4")].map(|(n, l, s)| (n.to_string(), l, s)), "{clips}");
+    let frames = std::fs::read_to_string(dump.join("frames.tsv")).unwrap();
+    let first: Vec<Vec<&str>> = frames.lines().skip(1).take(4).map(|l| l.split('\t').collect()).collect();
+    // The one-second, twelve-frame clip sampled at 0, 0.25, 0.5 and 0.75 s: frames 0, 3, 6 and 9.
+    assert_eq!(first.iter().map(|f| (f[1], f[2], f[3], f[7])).collect::<Vec<_>>(), vec![("0", "0", "0.000000", "0"), ("1", "3", "0.250000", "3"), ("2", "6", "0.500000", "3"), ("3", "9", "0.750000", "3")], "{frames}");
+    // With one view per frame the frame logit is the whole-frame view's.
+    assert!(first.iter().all(|f| f[4] == f[5] && f[4] == f[6]), "{frames}");
+
+    // Pairs: two positions, each with the next frame of the stream.
+    run(&[&["dump-video-features", "--out", &path(&pairs), "--pairs", "1"], &common_args[..]].concat());
+    let frames = std::fs::read_to_string(pairs.join("frames.tsv")).unwrap();
+    assert_eq!(frames.lines().skip(1).take(4).map(|l| l.split('\t').nth(2).unwrap()).collect::<Vec<_>>(), vec!["0", "1", "6", "7"], "{frames}");
+
+    // Fit a temporal head and an order-invariant one, then compare them with the frame mean.
+    for kind in ["diff", "pool-linear", "covariates"] {
+        let out = run(&["fit-temporal-head", "--features", &path(&dump), "--kind", kind, "--out", &path(&dir.join(kind)), "--base", "fit", "--epochs", "2", "--hidden", "4", "--watch", &path(&dump)]);
+        assert!(out.contains("epoch   2: loss ") && out.contains("watch set: AUROC") && out.contains(&format!("{kind} head, ")), "{out}");
+        assert!(dir.join(format!("{kind}.json")).exists() && dir.join(format!("{kind}.safetensors")).exists());
+    }
+    // A head that corrects the all-view logit cannot be fitted to a whole-frame-only dump, and pairs need a paired dump.
+    assert!(!tintype(&["fit-temporal-head", "--features", &path(&dump), "--kind", "diff", "--out", &path(&dir.join("x"))]).status.success());
+    let o = tintype(&["eval-temporal-head", "--features", &path(&pairs), "--head", &format!("diff={}", path(&dir.join("diff")))]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("--pairs"), "{}", String::from_utf8_lossy(&o.stderr));
+
+    let scores = dir.join("scores");
+    let out = run(&["eval-temporal-head", "--features", &path(&dump), "--calibrate", &path(&dump), "--head", &format!("diff={}", path(&dir.join("diff"))), "--head", &format!("pool={}", path(&dir.join("pool-linear"))), "--head", &format!("cov={}", path(&dir.join("covariates"))), "--out-dir", &path(&scores)]);
+    assert!(out.starts_with("4 clips scored by all 7 arms: 2 AI, 2 real"), "{out}");
+    for needle in ["| fit-mean | 4 frames x 1 view |", "| diff |", "| diff+shuffled |", "| pool |", "| cov+shuffled |", "### Operating at a 1% false-positive cutoff", "### Operating at a 0.1% false-positive cutoff", "### Shuffled-order control", "By frame rate", "tintype report --operating-points"] {
+        assert!(out.contains(needle), "missing `{needle}` in:\n{out}");
+    }
+    // The score files go straight into the fixed-budget report.
+    let o = tintype(&["report", "--operating-points", "--system", &format!("mean={}", path(&scores.join("fit-mean.tsv"))), "--system", &format!("diff={}", path(&scores.join("diff.tsv"))), "--min-slice", "1"]);
+    assert!(o.status.success() && stdout(&o).contains("4 items scored by all 2 systems: 2 AI, 2 real"), "{}{}", stdout(&o), String::from_utf8_lossy(&o.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}

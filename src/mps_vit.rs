@@ -69,7 +69,18 @@ pub struct VitOut {
 /// Build the ViT trunk. `x` is `[B, 3, H, W]` in working precision, already
 /// normalised. `batch` must be the static batch size.
 pub fn build_vit<P: ParamSource>(g: &Graph, w: &Weights, p: &mut P, cfg: &VitConfig, x: &T, batch: usize) -> Result<VitOut> {
-    build(g, w, p, cfg, x, batch, false)
+    Ok(build(g, w, p, cfg, x, batch, false, &[])?.0)
+}
+
+/// The trunk for inference with the tokens of chosen blocks read out as
+/// well: for each entry of `blocks`, in the order given, `[B, N+1, D]` as
+/// the tokens stand after that many blocks and the final layer norm (the
+/// same convention as [`crate::cpu_vit::Tapped`]). Every block is evaluated
+/// in full, so this graph costs more than [`build_vit_cls`]; scoring keeps
+/// using that one.
+pub fn build_vit_tokens(g: &Graph, w: &Weights, cfg: &VitConfig, x: &T, batch: usize, blocks: &[usize]) -> Result<(VitOut, Vec<T>)> {
+    anyhow::ensure!(blocks.iter().all(|&k| k <= cfg.depth), "this network has {} blocks", cfg.depth);
+    build(g, w, &mut Frozen, cfg, x, batch, false, blocks)
 }
 
 /// The same network for inference only, where just the class token is
@@ -77,10 +88,11 @@ pub fn build_vit<P: ParamSource>(g: &Graph, w: &Weights, p: &mut P, cfg: &VitCon
 /// evaluated for the class token alone (its other outputs are never read),
 /// which gives the same class embedding. `tokens` then holds only that token.
 pub fn build_vit_cls(g: &Graph, w: &Weights, cfg: &VitConfig, x: &T, batch: usize) -> Result<VitOut> {
-    build(g, w, &mut Frozen, cfg, x, batch, true)
+    Ok(build(g, w, &mut Frozen, cfg, x, batch, true, &[])?.0)
 }
 
-fn build<P: ParamSource>(g: &Graph, w: &Weights, p: &mut P, cfg: &VitConfig, x: &T, batch: usize, cls_only: bool) -> Result<VitOut> {
+#[allow(clippy::too_many_arguments)]
+fn build<P: ParamSource>(g: &Graph, w: &Weights, p: &mut P, cfg: &VitConfig, x: &T, batch: usize, cls_only: bool, taps: &[usize]) -> Result<(VitOut, Vec<T>)> {
     let mut c = Ctx { g, w, p };
     let shortcut = cls_only && !cfg.layer_scale;
     let (b, d) = (batch as isize, cfg.dim as isize);
@@ -110,6 +122,11 @@ fn build<P: ParamSource>(g: &Graph, w: &Weights, p: &mut P, cfg: &VitConfig, x: 
         g.add(&g.concat(&[cls_b, x], 1), &pos)
     };
     let nt = n + cfg.prefix_tokens() as isize;
+    // Normalised tokens after `k` blocks, for the taps short of the last block.
+    let mut tapped: Vec<(usize, T)> = Vec::new();
+    if taps.contains(&0) && cfg.depth > 0 {
+        tapped.push((0, c.norm(&x, "norm")?));
+    }
 
     for i in 0..cfg.depth {
         let pre = format!("blocks.{i}");
@@ -149,10 +166,14 @@ fn build<P: ParamSource>(g: &Graph, w: &Weights, p: &mut P, cfg: &VitConfig, x: 
             y = g.mul(&y, &c.raw(&format!("{pre}.ls2.gamma"))?);
         }
         x = g.add(&x, &y);
+        if taps.contains(&(i + 1)) && i + 1 < cfg.depth {
+            tapped.push((i + 1, c.norm(&x, "norm")?));
+        }
     }
     let tokens = c.norm(&x, "norm")?;
     let cls = g.reshape(&g.slice(&tokens, 1, 0, 1), &[b, d]);
-    Ok(VitOut { tokens, cls })
+    let taps = taps.iter().map(|k| tapped.iter().find(|(at, _)| at == k).map_or_else(|| tokens.clone(), |(_, t)| t.clone())).collect();
+    Ok((VitOut { tokens, cls }, taps))
 }
 
 /// `logit = cls W^T + b` using the checkpoint's `head.*`.
