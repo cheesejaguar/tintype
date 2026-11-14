@@ -169,7 +169,7 @@ impl Run {
                 continue;
             }
             if let Some(g) = f(c[0], c[1].parse().unwrap_or(0), c[2]) {
-                out.push_str(&format!("{}\t{}\t{g}\t{}\n", c[0], c[1], c[3]));
+                out.push_str(&rewritten_row(&c, &g));
             }
         }
         std::fs::write(manifest, out)?;
@@ -1183,6 +1183,18 @@ fn run_with(r: &Run, plan: &str) -> Result<()> {
     }
 }
 
+/// A manifest row with its generator replaced: every other column, the
+/// grouping columns after the fourth included, is kept as it was.
+fn rewritten_row(cols: &[&str], generator: &str) -> String {
+    let mut row = format!("{}\t{}\t{generator}\t{}", cols[0], cols[1], cols[3]);
+    for c in &cols[4..] {
+        row.push('\t');
+        row.push_str(c);
+    }
+    row.push('\n');
+    row
+}
+
 /// One evaluation set: display name, manifest, and whether it holds clips.
 pub struct Set {
     pub name: &'static str,
@@ -1278,6 +1290,12 @@ pub fn suite(name: &str) -> Result<Vec<Set>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rewriting_a_manifest_row_keeps_the_grouping_columns() {
+        assert_eq!(rewritten_row(&["a.png", "1", "old", "set"], "new"), "a.png\t1\tnew\tset\n");
+        assert_eq!(rewritten_row(&["a.png", "1", "old", "set", "p1", "", "src", "fam", "jpeg"], "new"), "a.png\t1\tnew\tset\tp1\t\tsrc\tfam\tjpeg\n");
+    }
 
     #[test]
     fn every_download_names_a_commit() {

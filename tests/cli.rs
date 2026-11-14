@@ -208,3 +208,95 @@ fn an_empty_model_dir_variable_counts_as_unset() {
     assert!(o.status.success(), "status {:?}, stderr: {}", o.status, String::from_utf8_lossy(&o.stderr));
     assert_eq!(json_lines(&o).len(), 1);
 }
+
+/// A manifest of `n` parents, each an original plus a JPEG derivative that
+/// carries the parent's id, with the files it lists.
+fn write_family_manifest(dir: &Path, n: usize) {
+    let mut text = String::new();
+    for p in 0..n {
+        let (label, generator) = if p % 2 == 0 { (0, "real:cam") } else { (1, "gen-x") };
+        for transform in ["", "jpeg-q70"] {
+            let name = format!("{p}{}.bin", if transform.is_empty() { "" } else { "-jpeg" });
+            std::fs::write(dir.join(&name), format!("{p} {transform}")).unwrap();
+            text.push_str(&format!("{name}\t{label}\t{generator}\tdemo\tp{p}\t\t\t\t{transform}\n"));
+        }
+    }
+    std::fs::write(dir.join("manifest.tsv"), text).unwrap();
+}
+
+#[test]
+fn split_groups_keeps_parents_together_and_verify_split_catches_a_leak() {
+    let dir = common::scratch("cli-split");
+    write_family_manifest(&dir, 200);
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let o = tintype(&["split-groups", "--manifest", &d("manifest.tsv"), "--out-dir", &d("split")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(stdout(&o).contains("400 of 400 items carry a parent_id or scene_id"), "{}", stdout(&o));
+    let rows = |set: &str| std::fs::read_to_string(dir.join("split").join(format!("{set}.tsv"))).unwrap();
+    let parents = |set: &str| rows(set).lines().map(|l| l.split('\t').nth(4).unwrap().to_string()).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(rows("fit").lines().count() + rows("calibrate").lines().count() + rows("test").lines().count(), 400);
+    assert!(parents("fit").is_disjoint(&parents("test")) && parents("fit").is_disjoint(&parents("calibrate")) && parents("calibrate").is_disjoint(&parents("test")));
+    assert!(!parents("calibrate").is_empty() && !parents("test").is_empty());
+    // The grouping columns survive, and a set with them is recorded as format 2.
+    assert!(rows("test").lines().any(|l| l.ends_with("\tjpeg-q70")));
+    let mut sets = Vec::new();
+    for set in ["fit", "calibrate", "test"] {
+        let o = tintype(&["freeze-set", "--manifest", &d(&format!("split/{set}.tsv")), "--out", &d(&format!("{set}.frozen.tsv")), "--root", dir.to_str().unwrap()]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert!(std::fs::read_to_string(dir.join(format!("{set}.frozen.tsv"))).unwrap().starts_with("# tintype frozen evaluation set, format 2\n"));
+        sets.push(format!("{set}={}", d(&format!("{set}.frozen.tsv"))));
+    }
+    let args = |sets: &[String]| -> Vec<String> { std::iter::once("verify-split".to_string()).chain(sets.iter().flat_map(|s| ["--set".to_string(), s.clone()])).collect() };
+    let run = |sets: &[String]| { let a = args(sets); tintype(&a.iter().map(String::as_str).collect::<Vec<_>>()) };
+    let o = run(&sets);
+    assert!(o.status.success() && stdout(&o).contains("no group crosses sets"), "{} {}", stdout(&o), String::from_utf8_lossy(&o.stderr));
+
+    // Move one derivative from the test set into fitting: its parent now crosses.
+    let test_rows = rows("test");
+    let moved = test_rows.lines().find(|l| l.ends_with("\tjpeg-q70")).unwrap();
+    std::fs::write(dir.join("leaky-fit.tsv"), format!("{}{moved}\n", rows("fit"))).unwrap();
+    let o = run(&[format!("fit={}", d("leaky-fit.tsv")), format!("test={}", d("split/test.tsv"))]);
+    assert!(!o.status.success(), "{}", stdout(&o));
+    assert!(stdout(&o).lines().any(|l| l.starts_with("parent p") && l.ends_with("is in fit and test")), "{}", stdout(&o));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn report_operating_points_gives_the_fixed_budget_tables() {
+    let dir = common::scratch("cli-points");
+    let mut text = String::new();
+    for i in 0..400 {
+        text.push_str(&format!("r{i}.jpg\t0\treal:cam\tdemo\t{:.6}\n", i as f32 / 500.0));
+        text.push_str(&format!("f{i}.png\t1\t{}\tdemo\t{:.6}\n", if i % 2 == 0 { "gen-a" } else { "gen-b" }, 0.3 + i as f32 / 600.0));
+    }
+    let scores = dir.join("scores.tsv");
+    std::fs::write(&scores, text).unwrap();
+    let system = format!("demo={}@0.75", scores.display());
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--slice-by", "generator", "--prevalence", "0.05"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    for want in ["| 0.1% empirical FPR |", "| 1% empirical FPR |", "| frozen cutoff | 0.750000 |", "Precision is at 5.00% prevalence", "| gen-a | 200 | 0 |", "| real:cam | 0 | 400 |", "Worst generator slice"] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // The plain tables are what they were.
+    let o = tintype(&["report", "--system", &system, "--markdown"]);
+    assert!(stdout(&o).contains("| System | Precision | Recall | F1 | False-positive rate | AUROC | Recall at 1% FPR |"), "{}", stdout(&o));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn latency_runs_on_the_cpu_engine_and_reports_p95() {
+    let dir = common::scratch("cli-latency");
+    let mut text = String::new();
+    for i in 0..8 {
+        common::write_fixture(&dir.join(format!("{i}.png")));
+        text.push_str(&format!("{i}.png\t0\treal:fixture\tdemo\n"));
+    }
+    std::fs::write(dir.join("manifest.tsv"), text).unwrap();
+    let weights = common::photo_weights();
+    let o = tintype(&["latency", "--weights", weights.to_str().unwrap(), "--manifest", dir.join("manifest.tsv").to_str().unwrap(), "--n", "3", "--device", "cpu"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

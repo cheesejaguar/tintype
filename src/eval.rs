@@ -510,7 +510,7 @@ fn write_val_split(list: &[&str], only_video: bool, out: &Path) -> Result<()> {
         for it in ingest::read_manifest(Path::new(m))? {
             if ingest::is_video(&it.path) == only_video && crate::data::is_val(&it, 3) {
                 let abs = std::fs::canonicalize(&it.path).unwrap_or(it.path.clone());
-                writeln!(w, "{}\t{}\t{}\t{}", abs.display(), it.label, it.generator, it.dataset)?;
+                writeln!(w, "{}", it.manifest_line(&abs.display().to_string()))?;
             }
         }
     }

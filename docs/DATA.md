@@ -14,6 +14,25 @@ down to the selection, and writes a `manifest.tsv` per store
 (`path  label  generator  dataset`, label 1 = AI-generated). Image bytes are
 never re-encoded on the way in.
 
+A manifest may carry five more columns after those four, which say how its
+items are related:
+
+| Column | Name | Meaning |
+|---|---|---|
+| 5 | `parent_id` | The item a file was derived from. An original carries its own id and every processed copy carries the original's |
+| 6 | `scene_id` | The prompt or scene that sibling items share |
+| 7 | `source_id` | The collection, camera or platform it came from |
+| 8 | `generator_family` | The family of its generator |
+| 9 | `transform` | The processing applied to it, e.g. `jpeg-q70` |
+
+An empty column or `-` means none, and columns after the ninth are kept as
+they are. Every command that rewrites a manifest keeps these columns. The
+plans below write four-column manifests, which load exactly as before.
+`tintype split-groups` uses the columns to divide manifests into fit,
+calibrate and test sets without separating related items, and
+`tintype verify-split` fails if any group crosses; see
+[the frozen evaluation runbook](runbooks/frozen-eval.md).
+
 ## What is pinned
 
 A plan reads every repository at a fixed commit and checks every file it
@@ -345,6 +364,12 @@ row that was added, dropped or relabelled, and fails if there is any. A
 plan's output can differ from the record if an upstream file was removed or
 replaced (the pins guard against the second) or if the RAISE-1k archive
 changed.
+
+A record of manifests that carry grouping columns (see the top of this
+page) is written as format 2, which adds those five columns to every row,
+so that `verify-split` can check a split from the records alone and
+`verify-set` reports a row whose group changed. Records of four-column
+manifests are format 1 as before, byte for byte, and both formats are read.
 
 The training stores and the `dev` sets are not recorded: several training
 stores were deleted between phases (see above), so a record would describe

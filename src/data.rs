@@ -204,7 +204,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn item(label: u8, gen: &str, i: usize) -> Item {
-        Item { path: PathBuf::from(format!("{gen}/{i}.png")), label, generator: gen.into(), dataset: "t".into() }
+        Item { path: PathBuf::from(format!("{gen}/{i}.png")), label, generator: gen.into(), dataset: "t".into(), ..Default::default() }
     }
 
     #[test]
