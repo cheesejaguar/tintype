@@ -12,6 +12,7 @@ exit rule is chosen.
 |---|---|---|
 | 1. Timers inside the CPU forward pass, and the table of where time goes | built, measured on ARM64 (Accelerate and pure-Rust kernels) | `src/stats.rs`, `src/cpu_vit.rs`, `scripts/cpu-profile.py` |
 | The same on x86-64 and on Linux | **not run**: no such machine here; commands below | [Ready to run elsewhere](#ready-to-run-elsewhere) |
+| 2. INT8 simulation behind `--device cpu-int8` | built | `cpu_vit::Int8`, `detector::Device::CpuInt8` |
 
 ## The gate
 
@@ -258,6 +259,91 @@ So the linear layers are most of the time where throughput is measured, and
 a kernel about 1.5 times faster than the FP32 one it replaces would meet
 the speed clause there. Whether eight bits keep the scores is steps 2 and
 3; whether an integer kernel is that much faster is step 4.
+
+## Step 2: simulating INT8 before writing a kernel
+
+`--device cpu-int8` is the `cpu` engine with some values rounded to what an
+eight-bit kernel would hold, kept as `f32` and put through the same
+products ("fake quantisation"). It answers one question, what INT8 does to
+the scores, and is slower than `cpu` while doing so. It is never chosen by
+`--device auto`, `serve` does not offer it, it takes every input `cpu`
+takes, and `cpu`, `gpu` and `gpu-f32` are not touched by it: the rounding
+is one `if` that the engine proper never enters, the unit tests hold a
+network built with nothing to round to the engine's bits, and the parity
+checks of step 1 were repeated on this commit.
+
+### What is rounded, and what is not
+
+| Kept in single precision, always | Why |
+|---|---|
+| Patch embedding | the first layer; its input is already eight-bit pixels, and it is 1 to 4% of the time |
+| Layer normalisation | divides by a per-token deviation: small errors are amplified |
+| Query-key and attention-value products, softmax | activation times activation, and the values after softmax span many orders of magnitude; PTQ4ViT names these as one of the two places where eight uniform levels fail. 4 to 7% of throughput time (products), 3 to 4% (softmax) |
+| GELU itself, the residual stream | the residual stream carries every block's output and is never re-rounded |
+| Head | one product per view |
+
+| `TINTYPE_INT8=` | Weights rounded | Inputs rounded |
+|---|---|---|
+| `weights` | qkv, proj, fc1, fc2 | none |
+| `mlp` | qkv, proj, fc1, fc2 | fc1, fc2 |
+| `all` (the default) | qkv, proj, fc1, fc2 | qkv, proj, fc1, fc2 |
+| `qkv`, `proj`, `fc1`, `fc2` | all four | that layer's only (to find the sensitive one) |
+| `inputs` | none | all four |
+
+The table is `cpu_vit::Int8::VARIANTS`. A variant may be followed by
+`:token` (the default) or `:tensor`, and then by the number of bits of an
+input, as in `all:tensor` or `all:token:7`.
+
+**Weights** are rounded once, when the model is loaded: each output channel
+(row of the weight matrix) to 255 levels symmetric about zero, the step set
+by the row's largest magnitude. This is the usual per-channel scheme and
+costs an integer kernel nothing, because a row's step multiplies that
+row's sum.
+
+**Inputs** are rounded as they arrive, to 256 evenly spaced levels between
+the smallest and the largest value of their range (an unsigned byte, a step
+and an offset). Two choices were made here, and one alternative is left
+for whoever runs the calibrated comparison:
+
+- *Ranges are taken from the values themselves, not from a calibration
+  pass.* A calibrated (static) range clips whatever falls outside what the
+  calibration images showed, and a detector's errors live in exactly the
+  unusual images; a range taken from the tensor at hand cannot clip. It
+  also needs no extra file beside the model, whose files are pinned by
+  hash. The price is one pass over each input to find its extremes, which
+  step 4 times, and resolution spent on outliers, which is what the
+  per-token ranges are for.
+- *A range per token by default* (`:token`), not per view (`:tensor`). A
+  token is a row of the product, so an integer kernel can give every token
+  its own step and offset for free: they multiply and shift that row's
+  sums. A few tokens with very large values then cost only themselves
+  their resolution. A range per input *channel* would need calibration
+  (it has to be folded into the weights beforehand) and is not simulated.
+- *The range is lopsided where the values are.* After GELU (the input of
+  fc2) values lie between about -0.17 and a long positive tail; PTQ4ViT's
+  second finding is that a symmetric range wastes half the levels there.
+  An unsigned byte between the smallest and largest value does not, though
+  it still spends most levels on the tail (PTQ4ViT's twin ranges, one for
+  the negative side and one for the positive, are not simulated).
+
+`:7` rounds inputs to seven bits. That is what the AVX2 multiply-add
+(`vpmaddubsw`) takes without saturating, so it stands for an x86-64 machine
+without VNNI.
+
+### What an integer kernel would compute
+
+For a token with rounded input `x[k] = lo + step * q[k]` (`q` from 0 to
+255) and weights `w[j][k] = s[j] * v[j][k]` (`v` from -127 to 127):
+
+```text
+y[j] = b[j] + s[j] * (step * sum_k q[k] * v[j][k] + lo * sum_k v[j][k])
+```
+
+The first sum is the integer product, at most 255 x 127 x 1536, well inside
+32 bits; the second is a constant per output channel. The simulation
+computes the same `y` from the rounded values in single precision, so it
+agrees with an integer kernel up to the rounding of the sums; step 4
+checks that on a real integer product.
 
 ## Ready to run elsewhere
 

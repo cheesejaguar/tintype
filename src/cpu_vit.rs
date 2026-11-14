@@ -8,6 +8,11 @@
 //! The matrix products go to Accelerate on macOS and to the pure-Rust `gemm`
 //! crate (NEON, AVX2 or AVX-512 kernels picked at run time) everywhere else;
 //! the `portable-cpu` feature selects the latter on macOS too.
+//!
+//! [`Int8`] is a simulation, not a faster engine: the same pass with the
+//! weights and inputs of the blocks' linear layers rounded to the values an
+//! eight-bit kernel would hold, to find out what such a kernel would do to
+//! the scores before anyone writes it.
 
 use crate::stats::{ATTENTION_TIME, FC1_TIME, FC2_TIME, FORWARD_TIME, GATHER_TIME, GELU_TIME, HEAD_TIME, NORM_TIME, PATCH_TIME, PROJ_TIME, QKV_TIME, RESIDUAL_TIME, SOFTMAX_TIME};
 use crate::vit::VitConfig;
@@ -141,6 +146,137 @@ use kernels::{exp_inplace, gemm, on_one_thread, ONE_VIEW_PER_THREAD};
 /// is run with.
 pub const RUN_SIZE_CHANGES_LOGITS: bool = !ONE_VIEW_PER_THREAD;
 
+/// The four linear layers of a block, in the order [`Int8`] lists them.
+#[derive(Clone, Copy)]
+enum Layer {
+    Qkv = 0,
+    Proj = 1,
+    Fc1 = 2,
+    Fc2 = 3,
+}
+
+/// Which values of a quantised input share one range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ranges {
+    /// Each token's own smallest and largest value. An integer kernel gets
+    /// this for nothing: a token is a row of the product, so its step and
+    /// offset come out of the sum.
+    Token,
+    /// The smallest and largest value over all tokens of the view.
+    Tensor,
+}
+
+/// What `--device cpu-int8` simulates being held in eight bits. Everything
+/// else stays in single precision: the patch embedding, layer
+/// normalisation, the query-key and attention-value products, softmax, GELU,
+/// the residual stream and the head.
+///
+/// Weights are rounded once, when the model is loaded, to 255 levels
+/// symmetric about zero with one step per output channel (row). Inputs are
+/// rounded as they arrive to `2^input_bits` evenly spaced levels between
+/// the smallest and largest value of their token or view, so nothing is
+/// ever clipped and no calibration data is needed; the ranges of one view
+/// never depend on the views it is run with. The rounded values are kept as
+/// `f32` and go through the same products as before, so the logits are what
+/// an integer kernel would give up to the rounding of the sums, and the
+/// pass is slower than the one it imitates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Int8 {
+    /// Whose weights are rounded: qkv, proj, fc1, fc2.
+    pub weights: [bool; 4],
+    /// Whose inputs are rounded, in the same order.
+    pub inputs: [bool; 4],
+    pub ranges: Ranges,
+    /// Bits of a rounded input. Seven is what the AVX2 multiply-add
+    /// (`vpmaddubsw`) takes without saturating; weights are always eight.
+    pub input_bits: u32,
+}
+
+impl Int8 {
+    /// The variants by name: whose weights and whose inputs are rounded.
+    #[rustfmt::skip]
+    pub const VARIANTS: &'static [(&'static str, [bool; 4], [bool; 4])] = &[
+        //            weights: qkv   proj  fc1   fc2      inputs: qkv    proj   fc1    fc2
+        ("weights",          [true, true, true, true],          [false, false, false, false]),
+        ("mlp",              [true, true, true, true],          [false, false, true,  true]),
+        ("all",              [true, true, true, true],          [true,  true,  true,  true]),
+        // One input at a time, to find the sensitive one.
+        ("qkv",              [true, true, true, true],          [true,  false, false, false]),
+        ("proj",             [true, true, true, true],          [false, true,  false, false]),
+        ("fc1",              [true, true, true, true],          [false, false, true,  false]),
+        ("fc2",              [true, true, true, true],          [false, false, false, true]),
+        // Inputs only, weights left alone.
+        ("inputs",           [false, false, false, false],      [true,  true,  true,  true]),
+    ];
+
+    /// `variant[:ranges[:bits]]`, e.g. `all`, `mlp:tensor`, `all:token:7`.
+    /// Ranges default to `token`, bits to 8.
+    pub fn parse(s: &str) -> Result<Self> {
+        let mut fields = s.split(':');
+        let name = fields.next().unwrap_or("");
+        let &(_, weights, inputs) = Self::VARIANTS
+            .iter()
+            .find(|v| v.0 == name)
+            .ok_or_else(|| anyhow::anyhow!("unknown INT8 variant `{name}` (use one of: {})", Self::VARIANTS.iter().map(|v| v.0).collect::<Vec<_>>().join(", ")))?;
+        let ranges = match fields.next() {
+            None | Some("token") => Ranges::Token,
+            Some("tensor") => Ranges::Tensor,
+            Some(other) => anyhow::bail!("unknown INT8 ranges `{other}` (use token or tensor)"),
+        };
+        let input_bits = match fields.next() {
+            None => 8,
+            Some(b) => b.parse::<u32>().ok().filter(|b| (2..=16).contains(b)).ok_or_else(|| anyhow::anyhow!("INT8 input bits must be a number from 2 to 16, not `{b}`"))?,
+        };
+        anyhow::ensure!(fields.next().is_none(), "an INT8 variant is `name[:ranges[:bits]]`, not `{s}`");
+        Ok(Self { weights, inputs, ranges, input_bits })
+    }
+
+    /// The variant `TINTYPE_INT8` names, or `all` (every block linear layer's
+    /// weights and inputs, a range per token, eight bits).
+    pub fn from_env() -> Result<Self> {
+        match std::env::var("TINTYPE_INT8") {
+            Ok(v) if !v.is_empty() => Self::parse(&v),
+            _ => Self::parse("all"),
+        }
+    }
+
+    /// Steps between the smallest and the largest value of a rounded input.
+    fn input_steps(&self) -> f32 {
+        ((1u32 << self.input_bits) - 1) as f32
+    }
+}
+
+/// Round each row of `w` (`[out, inp]`) to 255 levels symmetric about zero,
+/// the step set by the row's largest magnitude: per-output-channel INT8
+/// weights, kept as the `f32` values they stand for.
+fn fake_quantise_weights(w: &mut [f32], inp: usize) {
+    for row in w.chunks_mut(inp) {
+        let max = row.iter().fold(0f32, |a, &v| a.max(v.abs()));
+        if max == 0.0 || !max.is_finite() {
+            continue;
+        }
+        let step = max / 127.0;
+        for v in row.iter_mut() {
+            *v = (*v / step).round().clamp(-127.0, 127.0) * step;
+        }
+    }
+}
+
+/// Round `x` to `steps + 1` evenly spaced values from its smallest to its
+/// largest: an unsigned integer per value with one step and one offset for
+/// the slice, kept as the `f32` values they stand for.
+fn fake_quantise_inputs(x: &mut [f32], steps: f32) {
+    let (lo, hi) = x.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    let step = (hi - lo) / steps;
+    // A constant slice needs no rounding; a non-finite one is left for the caller to notice.
+    if step.is_nan() || step <= 0.0 || !step.is_finite() {
+        return;
+    }
+    for v in x.iter_mut() {
+        *v = lo + ((*v - lo) / step).round().min(steps) * step;
+    }
+}
+
 struct Lin {
     /// `[out, in]`, as stored in the checkpoint.
     w: Vec<f32>,
@@ -219,10 +355,33 @@ pub struct CpuVit {
     blocks: Vec<Block>,
     norm: Norm,
     head: Lin,
+    /// What is rounded to eight bits on the way; nothing, for the engine proper.
+    int8: Option<Int8>,
 }
 
 impl CpuVit {
     pub fn new(w: &Weights, cfg: VitConfig) -> Result<Self> {
+        Self::with_int8(w, cfg, None)
+    }
+
+    /// The same network with the weights `int8` names rounded now and the
+    /// inputs it names rounded in every pass (see [`Int8`]).
+    pub fn with_int8(w: &Weights, cfg: VitConfig, int8: Option<Int8>) -> Result<Self> {
+        let mut vit = Self::load(w, cfg)?;
+        if let Some(q) = int8 {
+            for blk in &mut vit.blocks {
+                for (layer, lin) in [(Layer::Qkv, &mut blk.qkv), (Layer::Proj, &mut blk.proj), (Layer::Fc1, &mut blk.fc1), (Layer::Fc2, &mut blk.fc2)] {
+                    if q.weights[layer as usize] {
+                        fake_quantise_weights(&mut lin.w, lin.inp);
+                    }
+                }
+            }
+        }
+        vit.int8 = int8;
+        Ok(vit)
+    }
+
+    fn load(w: &Weights, cfg: VitConfig) -> Result<Self> {
         anyhow::ensure!(cfg.reg_tokens == 0 && !cfg.layer_scale && !cfg.pos_on_patches_only, "this architecture runs on the GPU engine only");
         let blocks = (0..cfg.depth)
             .map(|i| {
@@ -245,7 +404,20 @@ impl CpuVit {
             blocks,
             norm: Norm::load(w, "norm")?,
             head: Lin::load(w, "head")?,
+            int8: None,
         })
+    }
+
+    /// Round the input of `layer` in place where the simulation asks for it:
+    /// `x` is rows of `width` values, `view_rows` of them to a view. Does
+    /// nothing at all on the engine proper.
+    fn round_input(&self, layer: Layer, x: &mut [f32], width: usize, view_rows: usize) {
+        let Some(q) = self.int8.filter(|q| q.inputs[layer as usize]) else { return };
+        let together = match q.ranges {
+            Ranges::Token => width,
+            Ranges::Tensor => width * view_rows,
+        };
+        x.par_chunks_mut(together).for_each(|c| fake_quantise_inputs(c, q.input_steps()));
     }
 
     /// Logits for `x`: views of interleaved 8-bit RGB, one after another.
@@ -341,6 +513,7 @@ impl CpuVit {
         let last = self.blocks.len() - 1;
         for blk in &self.blocks[..last] {
             NORM_TIME.time(|| blk.norm1.apply(&t, &mut y));
+            self.round_input(Layer::Qkv, &mut y, d, n);
             QKV_TIME.time(|| blk.qkv.apply(&y, &mut qkv, rows));
             // One task per view. Each hands back the nanoseconds of its
             // products, of its softmax and of the whole task.
@@ -369,12 +542,15 @@ impl CpuVit {
             });
             let spent = spent.reduce(|| [0; 3], add);
             attention_took(at, [spent[0], spent[1]], spent[2]);
+            self.round_input(Layer::Proj, &mut att, d, n);
             PROJ_TIME.time(|| blk.proj.apply(&att, &mut y, rows));
             RESIDUAL_TIME.time(|| t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b));
 
             NORM_TIME.time(|| blk.norm2.apply(&t, &mut y));
+            self.round_input(Layer::Fc1, &mut y, d, n);
             FC1_TIME.time(|| blk.fc1.apply(&y, &mut hid, rows));
             GELU_TIME.time(|| gelu_inplace(&mut hid));
+            self.round_input(Layer::Fc2, &mut hid, d * c.mlp_ratio, n);
             FC2_TIME.time(|| blk.fc2.apply(&hid, &mut y, rows));
             RESIDUAL_TIME.time(|| t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b));
         }
@@ -385,6 +561,7 @@ impl CpuVit {
         // result as running the block in full, at about a quarter of the cost.
         let blk = &self.blocks[last];
         NORM_TIME.time(|| blk.norm1.apply(&t, &mut y));
+        self.round_input(Layer::Qkv, &mut y, d, n);
         QKV_TIME.time(|| blk.qkv.apply(&y, &mut qkv, rows));
         let mut cls_att = vec![0f32; b * d];
         let at = Instant::now();
@@ -411,12 +588,16 @@ impl CpuVit {
         // Class tokens only from here on: `[b, d]`.
         let mut cls: Vec<f32> = (0..b).flat_map(|i| t[i * n * d..][..d].iter().copied()).collect();
         let mut yc = vec![0f32; b * d];
+        // One token to a view from here on, so a view's range is that token's.
+        self.round_input(Layer::Proj, &mut cls_att, d, 1);
         PROJ_TIME.time(|| blk.proj.apply(&cls_att, &mut yc, b));
         cls.iter_mut().zip(&yc).for_each(|(a, v)| *a += v);
         NORM_TIME.time(|| blk.norm2.apply(&cls, &mut yc));
+        self.round_input(Layer::Fc1, &mut yc, d, 1);
         let mut hc = vec![0f32; b * d * c.mlp_ratio];
         FC1_TIME.time(|| blk.fc1.apply(&yc, &mut hc, b));
         GELU_TIME.time(|| gelu_inplace(&mut hc));
+        self.round_input(Layer::Fc2, &mut hc, d * c.mlp_ratio, 1);
         FC2_TIME.time(|| blk.fc2.apply(&hc, &mut yc, b));
         cls.iter_mut().zip(&yc).for_each(|(a, v)| *a += v);
 
@@ -452,6 +633,143 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn weights_round_to_255_levels_per_output_channel() {
+        let (out, inp) = (5, 64);
+        // Rows of very different sizes, one of them all zero.
+        let mut w: Vec<f32> = (0..out * inp).map(|i| ((i as f32 * 0.731).sin() + 0.2) * [1.0, 0.01, 30.0, 0.0, 1e-4][i / inp]).collect();
+        let before = w.clone();
+        fake_quantise_weights(&mut w, inp);
+        for (row, was) in w.chunks(inp).zip(before.chunks(inp)) {
+            let max = was.iter().fold(0f32, |a, &v| a.max(v.abs()));
+            if max == 0.0 {
+                assert!(row.iter().all(|&v| v == 0.0));
+                continue;
+            }
+            let step = max / 127.0;
+            for (&v, &u) in row.iter().zip(was) {
+                let level = v / step;
+                assert!((level - level.round()).abs() < 1e-3 && level.round().abs() <= 127.0, "{v} is not a level of step {step}");
+                assert!((v - u).abs() <= step * 0.5001, "{u} moved to {v}, step {step}");
+            }
+            // The largest weight of a row is a level itself, so each row uses its whole range.
+            assert!((row.iter().fold(0f32, |a, &v| a.max(v.abs())) - max).abs() <= max * 1e-6);
+        }
+        // Rounding again changes nothing.
+        let once = w.clone();
+        fake_quantise_weights(&mut w, inp);
+        for (a, b) in w.iter().zip(&once) {
+            assert!((a - b).abs() <= a.abs() * 1e-6);
+        }
+    }
+
+    #[test]
+    fn inputs_round_to_evenly_spaced_levels_between_their_extremes() {
+        // Lopsided like the values after GELU: a short negative side and a long positive tail.
+        let x: Vec<f32> = (0..1536).map(|i| ((i as f32 * 0.37).sin() * 3.0).exp() * 0.4 - 0.17).collect();
+        let (lo, hi) = x.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+        for (bits, steps) in [(8, 255.0f32), (7, 127.0)] {
+            let mut q = x.clone();
+            fake_quantise_inputs(&mut q, steps);
+            let step = (hi - lo) / steps;
+            let mut levels: Vec<i64> = q.iter().map(|&v| ((v - lo) / step).round() as i64).collect();
+            for ((&v, &u), &l) in q.iter().zip(&x).zip(&levels) {
+                assert!((0..=steps as i64).contains(&l), "{bits} bits: level {l}");
+                assert!((v - (lo + l as f32 * step)).abs() <= step * 1e-3 && (v - u).abs() <= step * 0.5001, "{bits} bits: {u} moved to {v}, step {step}");
+            }
+            levels.sort_unstable();
+            levels.dedup();
+            assert!(levels.len() <= steps as usize + 1 && levels.len() > steps as usize / 4, "{bits} bits: {} levels", levels.len());
+            // The extremes are levels themselves: nothing is clipped.
+            assert_eq!((levels[0], *levels.last().unwrap()), (0, steps as i64));
+        }
+        // A constant slice, and an empty one, are left alone.
+        let mut flat = vec![1.25f32; 9];
+        fake_quantise_inputs(&mut flat, 255.0);
+        assert!(flat.iter().all(|&v| v == 1.25));
+        fake_quantise_inputs(&mut [], 255.0);
+    }
+
+    #[test]
+    fn int8_variants_parse_by_name_with_optional_ranges_and_bits() {
+        let all = Int8::parse("all").unwrap();
+        assert_eq!(all, Int8 { weights: [true; 4], inputs: [true; 4], ranges: Ranges::Token, input_bits: 8 });
+        assert_eq!(all.input_steps(), 255.0);
+        assert_eq!(Int8::parse("weights").unwrap().inputs, [false; 4]);
+        assert_eq!(Int8::parse("mlp:tensor").unwrap(), Int8 { weights: [true; 4], inputs: [false, false, true, true], ranges: Ranges::Tensor, input_bits: 8 });
+        let seven = Int8::parse("all:token:7").unwrap();
+        assert_eq!((seven.input_bits, seven.input_steps()), (7, 127.0));
+        assert_eq!(Int8::parse("inputs").unwrap().weights, [false; 4]);
+        for (name, ..) in Int8::VARIANTS {
+            assert!(Int8::parse(name).is_ok(), "{name}");
+        }
+        for bad in ["", "everything", "all:row", "all:token:1", "all:token:x", "all:token:8:9"] {
+            assert!(Int8::parse(bad).is_err(), "`{bad}` should not parse");
+        }
+    }
+
+    /// A small random network: two blocks of width 24 on 32-pixel views.
+    fn small_network() -> (Weights, VitConfig) {
+        let cfg = VitConfig { img: 32, patch: 16, dim: 24, depth: 2, heads: 2, mlp_ratio: 4, reg_tokens: 0, layer_scale: false, pos_on_patches_only: false };
+        let mut rng = crate::rng::Rng::new(11);
+        let mut w = Weights::default();
+        let mut tensor = |name: &str, shape: &[usize], scale: f32| {
+            let data = (0..shape.iter().product::<usize>()).map(|_| (rng.below(2001) as f32 / 1000.0 - 1.0) * scale).collect();
+            w.insert(name, data, shape.to_vec());
+        };
+        let d = cfg.dim;
+        tensor("patch_embed.proj.weight", &[d, 3, 16, 16], 0.05);
+        tensor("patch_embed.proj.bias", &[d], 0.1);
+        tensor("cls_token", &[1, 1, d], 0.5);
+        tensor("pos_embed", &[1, 5, d], 0.5);
+        for i in 0..cfg.depth {
+            let p = format!("blocks.{i}");
+            for (name, out, inp) in [("attn.qkv", 3 * d, d), ("attn.proj", d, d), ("mlp.fc1", 4 * d, d), ("mlp.fc2", d, 4 * d)] {
+                tensor(&format!("{p}.{name}.weight"), &[out, inp], 0.3);
+                tensor(&format!("{p}.{name}.bias"), &[out], 0.1);
+            }
+            for n in ["norm1", "norm2"] {
+                tensor(&format!("{p}.{n}.weight"), &[d], 1.0);
+                tensor(&format!("{p}.{n}.bias"), &[d], 0.1);
+            }
+        }
+        tensor("norm.weight", &[d], 1.0);
+        tensor("norm.bias", &[d], 0.1);
+        tensor("head.weight", &[1, d], 0.5);
+        tensor("head.bias", &[1], 0.1);
+        (w, cfg)
+    }
+
+    #[test]
+    fn the_int8_simulation_moves_logits_a_little_and_leaves_the_engine_proper_alone() {
+        let (w, cfg) = small_network();
+        let mut rng = crate::rng::Rng::new(5);
+        let views: Vec<u8> = (0..3 * 3 * 32 * 32).map(|_| rng.below(256) as u8).collect();
+        let plain = CpuVit::new(&w, cfg).unwrap().forward(&views);
+        assert!(plain.iter().all(|l| l.is_finite()) && plain.len() == 3);
+        // Asking for nothing to be rounded is the engine proper, bit for bit.
+        assert_eq!(CpuVit::with_int8(&w, cfg, None).unwrap().forward(&views), plain);
+        let nothing = Int8 { weights: [false; 4], inputs: [false; 4], ranges: Ranges::Token, input_bits: 8 };
+        assert_eq!(CpuVit::with_int8(&w, cfg, Some(nothing)).unwrap().forward(&views), plain);
+        let largest = |q: &str| {
+            let got = CpuVit::with_int8(&w, cfg, Some(Int8::parse(q).unwrap())).unwrap().forward(&views);
+            got.iter().zip(&plain).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max)
+        };
+        // Every variant moves the logits, by little at eight bits and by more at four.
+        for (name, ..) in Int8::VARIANTS {
+            for ranges in ["token", "tensor"] {
+                let moved = largest(&format!("{name}:{ranges}"));
+                assert!(moved > 0.0 && moved < 0.2, "{name}:{ranges} moved a logit by {moved}");
+            }
+        }
+        assert!(largest("all:token:4") > largest("all:token:8"));
+        // A view's ranges are its own: its logit does not depend on its neighbours.
+        let q = Some(Int8::parse("all:tensor").unwrap());
+        let vit = CpuVit::with_int8(&w, cfg, q).unwrap();
+        let (together, alone) = (vit.forward(&views), vit.forward(&views[3 * 32 * 32..2 * 3 * 32 * 32]));
+        assert!((together[1] - alone[0]).abs() < 1e-4, "{} against {}", together[1], alone[0]);
     }
 
     #[test]

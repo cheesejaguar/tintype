@@ -396,3 +396,57 @@ fn a_photo_below_the_crop_size_is_scored_once_per_distinct_view_with_the_same_ou
 fn json_lines_of(out: &str) -> Vec<serde_json::Value> {
     out.lines().map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not one JSON object per line ({e}): {l}"))).collect()
 }
+
+#[test]
+fn the_int8_simulation_is_opt_in_takes_what_cpu_takes_and_leaves_cpu_alone() {
+    let dir = common::scratch("cli-int8");
+    let png = dir.join("fixture.png");
+    common::write_fixture(&png);
+    let weights = common::photo_weights();
+    let clip = common::repo().join("tests/fixtures/video.mp4");
+    // The photo, and the clip too when no variant is named.
+    let run = |device: &str, variant: Option<&str>| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        c.args(["detect", "--device", device, "--all-views", "--json", "--weights", weights.to_str().unwrap(), png.to_str().unwrap()]);
+        if variant.is_none() {
+            c.arg(&clip);
+        }
+        c.current_dir(common::repo()).env_remove("TINTYPE_INT8");
+        if let Some(v) = variant {
+            c.env("TINTYPE_INT8", v);
+        }
+        c.output().expect("running the tintype binary")
+    };
+    let cpu = run("cpu", None);
+    assert!(cpu.status.success(), "{}", String::from_utf8_lossy(&cpu.stderr));
+    // The variable is read by the simulation only: `cpu` gives the same bytes whatever it says.
+    let plain = json_lines(&cpu);
+    assert_eq!(json_lines(&run("cpu", Some("all:tensor:4"))), plain[..1]);
+    assert_eq!(json_lines(&run("cpu", Some("no such variant"))), plain[..1]);
+    let logit = |row: &serde_json::Value| row["logit"].as_f64().unwrap();
+    let mut default = Vec::new();
+    for variant in [None, Some("weights"), Some("mlp:tensor"), Some("all:token:7")] {
+        let o = run("cpu-int8", variant);
+        assert!(o.status.success(), "{variant:?}: {}", String::from_utf8_lossy(&o.stderr));
+        let rows = json_lines(&o);
+        // The same photo and the same clip, scored: the same fields, views and frames, and logits that moved a little.
+        assert_eq!(rows.len(), if variant.is_none() { 2 } else { 1 }, "{variant:?}");
+        for (got, want) in rows.iter().zip(&plain) {
+            assert_eq!((&got["path"], &got["kind"], &got["profile"], got.get("views"), got.get("frames")), (&want["path"], &want["kind"], &want["profile"], want.get("views"), want.get("frames")), "{variant:?}");
+            assert_eq!(got.as_object().unwrap().keys().collect::<Vec<_>>(), want.as_object().unwrap().keys().collect::<Vec<_>>(), "{variant:?}");
+            let moved = (logit(got) - logit(want)).abs();
+            assert!(moved > 0.0 && moved < 3.0, "{variant:?}: logit {} against {}", logit(got), logit(want));
+        }
+        if variant.is_none() {
+            default = rows;
+        }
+    }
+    // With no variable the simulation is the `all` variant.
+    assert_eq!(json_lines(&run("cpu-int8", Some("all:token:8"))), default[..1]);
+    let bad = run("cpu-int8", Some("no such variant"));
+    assert!(!bad.status.success() && String::from_utf8_lossy(&bad.stderr).contains("unknown INT8 variant"), "{}", String::from_utf8_lossy(&bad.stderr));
+    // The device is never picked by itself and is named in the error for an unknown one.
+    let unknown = tintype(&["detect", "--device", "int8", png.to_str().unwrap()]);
+    assert!(!unknown.status.success() && String::from_utf8_lossy(&unknown.stderr).contains("cpu-int8"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

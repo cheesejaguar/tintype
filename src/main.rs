@@ -519,7 +519,8 @@ fn parse_device(s: &str) -> Result<Device> {
         "gpu" => Device::Gpu,
         "gpu-f32" => Device::GpuF32,
         "cpu" => Device::Cpu,
-        other => anyhow::bail!("unknown device `{other}` (use auto, gpu, gpu-f32 or cpu)"),
+        "cpu-int8" => Device::CpuInt8,
+        other => anyhow::bail!("unknown device `{other}` (use auto, gpu, gpu-f32, cpu or cpu-int8)"),
     })
 }
 
@@ -655,7 +656,7 @@ fn main() -> Result<()> {
             // On the CPU early exit runs the views one or two at a time; on the GPU all
             // six go in one batch and the stopping rule is applied afterwards.
             let device = parse_device(&device)?;
-            let stepwise = exit.is_some() && matches!(device, Device::Cpu);
+            let stepwise = exit.is_some() && device.is_cpu();
             let det = Detector::load(&weights, Some(spec), if stepwise { 2 } else { nv }, device)?;
             let pre = det.preprocessor();
             let mut buf = vec![0u8; nv * 3 * det.spec.img * det.spec.img];

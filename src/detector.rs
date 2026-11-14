@@ -538,9 +538,19 @@ pub enum Device {
     GpuF32,
     /// Portable CPU engine.
     Cpu,
+    /// The CPU engine simulating eight-bit linear layers
+    /// ([`crate::cpu_vit::Int8`]): for measuring what INT8 would do to the
+    /// scores. Slower than [`Device::Cpu`], never chosen automatically.
+    CpuInt8,
 }
 
 impl Device {
+    /// Whether the network runs on the CPU engine.
+    pub fn is_cpu(self) -> bool {
+        matches!(self, Device::Cpu | Device::CpuInt8)
+    }
+
+
     pub fn best() -> Self {
         #[cfg(target_os = "macos")]
         if objc2_metal::MTLCreateSystemDefaultDevice().is_some() {
@@ -822,7 +832,7 @@ impl Detector {
     pub fn new(w: &Weights, spec: ModelSpec, batch: usize, device: Device) -> Result<Self> {
         #[cfg(target_os = "macos")]
         if spec.arch == "swinv2_large_w16_256" {
-            anyhow::ensure!(device != Device::Cpu, "the SwinV2 reference network runs on the GPU engine only");
+            anyhow::ensure!(!device.is_cpu(), "the SwinV2 reference network runs on the GPU engine only");
             let g = Graph::new(if device == Device::Gpu { Precision::F16 } else { Precision::F32 })?;
             let s = spec.img as isize;
             let inp = g.placeholder_native(&[batch as isize, 3, s, s]);
@@ -845,6 +855,7 @@ impl Detector {
             #[cfg(not(target_os = "macos"))]
             Device::Gpu | Device::GpuF32 => anyhow::bail!("the GPU engine is only available on macOS; use the CPU engine"),
             Device::Cpu => Engine::Cpu { vit: crate::cpu_vit::CpuVit::new(w, cfg)? },
+            Device::CpuInt8 => Engine::Cpu { vit: crate::cpu_vit::CpuVit::with_int8(w, cfg, Some(crate::cpu_vit::Int8::from_env()?))? },
         };
         Ok(Self { engine, batch, spec, reuse: ViewReuse::from_env() })
     }
