@@ -247,16 +247,29 @@ def load_score_files(args_scores):
 
 def read_manifest(path):
     """`{path: grouping columns}` of a manifest, with paths resolved as `tintype` resolves them
-    (relative to the manifest's folder), so they match the path column of its score files."""
+    (relative to the manifest's folder), so they match the path column of its score files.
+
+    A record written by `tintype freeze-set` (format 2) is read too: its paths are taken as written, which
+    is how archived score files name them, so a split can be re-evaluated from the repository alone."""
     root = os.path.dirname(str(path))
     out = {}
     with open_text(path) as stream:
-        for line in stream:
+        first = stream.readline()
+        record = first.startswith("# tintype frozen evaluation set")
+        for line in ([] if record else [first]) + list(stream):
             f = line.rstrip("\n").split("\t")
-            if len(f) < 4:
+            if line.startswith("#") and record:
                 continue
-            groups = {name: value for name, value in zip(GROUP_COLUMNS, f[4:]) if value not in ("", "-")}
-            out[os.path.join(root, f[0])] = groups
+            if record:
+                # sha256 size label generator dataset path, then the grouping columns
+                if len(f) < 6:
+                    continue
+                key, columns = f[5], f[6:]
+            else:
+                if len(f) < 4:
+                    continue
+                key, columns = os.path.join(root, f[0]), f[4:]
+            out[key] = {name: value for name, value in zip(GROUP_COLUMNS, columns) if value not in ("", "-")}
     return out
 
 
@@ -1199,6 +1212,12 @@ def self_test():
         write_manifest(manifest, photos)
         assert Path(manifest).read_text() == "/x/a.jpg\t1\tflux\tdemo\tp1\t-\t-\t-\tjpeg\n/x/b.jpg\t0\treal:x\tdemo\n"
         assert read_manifest(manifest) == {"/x/a.jpg": {"parent": "p1", "transform": "jpeg"}, "/x/b.jpg": {}}
+        # A frozen record names its files as archived score files do: paths as written, groups after them.
+        record = os.path.join(scratch, "set.frozen.tsv")
+        with open(record, "w", encoding="utf-8") as f:
+            f.write("# tintype frozen evaluation set, format 2\n# manifest\tdata/x.tsv\tabc\n# sha256\tsize\tlabel\tgenerator\tdataset\tpath\tparent_id\n")
+            f.write("00\t12\t0\treal:x\tdemo\tdata/a.jpg\tp1\t\tsrc\t\t\n11\t34\t1\tflux\tdemo\tdata/b.png\tp2\t\t\tflux\tjpeg-qv4\n")
+        assert read_manifest(record) == {"data/a.jpg": {"parent": "p1", "source": "src"}, "data/b.png": {"parent": "p2", "family": "flux", "transform": "jpeg-qv4"}}
 
     # A whole comparison on a toy split: weights from the fit set, cutoffs from the calibration set, counts on the test set.
     def toy(seed, split):
