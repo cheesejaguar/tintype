@@ -504,6 +504,47 @@ enum Cmd {
         #[arg(long)]
         held_out_family: Vec<String>,
     },
+    /// Offline experiment: write `(1 - alpha) * A + alpha * B` for each
+    /// `--alpha` (a sweep from a fine-tuned checkpoint `--a` towards its
+    /// initialiser `--b`), or with `--average` a weighted average of sibling
+    /// fine-tunes. The two checkpoints must agree on every tensor's name,
+    /// shape and type. Each output gets an uncalibrated spec beside it;
+    /// nothing is ever written into `models/`.
+    Interpolate {
+        /// The fine-tuned checkpoint (alpha 0). Only read.
+        #[arg(long, requires_all = ["b", "alpha", "out_dir"], conflicts_with = "average")]
+        a: Option<PathBuf>,
+        /// Prefix removed from the tensor names of `--a`.
+        #[arg(long, default_value = "")]
+        a_prefix: String,
+        /// The checkpoint to move towards (alpha 1), e.g. the initialiser. Only read.
+        #[arg(long, requires = "a")]
+        b: Option<PathBuf>,
+        /// Prefix removed from the tensor names of `--b`, e.g. `vit.` for Community Forensics.
+        #[arg(long, default_value = "")]
+        b_prefix: String,
+        /// Shares of `--b`, each from 0 to 1, e.g. `0,0.25,0.5,0.75,1`.
+        #[arg(long, value_delimiter = ',')]
+        alpha: Vec<f64>,
+        /// Where a sweep writes `alpha-0.25.safetensors`, its spec and its record.
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Instead of a sweep: average these sibling fine-tunes of one initialiser.
+        #[arg(long, num_args = 2.., requires = "out")]
+        average: Vec<PathBuf>,
+        /// With --average: one weight per checkpoint, adding up to 1 (default: equal).
+        #[arg(long, value_delimiter = ',', requires = "average")]
+        weights: Vec<f64>,
+        /// With --average: the file to write.
+        #[arg(long, requires = "average")]
+        out: Option<PathBuf>,
+        /// Spec whose views the outputs get (default: the one beside `--a`, or beside the first `--average` checkpoint).
+        #[arg(long)]
+        spec: Option<PathBuf>,
+        /// Replace outputs that already exist (never anything in `models/`).
+        #[arg(long)]
+        overwrite: bool,
+    },
     /// Check the released model files (weights and specs) against the
     /// SHA-256 values recorded in the source and in docs/DATA.md.
     VerifyModels {
@@ -966,6 +1007,9 @@ fn main() -> Result<()> {
             }
             anyhow::ensure!(problems.is_empty(), "{} groups or files cross the sets", problems.len());
             Ok(())
+        }
+        Cmd::Interpolate { a, a_prefix, b, b_prefix, alpha, out_dir, average, weights, out, spec, overwrite } => {
+            tintype::interpolate::run(tintype::interpolate::Args { a, a_prefix, b, b_prefix, alphas: alpha, out_dir, average, weights, out, spec, overwrite })
         }
         Cmd::VerifyModels { root } => {
             let (lines, ok) = tintype::integrity::check_models(&root);

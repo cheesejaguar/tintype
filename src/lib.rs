@@ -16,6 +16,7 @@ pub mod video;
 pub mod cpu_vit;
 pub mod fetch;
 pub mod integrity;
+pub mod interpolate;
 pub mod split;
 pub mod server;
 pub mod avf;

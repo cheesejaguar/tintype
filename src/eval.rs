@@ -71,6 +71,9 @@ pub fn score_images(weights: &Path, sys: &System, manifests: &[PathBuf], out: &P
     let (mut spec, batch) = match sys {
         System::Tintype { profile } => {
             let mut s = ModelSpec::load_for(weights)?;
+            if let Some(warning) = s.uncalibrated_warning(weights) {
+                eprintln!("{warning} (the logits written are unaffected)");
+            }
             profile.apply(&mut s);
             if all_views || views.is_some() || *profile == Photo::Fast {
                 s.early_exit = None;
@@ -339,6 +342,13 @@ pub fn calibrate(weights: &Path, scores: &[PathBuf], target_fpr: f64, profile: &
         "photo" => (spec.logit_scale, spec.logit_bias, spec.threshold) = (scale, bias, 0.5),
         other => anyhow::bail!("unknown profile `{other}` (use photo, strict, fast, sensitive or video)"),
     }
+    // This profile is fitted now; the spec stays marked for the others.
+    if let Some(unfitted) = &mut spec.uncalibrated {
+        unfitted.retain(|p| p != profile);
+        if unfitted.is_empty() {
+            spec.uncalibrated = None;
+        }
+    }
     spec.save_for(weights)
 }
 
@@ -497,6 +507,7 @@ fn standard_spec(size: u32) -> ModelSpec {
         early_exit: Some(crate::detector::EarlyExit::standard()),
         second_opinion: None,
         arch: String::new(),
+        uncalibrated: None,
     }
 }
 

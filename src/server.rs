@@ -132,6 +132,16 @@ pub fn run(
     let clip = args
         .video_weights
         .unwrap_or_else(|| crate::detector::video_weights_for(&photo));
+    // A response has nowhere to carry a warning: experimental weights whose
+    // calibration was never fitted are not served at all.
+    for weights in [&photo, &clip] {
+        let unfitted = crate::detector::ModelSpec::load_for(weights)
+            .ok()
+            .and_then(|spec| spec.uncalibrated_warning(weights));
+        if let Some(warning) = unfitted {
+            bail!("refusing to serve uncalibrated weights. {warning}");
+        }
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;

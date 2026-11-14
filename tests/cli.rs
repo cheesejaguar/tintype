@@ -300,3 +300,65 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn interpolate_end_points_score_like_their_sources_and_nothing_is_written_to_models() {
+    let dir = common::scratch("cli-interpolate");
+    let png = dir.join("fixture.png");
+    common::write_fixture(&png);
+    // The two released checkpoints are sibling fine-tunes with one layout.
+    let (a, b) = (common::photo_weights(), common::repo().join("models/tintype-video.safetensors"));
+    let sweep = dir.join("sweep");
+    let o = tintype(&["interpolate", "--a", a.to_str().unwrap(), "--b", b.to_str().unwrap(), "--alpha", "0,0.5,1", "--out-dir", sweep.to_str().unwrap()]);
+    assert!(o.status.success(), "{}{}", stdout(&o), String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    assert!(out.contains("agree on all 152 tensors"), "{out}");
+    assert!(out.contains(&format!("alpha-0.00.safetensors: alpha 0: every tensor is bit for bit that of {}", a.display())), "{out}");
+    assert!(out.contains(&format!("alpha-1.00.safetensors: alpha 1: every tensor is bit for bit that of {}", b.display())), "{out}");
+
+    let score = |weights: &Path| -> (serde_json::Value, String) {
+        let o = tintype(&["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap(), png.to_str().unwrap()]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        (json_lines(&o).remove(0), String::from_utf8_lossy(&o.stderr).to_string())
+    };
+    let mut logits = Vec::new();
+    for (alpha, source) in [("0.00", &a), ("1.00", &b)] {
+        // The source run through the sweep's spec: the same preprocessing and the same (identity) calibration.
+        let same_path = dir.join(format!("source-{alpha}.safetensors"));
+        std::fs::copy(source, &same_path).unwrap();
+        std::fs::copy(sweep.join(format!("alpha-{alpha}.json")), same_path.with_extension("json")).unwrap();
+        let (end_point, warning) = score(&sweep.join(format!("alpha-{alpha}.safetensors")));
+        let (reference, _) = score(&same_path);
+        assert_eq!(end_point["logit"], reference["logit"], "alpha {alpha}");
+        assert_eq!(end_point["score"], reference["score"], "alpha {alpha}");
+        assert_eq!(end_point["views"], 6, "{end_point}");
+        // The interpolant says on standard error that it is not calibrated; a finished model does not.
+        assert!(warning.contains("is not calibrated (photo, fast, video)"), "{warning}");
+        logits.push(end_point["logit"].as_f64().unwrap());
+        std::fs::remove_file(&same_path).unwrap();
+    }
+    let (middle, _) = score(&sweep.join("alpha-0.50.safetensors"));
+    assert!(middle["logit"].as_f64().unwrap() != logits[0] && middle["logit"].as_f64().unwrap() != logits[1], "{middle} {logits:?}");
+    let o = detect(&[&png], &[]);
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("not calibrated"), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // Uncalibrated weights are not served.
+    let o = tintype(&["serve", "--device", "cpu", "--bind", "127.0.0.1:0", "--weights", sweep.join("alpha-0.50.safetensors").to_str().unwrap()]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("refusing to serve uncalibrated weights"), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // Nothing goes into models/, even when asked to overwrite; a second sweep does not replace the first.
+    let models = common::repo().join("models");
+    let before: Vec<_> = std::fs::read_dir(&models).unwrap().map(|e| e.unwrap().file_name()).collect();
+    for out_dir in [models.clone(), models.join("sweep")] {
+        let o = tintype(&["interpolate", "--a", a.to_str().unwrap(), "--b", b.to_str().unwrap(), "--alpha", "0.5", "--out-dir", out_dir.to_str().unwrap(), "--overwrite"]);
+        assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("is a models directory"), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    let o = tintype(&["interpolate", "--average", a.to_str().unwrap(), b.to_str().unwrap(), "--out", a.to_str().unwrap(), "--overwrite"]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("is a models directory"), "{}", String::from_utf8_lossy(&o.stderr));
+    let after: Vec<_> = std::fs::read_dir(&models).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(before, after);
+    let o = tintype(&["interpolate", "--a", a.to_str().unwrap(), "--b", b.to_str().unwrap(), "--alpha", "0.5", "--out-dir", sweep.to_str().unwrap()]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("already exists"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(tintype(&["verify-models"]).status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
