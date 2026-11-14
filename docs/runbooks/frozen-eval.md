@@ -9,12 +9,12 @@ the next model.
 
 **Status.** The tooling exists and is tested (`split-groups`,
 `verify-split`, frozen-record format 2, `report --operating-points`,
-`latency` with p95 on every platform). The split itself does not exist yet:
-it needs sources that Tintype has never trained on, calibrated on or
-scored, which means new downloads. The candidate sources are listed below;
-the choice, and the licence check for each, are recorded in
-[PREREGISTRATION.md](../PREREGISTRATION.md) before the first download. No
-number in this file was measured on the split.
+`latency` with p95 on every platform). The sources, sampling, grouping and
+held-out groups were fixed on 2026-11-14 in
+[PREREGISTRATION.md](../PREREGISTRATION.md#the-frozen-independent-split-what-was-fixed-before-the-first-download),
+before the first download; that entry replaces the proposed composition
+below where they differ (two proposed sources turned out not to be
+independent). What has been built and scored is in the [log](#log).
 
 ## Why the archived suites are not enough
 
@@ -40,7 +40,7 @@ families that appear in **no** training manifest
 | Generated, held-out families | AI | Whole generator families that no training store has, across diffusion, autoregressive and hybrid decoders, with prompts or scenes recorded | New-family recall |
 | Generated and authentic, degraded pairs | both | Every item above, also through the processing chains of [processing-chains.md](processing-chains.md) (resize, JPEG, blur, noise, sharpening, repost simulation), each derivative carrying its parent's `parent_id` | "Independent degraded files" is what selects the next model |
 
-**Candidate sources.** None has been downloaded. The table records what
+**Candidate sources.** The table records what
 a read of each collection's own pages found on 2026-11-13 (licence, access,
 size, and which source pools it draws on). It is a survey, not a licence
 review: before downloading a collection, read its licence at the source
@@ -52,8 +52,11 @@ replacement is written into the pre-registration.
 
 | Role | Collection | Access and terms as read | Size | Fit for this split |
 |---|---|---|---|---|
-| Authentic, phone, native and as shared | [Forchheim Image Database](https://faui1-files.cs.fau.de/public/mmsec/datasets/fodb/) | Open directory. Free for research with citation; no modification, commercial use or redistribution without an agreement | 23,106 JPEGs, about 21 GB: 143 scenes by 27 phone cameras, each camera-native and through Facebook, Instagram, Telegram, Twitter and WhatsApp | **Proposed.** Real platform round trips with parents known. Ask the authors whether "may not be modified" covers applying our processing chains to copies. Exclude its `inspection/` folder |
-| Authentic, phone, native | [VISION](https://lesc.dinfo.unifi.it/VISION/) | Open directory. CC BY-SA 4.0 | Over 35,000 images and videos from 35 devices; image count and size not confirmed | **Proposed** |
+| Authentic, phone, native and as shared | [Forchheim Image Database](https://faui1-files.cs.fau.de/public/mmsec/datasets/fodb/) | Open directory. Free for research with citation; no modification, commercial use or redistribution without an agreement | 23,106 JPEGs, about 21 GB: 143 scenes by 27 phone cameras, each camera-native and through Facebook, Instagram, Telegram, Twitter and WhatsApp | **Rejected on 2026-11-14**: a real-image source of Community Forensics, the checkpoint phase 1 started from; and "may not be modified" rules out processed copies |
+| Authentic, phone, native | [VISION](https://lesc.dinfo.unifi.it/VISION/) | Open directory. CC BY-SA 4.0 | Over 35,000 images and videos from 35 devices; image count and size not confirmed | **Rejected on 2026-11-14**: a real-image source of Community Forensics, and present in the `commfor-small2` training store |
+| Authentic, phone | [HDR+ burst photography dataset](https://hdrplusdata.org/dataset.html) | Open bucket. CC BY-SA 4.0 | 3,640 bursts; the `final.jpg` of each is 16.4 GB in all | **Chosen.** Nexus and Pixel phones; the file is the HDR+ pipeline's output at JPEG quality 95, not the phone's own |
+| Authentic, phone, native | [FloreView](https://lesc.dinfo.unifi.it/FloreView/) | Open directory. CC BY-SA 4.0 | 4,806 natural-scene JPEGs from 46 phones of 11 brands (126 GB with flat fields, HEIC and video) | **Chosen.** Phones photograph the same scenes, so the scene is the `scene_id` |
+| Authentic, phone, native | [CSAFE Multi-camera Smartphone Image Database](https://doi.org/10.25380/iastate.26932084.v1) | Open. CC BY 4.0 | 49,543 JPEGs from 60 phones of six models, 133 GB in six archives | **Chosen**, the iPhone 14 Pro archive only, natural scenes only, held out to `test` whole |
 | Authentic, camera originals | [RAISE](http://loki.disi.unitn.it/RAISE/), all 8,156 | Form on download. Non-commercial research and education, with citation | About 350 GB as RAW and TIFF | Possible. The 1,000 images of RAISE-1k (`benchmarks` plan) must be excluded by id, and RAW needs one stated development and encoding step |
 | Authentic, camera originals | Dresden Image Database | Host unreachable on 2026-11-13 | not confirmed | Not usable until it can be read |
 | Authentic, phone | [LAION-Mobile](https://huggingface.co/datasets/laionmobile/laion-mobile) | Open, metadata only (CC BY 4.0); images are fetched from their own hosts | 935 k URLs | **Rejected**: drawn from LAION, which the OpenFake training reals also are |
@@ -73,7 +76,8 @@ Infinity, RAR, Switti or Open-MAGVIT2; `janus-7b` appears 95 times. The
 public NTIRE 2026 distortion code and its licence could not be found, so
 the processing chains are written here rather than borrowed.
 
-**Proposed composition**, to be confirmed in the pre-registration entry:
+**Proposed composition** (superseded by the pre-registration entry, which
+drops Forchheim and VISION and takes HDR+, FloreView and CSAFE instead):
 authentic items from the Forchheim database (native files, and their five
 platform versions as the shared part) and VISION; generated items from
 the ARForensics test split and a sample of GenImage++; learned-codec and

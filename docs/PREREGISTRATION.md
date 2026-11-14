@@ -238,6 +238,96 @@ The scoring run stopped once when the disk filled, before any score had been
 read, and was restarted with the reference score files kept; see
 [BENCHMARK.md](BENCHMARK.md#blind-batch-7-the-photo-second-opinion).
 
+## The frozen independent split: what was fixed before the first download
+
+Written on 2026-11-14, before any file of the split was downloaded and
+before any model was scored on it. It fills in what
+[the frozen evaluation runbook](runbooks/frozen-eval.md) left open: the
+sources, the sampling, the grouping and what is held out. The measures and
+the selection rule are the runbook's and are not changed here.
+
+- **Two proposed sources were dropped before anything was fetched.** The
+  survey in the runbook proposed the Forchheim Image Database and VISION as
+  authentic sources. Both are real-image sources of Community Forensics
+  (its dataset card lists `coco, forchheim, imagenet, imd2020, laion,
+  landscapesHQ, vision` and FFHQ), which is the checkpoint the phase-1
+  weights started from, and the `commfor-small2` training store holds VISION
+  photos. They are not independent of the model, so neither goes in. The
+  Forchheim licence also forbids modification, which the processed copies
+  would be. RAISE needs a registration form and was not requested.
+- **Authentic sources** (none is in a training manifest, a calibration set,
+  an archived suite or the Community Forensics source list):
+
+  | Source | What is taken | Terms as read at the source on 2026-11-14 |
+  |---|---|---|
+  | [HDR+ burst photography dataset](https://hdrplusdata.org/dataset.html), bucket `hdrplusdata`, folder `20171106/results_20171023` | Every `final.jpg`: 3,640 files, 16.4 GB as listed. One per burst, from Nexus 5, 6, 5X, 6P, Pixel and Pixel XL phones; the output of the HDR+ pipeline snapshot of 2017-10-23 at JPEG quality 95, not the file the phone saved | CC BY-SA 4.0 |
+  | [FloreView](https://lesc.dinfo.unifi.it/FloreView/) | Every `.jpg` and `.jpeg` under a device's `Nat/jpeg-h264` folder: 4,806 files listed, 46 phones of 11 brands. Flat-field images, the `Extra-Data` folders, HEIC files and videos are left out | CC BY-SA 4.0 |
+  | [CSAFE Multi-camera Smartphone Image Database](https://doi.org/10.25380/iastate.26932084.v1), `iPhone14.zip` (20.4 GB, MD5 `dfc01c89b14356141f53d253b72e946c` as listed) | Every JPEG under a `natural` folder: ten iPhone 14 Pro phones, four cameras each, roughly 100 photos per camera. The `blank` (flat-field) folders are left out | CC BY 4.0 |
+
+- **Generated sources.**
+
+  | Source | What is taken | Terms |
+  |---|---|---|
+  | [ARForensics](https://huggingface.co/datasets/Yanran21/ARForensics) at commit `828c2ee260361574f1c7f24ea50a1698128d6baf`, the four `ARForensics_updated_test_part00N.zip` (20.9 GB) | From each generator's `1_fake` folder, 1,500 files evenly spaced over the sorted file names: LlamaGen, VAR, Infinity, Janus-Pro, RAR, Switti, Open-MAGVIT2. The `0_real` folders are ImageNet and are not extracted | MIT |
+  | [GenImage++](https://huggingface.co/datasets/Lunahera/genimagepp) at commit `4160fbc103730771d3641139d3b995a3c2dbc719`, archives `flux_realistic`, `stable_diffusion_v_3_0_realistic` and `flux_krea_amateur` (27.6 GB) | 1,000 files from each, evenly spaced over the sorted file names | CC BY-NC 4.0 |
+
+  No local manifest lists LlamaGen, VAR, Infinity, RAR, Switti or
+  Open-MAGVIT2. `janus-7b` appears 95 times, so Janus-Pro is not a new
+  family and is marked as seen. FLUX.1-dev and SD3 are trained on; the
+  GenImage++ items are an independent source of seen families, and FLUX.1
+  Krea is a variant no manifest lists.
+- **Grouping columns.** `parent_id` is `<collection>/<path inside the
+  collection>`. `scene_id`: for FloreView the location and scene of the
+  file name (`floreview-L1S1`), shared by every phone that photographed it;
+  empty elsewhere (an HDR+ burst is one photo; no scene or prompt id is
+  published for the others). `source_id`: `hdrplus`, `floreview-<brand>`,
+  `csafe-iphone14pro`. `generator_family`: `llamagen`, `var`, `infinity`,
+  `janus-pro`, `rar`, `switti`, `open-magvit2`, `flux`, `sd3`.
+- **Held out to the test set whole**: the families `infinity` and `rar`,
+  and the source `csafe-iphone14pro`.
+- **Shares**: `--fractions 0.2,0.4,0.4 --seed 1 --together parent,scene`.
+  The runbook proposed 30 / 35 / 35. With 8,446 authentic parents to divide
+  (HDR+ and FloreView), 35% is 2,956, short of the 3,000 the 0.1% operating
+  point needs, and 40% is about 3,380. `fit` gets less; nothing planned
+  needs more of it.
+- **What the 0.1% point can and cannot show.** Calibration and test each
+  get over 3,000 authentic photos, but FloreView's are about 100 photos per
+  phone of shared scenes, and CSAFE's are ten units of one model
+  photographed in one town. The photos are distinct; the scenes and devices
+  are far fewer than 3,000. The 0.1% figures are reported with intervals
+  resampled over parents and are to be read with that in mind.
+- **Processed copies.** The twelve single operations of the Frontier
+  diagnostic (`resize-0.5-bicubic`, `resize-0.25-bicubic`, `jpeg-qv4`,
+  `jpeg-qv12`, `blur-s1.0`, `blur-s3.0`, `noise-a10`, `noise-a40`,
+  `sharpen-a1.0`, `repost-720-qv9x1`, `repost-960-qv7x4`,
+  `repost-960-qv12x1`), rendered by `scripts/stress-photo.py` (FFmpeg), on
+  a sample of the parents of `calibrate` and of `test`: the same number of
+  authentic and generated parents in each set, evenly spaced over the
+  sorted paths within each source and each family, and placed with
+  `--existing`. Lossless copies of a 12-megapixel photo are tens of
+  megabytes each, so the number per class and set, between 200 and 300, is
+  fixed after the originals are on disk and before anything is scored, and
+  is written below. It depends on disk space only.
+- **Known gaps, stated now.** (a) No real platform round trips: the one
+  open collection that has them was dropped above. Reposts are simulated.
+  (b) No learned-codec copies: no licence is stated for the CompressAI
+  weights, so item 4 of the processing-chains gate cannot be evaluated on
+  this split. (c) Encoding and size differ by class: the authentic photos
+  are 12-megapixel and larger camera JPEGs, the generated images are 256 to
+  1,024 px and their formats are recorded when they are unpacked. The
+  processed copies re-encode both classes the same way, which removes the
+  encoding difference on those rows but not the size difference; the
+  `resize` and `repost` rows bring sizes closer. Clean-row results are to be
+  read with this confound in mind.
+- **Leakage check**: `tintype overlap` of the new manifests against every
+  training store whose files are on disk. The archived evaluation sets are
+  manifests without files on this machine, so the byte check cannot cover
+  them; none of the sources above is one of their sources.
+- **First look**: the released photo model (`models/tintype.safetensors`,
+  copied under `runs/`), at its shipped cutoff and at a cutoff refitted on
+  `calibrate`, as the incumbent every later candidate is compared with.
+  Every look at `test` is logged in the runbook.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames
