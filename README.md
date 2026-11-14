@@ -437,13 +437,14 @@ shipped here. The Community Forensics weights are MIT.
 | `serve` | Local or self-hosted HTTP API |
 | `demo` | Score the bundled, labeled sample |
 | `verify-models`, `freeze-set`, `verify-set` | Verify released weights and reproduce the exact evaluation inputs |
+| `split-groups`, `verify-split` | Divide manifests into fit, calibrate and test sets that keep parents, scenes, sources and generator families together, and fail if any cross ([runbook](docs/runbooks/frozen-eval.md)) |
 | `data` | Download and prepare a dataset plan |
 | `train` | Fine-tune on image and video manifests |
 | `finalize`, `finalize-video`, `calibrate` | Freeze a checkpoint and fit its operating points |
 | `evaluate` | Score a whole suite with Tintype and the reference detectors, print tables |
 | `score`, `score-video` | Score one manifest (`--reference commfor|swinv2|waverep` runs a reference detector) |
-| `report` | Precision, recall, F1, FPR, AUROC, recall at 1% FPR, bootstrap intervals; `--at-rate-of` compares systems at one system's false-positive rate |
-| `latency` | Single-image latency, decode to verdict |
+| `report` | Precision, recall, F1, FPR, AUROC, recall at 1% FPR, bootstrap intervals; `--at-rate-of` compares systems at one system's false-positive rate; `--operating-points` gives recall at 0.1% and 1% FPR, the rates at each frozen cutoff with a Clopper–Pearson bound, precision at a stated prevalence, and per-slice tables |
+| `latency` | Single-image latency, file to verdict: median, p90 and p95. Runs on every platform with `--device cpu` |
 | `profile` | Decoding, cropping and the network timed separately, the network at several batch sizes |
 | `ingest`, `index-folder`, `overlap`, `check-videos`, `parquet-info` | Dataset tooling |
 
