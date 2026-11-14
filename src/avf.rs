@@ -440,3 +440,16 @@ pub fn compare_with_pure_rust(path: &Path, limit: usize) -> Result<Comparison> {
         Ok(c)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Decoder-continuation benchmark for the system decoder. Needs real clips:
+    /// `TINTYPE_TEST_VIDEOS=clips.txt cargo test --release --lib avf -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn reading_on_against_reopening_for_the_second_half() {
+        yuv::report_continuation("system decoder", |path| with_deadline(path, |p| yuv::continuation_times(|| open(p, None), 16, 30.0)));
+    }
+}

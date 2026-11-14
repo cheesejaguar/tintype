@@ -12,6 +12,7 @@ merged separately.
 | Work counters (`TINTYPE_STATS`), timing and parity scripts | built | `src/stats.rs`, `scripts/view-reuse-bench.py`, `scripts/view-reuse-parity.py` |
 | 1. Score identical views of an image once | built, on by default where exact | `image_io::Pixels`, `detector::ViewReuse` |
 | 2. Prepare frames and views only when early exit reaches them | built, on | `detector::Stages`, `video::Frame` |
+| 3. Keep the decoder open for a clip's second half | benchmarked, **not built** | `yuv::continuation_times` (test only) |
 
 ## The gate
 
@@ -458,3 +459,121 @@ repetitions of the default profile over the 550 photos:
 The two are the same thing. The clause should have been written against
 repeated runs from the start; it is left as it was written and this is the
 result.
+
+## Change 3: keep the decoder open for a clip's second half (benchmarked, not built)
+
+### What happens now
+
+A clip is sampled at 16 positions. The first half is decoded, converted as
+needed and scored; a clip still undecided after its eight first-half frames
+(12 of the 60 here) is **opened again**, read from its first frame up to
+position 8 without converting anything, and then read on to position 15.
+Everything up to position 7 is decoded twice.
+
+Keeping the decoder open would let it read on from where it stopped. The
+brief asked for a benchmark first and for the change only if it shows a
+gain, with a cap on the decoders kept open.
+
+### The benchmark
+
+`reading_on_against_reopening_for_the_second_half` (in `src/avf.rs` for the
+system decoder and `src/swdec.rs` for the pure-Rust reader, ignored by
+default) times, per clip, with no conversion: opening and reading through
+position 7; reading on through position 15; and opening again and reading
+from the start through position 15.
+
+```bash
+TINTYPE_TEST_VIDEOS=clips.txt cargo test --release --locked --lib avf::tests::reading_on -- --ignored --nocapture
+TINTYPE_TEST_VIDEOS=clips.txt cargo test --release --locked --lib swdec::continuation -- --ignored --nocapture
+```
+
+Mean per clip, on the machine above (load average 5.0 at the start; three
+runs for the system decoder, which agreed to within 0.5 ms (the first is
+shown), one for the pure-Rust reader):
+
+| Decoder | Clips | First half | Second half, reading on | Second half, after reopening | Saved per clip that goes on | Share of that clip's decoding |
+|---|---|---|---|---|---|---|
+| System (AVFoundation) | all 60 | 35.3 ms, 113 frames | 31.2 ms, 128 frames | 66.1 ms, 242 frames | 34.9 ms | 34% |
+| System (AVFoundation) | the 12 that go on | 28.0 ms, 64 frames | 17.9 ms, 71 frames | 40.3 ms, 136 frames | 22.4 ms | 33% |
+| Pure Rust (`TINTYPE_DECODER=rust`, what Linux and Windows use) | the 12 that go on | 254.7 ms, 64 frames | 219.5 ms, 71 frames | 471.7 ms, 136 frames | 252.1 ms | 35% |
+
+So the decoder-level gain is real: a third of the decoding of a clip that
+goes on.
+
+### What it would be worth end to end
+
+File to verdict for the 12 clips that go on, one `detect` process each,
+final binary, each clip's best of 2 passes (load average 11.0 at the
+start), against the saving the benchmark gives per clip:
+
+| Decoder | Engine | Mean per clip | Saving per clip | Share |
+|---|---|---|---|---|
+| System | `gpu` | 595.5 ms | 22.4 ms | 3.8% |
+| System | `cpu` (Accelerate) | 826.1 ms | 22.4 ms | 2.7% |
+| Pure Rust | `cpu` (Accelerate) | 1420.3 ms | 252.1 ms | 17.8% |
+| Pure Rust | `cpu` (pure-Rust kernels: the Linux and Windows configuration, run here on the M6) | 1910.5 ms | 252.1 ms | 13.2% |
+
+These are the clips that gain; the other four in five are decided in the
+first half and gain nothing. Over the whole cohort with the system decoder
+that is 12 x 22.4 ms in 60 clips of 404.4 ms each on the GPU engine, about
+1%.
+
+### Why it is not built, and what it would take
+
+With the system decoder, which is what this machine uses, the gain is about
+1% of clip time: not worth what it costs. With the pure-Rust reader it is
+13 to 18% for one clip in five, which is worth having on Linux and Windows.
+It was left out of this pass to keep the two changes above reviewable and
+because the build is not small:
+
+- The decoder has to outlive the call that read the first half. The system
+  decoder is read on its own thread under a 30-second deadline (a stalled
+  read is abandoned and counted), so a kept decoder is a parked thread
+  holding a decoding session, and the deadline and the stall count have to
+  cover the second read too.
+- Clips reach their half-way check at different times and four in five are
+  decided there, so a decoder must be released the moment its clip is
+  decided: the scoring loop needs a hook for that, or the kept decoders
+  fill up with clips that will never use them.
+- The number kept open needs a cap (the brief asks for one); a clip over
+  the cap falls back to reopening, as now.
+- The frames picked must be the ones a single pass picks. Picking carries
+  state across the half (the previous frame, the first timestamp), so the
+  sampler has to become resumable, and parity has to be shown frame for
+  frame against `sample_frames`.
+
+That is the next step for this item. The benchmark and its two tests stay
+in the tree so that the result can be checked before and after.
+
+## Ready to run
+
+Nothing here needs a long GPU run. To repeat everything on a quiet machine,
+or on Linux or Windows, where reuse is on everywhere and the pure-Rust
+reader decodes the clips:
+
+```bash
+git checkout b88c122 && cargo build --release --locked --bin tintype && cp target/release/tintype /tmp/tintype-base
+git checkout <this branch> && cargo build --release --locked --bin tintype
+# then the commands under "How parity is checked" and "How time is measured",
+# with BASE=/tmp/tintype-base and NEW=target/release/tintype
+cargo test --release --locked --test view_reuse -- --ignored   # the GPU check, macOS only
+```
+
+Not measured here: any x86 machine (the pure-Rust kernels were checked on
+this machine's NEON build only; the test suite holds each platform to the
+property reuse relies on), and clips at more than one per process with the
+pure-Rust reader.
+
+## Seen on the way, not changed
+
+- A clip that yields fewer frames than it was sampled for is scored twice.
+  Both bundled fixture clips give 15 of 16 frames: the first half is scored
+  (48 views), the second half comes back one frame short (42 views), and
+  the clip is then scored again whole (90 views), so `views_scored` is 180
+  for a verdict that rests on 90. The first two passes could be kept.
+- With Accelerate, several files in one process do not give the same bytes
+  twice (0 to 3 rows of 550, in the seventh decimal of the logit). One file
+  per process does.
+- The same frame can be picked for more than one sampling position in a
+  short clip. Its views are then scored once per position; reuse here is
+  within one image, not across frames.

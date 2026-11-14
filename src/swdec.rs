@@ -1020,3 +1020,14 @@ mod against_system_decoder {
         assert!(c.max_time_difference < 1e-3, "{c:?}");
     }
 }
+
+#[cfg(test)]
+mod continuation {
+    /// Decoder-continuation benchmark for the pure-Rust reader. Needs real clips:
+    /// `TINTYPE_TEST_VIDEOS=clips.txt cargo test --release --lib swdec -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn reading_on_against_reopening_for_the_second_half() {
+        crate::yuv::report_continuation("pure-Rust reader", |path| crate::yuv::continuation_times(|| super::open(path, None), 16, 30.0));
+    }
+}
