@@ -189,7 +189,9 @@ def report(edits, systems, top_k, cutoff_on, rates=RATES):
             known = hit = extra = 0
             for k, cuts_found in found_cuts:
                 e = edits[k]
-                truth = list(e["cuts"]) + (list(e["edit"]) if e["edit"] and e["kind"].endswith("splice") else [])
+                # A join of the parent that the inserted segment replaced is not in the file.
+                truth = [c for c in e["cuts"] if not (e["edit"] and e["edit"][0] < c < e["edit"][1])]
+                truth += list(e["edit"]) if e["edit"] and e["kind"].endswith("splice") else []
                 known += len(truth)
                 hit += sum(any(abs(c - t) <= 0.15 for c in cuts_found) for t in truth)
                 extra += sum(not any(abs(c - t) <= 0.15 for t in truth) for c in cuts_found)

@@ -55,17 +55,19 @@ def read_manifest(path):
 
 
 def probe(ffprobe, path):
-    """(width, height, fps, duration) of the first video stream, or None."""
+    """(width, height, fps, seconds of video) of the first video stream, or None."""
     try:
         out = subprocess.run(
-            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,avg_frame_rate:format=duration", "-of", "json", str(path)],
+            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,avg_frame_rate,duration:format=duration", "-of", "json", str(path)],
             capture_output=True, text=True, check=True,
         ).stdout
         data = json.loads(out)
         stream = data["streams"][0]
         num, den = stream["avg_frame_rate"].split("/")
         fps = float(num) / float(den) if float(den) else 0.0
-        return int(stream["width"]), int(stream["height"]), fps, float(data["format"]["duration"])
+        # The video stream's own length where the container states it: audio can run longer.
+        duration = min(float(d) for d in (stream.get("duration"), data["format"].get("duration")) if d not in (None, "N/A"))
+        return int(stream["width"]), int(stream["height"]), fps, duration
     except (subprocess.CalledProcessError, KeyError, IndexError, ValueError, ZeroDivisionError):
         return None
 
@@ -77,22 +79,23 @@ def canvas(width, height, max_height):
     return even(width), even(height)
 
 
-def window(first, count, fps):
-    """A `trim` that keeps exactly frames `first .. first + count - 1` of a stream at `fps`.
+def window(first, count):
+    """A `trim` that keeps exactly frames `first .. first + count - 1` of a stream.
 
-    The bounds sit half a frame before the first frame kept and half a frame
-    before the first one dropped, so rounding cannot move a frame across
-    them and every recorded time is a whole number of frames.
+    Counted in frames, not seconds: a bound in seconds is rounded to the
+    stream's time base, which can move it a frame either way, and then the
+    times written down are not the times in the file.
     """
-    return f"trim=start={(first - 0.5) / fps:.6f}:end={(first + count - 0.5) / fps:.6f},setpts=PTS-STARTPTS"
+    return f"trim=start_frame={first}:end_frame={first + count},setpts=PTS-STARTPTS"
 
 
 def chain(index, first, count, size, fps, label):
     """Bring input `index` to the canvas and frame rate and keep `count` frames from frame `first`."""
     w, h = size
+    # Should the stream end a frame or two before its stated length, its last frame is held, so the count is always met.
     return (
         f"[{index}:v]fps={fps:.6g},scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,format=yuv420p,"
-        f"{window(first, count, fps)}[{label}]"
+        f"tpad=stop_mode=clone:stop_duration=1,{window(first, count)}[{label}]"
     )
 
 
@@ -166,7 +169,7 @@ def build(args):
             continue
         fps = metas[0][2] if 1.0 <= metas[0][2] <= 120.0 else 25.0
         # Everything is counted in frames at the parent's rate, so that the times written down are the times in the file.
-        parts = [(r["path"], int(min(m[3] - 0.05, args.max_part_seconds) * fps)) for r, m in zip(group, metas)]
+        parts = [(r["path"], int(min(m[3] - 0.1, args.max_part_seconds) * fps)) for r, m in zip(group, metas)]
         frames = sum(count for _, count in parts)
         total = frames / fps
         if any(count < fps for _, count in parts) or total < args.min_seconds:
@@ -211,8 +214,8 @@ def build(args):
                     graph = base + [
                         "[parent]split=2[a][b]",
                         # The cross-fade wants one time base and frame rate on both sides.
-                        f"[a]{window(0, start + f, fps)},settb=AVTB,fps={fps:.6g}[head]",
-                        f"[b]{window(start + n, frames - start - n, fps)},settb=AVTB,fps={fps:.6g}[tail]",
+                        f"[a]{window(0, start + f)},settb=AVTB,fps={fps:.6g}[head]",
+                        f"[b]{window(start + n, frames - start - n)},settb=AVTB,fps={fps:.6g}[tail]",
                         chain(k, source[1], n + f, size, fps, "raw"),
                         f"[raw]settb=AVTB,fps={fps:.6g}[ins]",
                         f"[head][ins]xfade=transition=fade:duration={f / fps:.6f}:offset={(start - 0.25) / fps:.6f}[x]",
@@ -224,8 +227,8 @@ def build(args):
                     n = round(d * fps)
                     graph = base + [
                         "[parent]split=2[a][b]",
-                        f"[a]{window(0, start, fps)}[head]",
-                        f"[b]{window(start + n, frames - start - n, fps)}[tail]",
+                        f"[a]{window(0, start)}[head]",
+                        f"[b]{window(start + n, frames - start - n)}[tail]",
                         chain(k, source[1], n, size, fps, "ins"),
                         "[head][ins][tail]concat=n=3:v=1:a=0[out]",
                     ]
