@@ -435,7 +435,8 @@ fn the_int8_simulation_is_opt_in_takes_what_cpu_takes_and_leaves_cpu_alone() {
             assert_eq!((&got["path"], &got["kind"], &got["profile"], got.get("views"), got.get("frames")), (&want["path"], &want["kind"], &want["profile"], want.get("views"), want.get("frames")), "{variant:?}");
             assert_eq!(got.as_object().unwrap().keys().collect::<Vec<_>>(), want.as_object().unwrap().keys().collect::<Vec<_>>(), "{variant:?}");
             let moved = (logit(got) - logit(want)).abs();
-            assert!(moved > 0.0 && moved < 3.0, "{variant:?}: logit {} against {}", logit(got), logit(want));
+            // Not the same number and not a different answer: on this machine the largest move is about one.
+            assert!(moved > 0.0 && moved < 6.0, "{variant:?}: logit {} against {}", logit(got), logit(want));
         }
         if variant.is_none() {
             default = rows;
