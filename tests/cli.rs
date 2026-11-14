@@ -300,3 +300,121 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn interpolate_end_points_score_like_their_sources_and_nothing_is_written_to_models() {
+    let dir = common::scratch("cli-interpolate");
+    let png = dir.join("fixture.png");
+    common::write_fixture(&png);
+    // The two released checkpoints are sibling fine-tunes with one layout.
+    let (a, b) = (common::photo_weights(), common::repo().join("models/tintype-video.safetensors"));
+    let sweep = dir.join("sweep");
+    let o = tintype(&["interpolate", "--a", a.to_str().unwrap(), "--b", b.to_str().unwrap(), "--alpha", "0,0.5,1", "--out-dir", sweep.to_str().unwrap()]);
+    assert!(o.status.success(), "{}{}", stdout(&o), String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    assert!(out.contains("agree on all 152 tensors"), "{out}");
+    assert!(out.contains(&format!("alpha-0.00.safetensors: alpha 0: every tensor is bit for bit that of {}", a.display())), "{out}");
+    assert!(out.contains(&format!("alpha-1.00.safetensors: alpha 1: every tensor is bit for bit that of {}", b.display())), "{out}");
+
+    let score = |weights: &Path| -> (serde_json::Value, String) {
+        let o = tintype(&["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap(), png.to_str().unwrap()]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        (json_lines(&o).remove(0), String::from_utf8_lossy(&o.stderr).to_string())
+    };
+    let mut logits = Vec::new();
+    for (alpha, source) in [("0.00", &a), ("1.00", &b)] {
+        // The source run through the sweep's spec: the same preprocessing and the same (identity) calibration.
+        let same_path = dir.join(format!("source-{alpha}.safetensors"));
+        std::fs::copy(source, &same_path).unwrap();
+        std::fs::copy(sweep.join(format!("alpha-{alpha}.json")), same_path.with_extension("json")).unwrap();
+        let (end_point, warning) = score(&sweep.join(format!("alpha-{alpha}.safetensors")));
+        let (reference, _) = score(&same_path);
+        assert_eq!(end_point["logit"], reference["logit"], "alpha {alpha}");
+        assert_eq!(end_point["score"], reference["score"], "alpha {alpha}");
+        assert_eq!(end_point["views"], 6, "{end_point}");
+        // The interpolant says on standard error that it is not calibrated; a finished model does not.
+        assert!(warning.contains("is not calibrated (photo, fast, video)"), "{warning}");
+        logits.push(end_point["logit"].as_f64().unwrap());
+        std::fs::remove_file(&same_path).unwrap();
+    }
+    let (middle, _) = score(&sweep.join("alpha-0.50.safetensors"));
+    assert!(middle["logit"].as_f64().unwrap() != logits[0] && middle["logit"].as_f64().unwrap() != logits[1], "{middle} {logits:?}");
+    let o = detect(&[&png], &[]);
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("not calibrated"), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // Uncalibrated weights are not served.
+    let o = tintype(&["serve", "--device", "cpu", "--bind", "127.0.0.1:0", "--weights", sweep.join("alpha-0.50.safetensors").to_str().unwrap()]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("refusing to serve uncalibrated weights"), "{}", String::from_utf8_lossy(&o.stderr));
+
+    // Nothing goes into models/, even when asked to overwrite; a second sweep does not replace the first.
+    let models = common::repo().join("models");
+    let before: Vec<_> = std::fs::read_dir(&models).unwrap().map(|e| e.unwrap().file_name()).collect();
+    for out_dir in [models.clone(), models.join("sweep")] {
+        let o = tintype(&["interpolate", "--a", a.to_str().unwrap(), "--b", b.to_str().unwrap(), "--alpha", "0.5", "--out-dir", out_dir.to_str().unwrap(), "--overwrite"]);
+        assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("is a models directory"), "{}", String::from_utf8_lossy(&o.stderr));
+    }
+    let o = tintype(&["interpolate", "--average", a.to_str().unwrap(), b.to_str().unwrap(), "--out", a.to_str().unwrap(), "--overwrite"]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("is a models directory"), "{}", String::from_utf8_lossy(&o.stderr));
+    let after: Vec<_> = std::fs::read_dir(&models).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(before, after);
+    let o = tintype(&["interpolate", "--a", a.to_str().unwrap(), "--b", b.to_str().unwrap(), "--alpha", "0.5", "--out-dir", sweep.to_str().unwrap()]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("already exists"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(tintype(&["verify-models"]).status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn replay_pool_refits_each_pool_on_the_fit_file_and_reports_on_the_test_file() {
+    let dir = common::scratch("cli-replay-pool");
+    // Six view logits per image around a level: real near -4, AI near +4, every seventh image near the threshold.
+    let write = |name: &str, salt: u32, n: u32| {
+        let mut text = String::new();
+        for i in 0..n {
+            let label = i % 2;
+            let noise = |v: u32| ((i.wrapping_mul(2_654_435_761).wrapping_add(v.wrapping_mul(40_503)).wrapping_add(salt) >> 8) % 1000) as f32 / 1000.0 - 0.5;
+            let level = if i % 7 == 0 { 1.5 + 3.0 * noise(9) } else if label == 1 { 5.0 + 3.0 * noise(9) } else { -5.0 + 3.0 * noise(9) };
+            let logits: Vec<String> = (0..6).map(|v| format!("{:.5}", level + 3.0 * noise(v))).collect();
+            text.push_str(&format!("{name}/{i}.png\t{label}\t{}\tset-{}\t0.5\t{}\n", if label == 1 { "gen".to_string() } else { format!("real:cam{}", (i / 2) % 2) }, i % 3, logits.join("\t")));
+        }
+        let p = dir.join(format!("{name}.all-views.tsv"));
+        std::fs::write(&p, text).unwrap();
+        p
+    };
+    let fit = write("fit", 1, 3000);
+    write("test", 77, 2000);
+    // A test set may name several files, and a `*` in a file name matches (here test.all-views.tsv).
+    std::fs::write(dir.join("empty.tsv"), "").unwrap();
+    let test_arg = format!("held-out={},{}", dir.join("test.*.tsv").display(), dir.join("empty.tsv").display());
+    let spec = common::repo().join("models/tintype.json");
+    let o = tintype(&["replay-pool", "--fit", fit.to_str().unwrap(), "--test", &test_arg, "--spec", spec.to_str().unwrap(), "--pool", "mean,median,top2,max,fitted", "--order", "shipped", "--order", "greedy", "--slice-by", "dataset", "--write-scores", dir.join("scores").to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    for want in [
+        "Fit items: 3000 (1500 AI, 1500 real) from 1 file(s). Target false-positive rate 1.50%, averaged over the 2 real sources with at least 100 items.",
+        "| shipped (mean, spec as is) | 2,0,1,3,4,5 | 1.692 | 0.664 | 6 / 3 / 2 / 1.5 / 1 |",
+        "| mean | 2,0,1,3,4,5 |",
+        "| top 2 |",
+        "| fitted weights ",
+        "(greedy)",
+        "`early_exit` for max, order 2,0,1,3,4,5",
+        "### Test: held-out (2000 items: 1000 AI, 1000 real)",
+        "| shipped (mean, spec as is), all views |",
+        "held-out by dataset: median | 2,0,1,3,4,5",
+        "| set-0 |",
+    ] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // The shipped row is the reference: it changes no verdict against itself.
+    assert!(out.lines().any(|l| l.starts_with("| shipped (mean, spec as is) | 2,0,1,3,4,5 |") && l.ends_with("| +0 −0 AI, +0 −0 real |")), "{out}");
+    // The files written are ordinary score files that `report` reads.
+    let system = format!("median={}", dir.join("scores/held-out.median.201345.tsv").display());
+    let o = tintype(&["report", "--system", &system, "--operating-points"]);
+    assert!(o.status.success() && stdout(&o).contains("2000 items scored by all 1 systems: 1000 AI, 1000 real"), "{}{}", stdout(&o), String::from_utf8_lossy(&o.stderr));
+
+    // A file written with early exit (fewer logits per image) cannot be replayed, and the error says what can.
+    std::fs::write(dir.join("short.tsv"), "a.png\t1\tgen\tset\t0.9\t4.0\t5.0\n").unwrap();
+    let o = tintype(&["replay-pool", "--fit", dir.join("short.tsv").to_str().unwrap(), "--spec", spec.to_str().unwrap()]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("has 2 view logits, not 6"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(tintype(&["verify-models"]).status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}

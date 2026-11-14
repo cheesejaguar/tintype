@@ -145,6 +145,7 @@ pub fn run(a: TrainArgs) -> Result<()> {
         threshold: 0.5,
         prefix: String::new(),
         video: Some(crate::detector::VideoSpec::standard(size, a.aug.fit_resize)),
+        uncalibrated: None,
     };
     let save = |tr: &Trainer, name: &str| -> Result<()> {
         let p = a.out.join(format!("{name}.safetensors"));
