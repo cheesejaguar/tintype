@@ -91,6 +91,8 @@ impl Yuv {
 
     /// `f(y, cb, cr)` per pixel with raw sample values.
     fn convert_raw(&self, f: impl Fn(i32, i32, i32) -> [i32; 3]) -> Rgb {
+        crate::stats::CONVERTED_FRAMES.add(1);
+        let start = std::time::Instant::now();
         let cw = self.w.div_ceil(2);
         let mut data = vec![0u8; self.w * self.h * 3];
         for yy in 0..self.h {
@@ -104,6 +106,7 @@ impl Yuv {
                 out[x * 3 + 2] = c[2].clamp(0, 255) as u8;
             }
         }
+        crate::stats::CONVERT_TIME.since(start);
         Rgb { w: self.w as u32, h: self.h as u32, data }
     }
 }
@@ -135,7 +138,11 @@ pub fn uniform_range(r: &mut impl Source, n: usize, max_seconds: f64, from: usiz
     let mut prev: Option<(f64, Yuv)> = None;
     let mut t0 = None;
     while k < to {
-        let Some((pts, f)) = r.next() else { break };
+        let reading = std::time::Instant::now();
+        let frame = r.next();
+        crate::stats::DECODE_TIME.since(reading);
+        let Some((pts, f)) = frame else { break };
+        crate::stats::DECODED_FRAMES.add(1);
         let start = *t0.get_or_insert(pts);
         while k < to {
             let target = start + k as f64 * span / n as f64;
@@ -168,7 +175,11 @@ pub fn uniform_range(r: &mut impl Source, n: usize, max_seconds: f64, from: usiz
 pub fn first(r: &mut impl Source, n: usize, opencv: bool, path: &Path) -> Result<Vec<Rgb>> {
     let mut out = Vec::with_capacity(n);
     while out.len() < n {
-        let Some((_, f)) = r.next() else { break };
+        let reading = std::time::Instant::now();
+        let frame = r.next();
+        crate::stats::DECODE_TIME.since(reading);
+        let Some((_, f)) = frame else { break };
+        crate::stats::DECODED_FRAMES.add(1);
         out.push(if opencv { f.to_rgb_opencv() } else { f.to_rgb() });
     }
     if out.is_empty() {

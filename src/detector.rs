@@ -431,11 +431,14 @@ impl Preprocessor {
     /// (`fed_len` bytes). Decode workers do this, so that putting a batch
     /// together is a plain copy.
     pub fn encode(&self, crop: &Rgb, out: &mut [u8]) {
+        let start = std::time::Instant::now();
         #[cfg(target_os = "macos")]
         if let Some(f) = &self.feed {
-            return f.convert_view(&crop.data, out);
+            f.convert_view(&crop.data, out);
+            return crate::stats::VIEWS_TIME.since(start);
         }
         out.copy_from_slice(&crop.data);
+        crate::stats::VIEWS_TIME.since(start);
     }
 
     /// Every view of `img` in the form the engine is fed, one after another.
@@ -628,6 +631,13 @@ impl Detector {
     /// ([`Preprocessor::encode`]): planar normalised values in the graph's
     /// precision on the GPU, interleaved 8-bit RGB on the CPU.
     pub fn logits_fed(&self, x: &[u8]) -> Vec<f32> {
+        let start = std::time::Instant::now();
+        let out = self.run(x);
+        crate::stats::MODEL_TIME.since(start);
+        out
+    }
+
+    fn run(&self, x: &[u8]) -> Vec<f32> {
         match &self.engine {
             #[cfg(target_os = "macos")]
             Engine::Mps { g, inp, out, .. } => {
@@ -691,6 +701,7 @@ impl Detector {
     /// Logits for the first `n` views in `x` (in fed form, `fl` bytes each),
     /// whatever the engine's batch size.
     fn logits_n(&self, x: &[u8], n: usize, fl: usize) -> Vec<f32> {
+        crate::stats::SCORED_VIEWS.add(n);
         let mut out = Vec::with_capacity(n);
         match &self.engine {
             #[cfg(target_os = "macos")]
@@ -734,6 +745,7 @@ impl Detector {
             let l = match &self.engine {
                 #[cfg(target_os = "macos")]
                 Engine::Mps { .. } => {
+                    crate::stats::SCORED_VIEWS.add(n);
                     let mut padded = buf.clone();
                     padded.resize(self.batch.max(n).div_ceil(self.batch) * self.batch * vl, 0);
                     padded.chunks(self.batch * vl).flat_map(|c| self.logits(c)).take(n).collect::<Vec<f32>>()
@@ -820,6 +832,7 @@ impl Detector {
         })).collect();
         let mut odd = odd.into_inner().unwrap();
         if !more.is_empty() {
+            crate::stats::REOPENED_CLIPS.add(more.len());
             let (rest, t2) = self.score_stream(more.len(), threads, |j| crate::video::sample_frames_range(&paths[more[j]], sampling, half, nf).ok());
             for (&i, r) in more.iter().zip(rest) {
                 // Second-half frames arrive in clip order; file them in looking order.
@@ -994,6 +1007,7 @@ impl Detector {
         let mut buf = vec![0u8; self.batch * vl];
         for chunk in flat.chunks(self.batch * vl) {
             buf[..chunk.len()].copy_from_slice(chunk);
+            crate::stats::SCORED_VIEWS.add(chunk.len() / vl);
             logits.extend_from_slice(&self.logits(&buf)[..chunk.len() / vl]);
         }
         logits.chunks_exact(nv).map(|c| c.to_vec()).collect()

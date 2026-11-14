@@ -51,8 +51,10 @@ pub fn decode(bytes: &[u8]) -> Result<Rgb> {
 
 pub fn load(path: impl AsRef<Path>) -> Result<Rgb> {
     let p = path.as_ref();
-    decode(&std::fs::read(p).with_context(|| format!("reading {}", p.display()))?)
-        .with_context(|| format!("decoding {}", p.display()))
+    let start = std::time::Instant::now();
+    let img = decode(&std::fs::read(p).with_context(|| format!("reading {}", p.display()))?).with_context(|| format!("decoding {}", p.display()));
+    crate::stats::DECODE_TIME.since(start);
+    img
 }
 
 impl Rgb {
@@ -293,6 +295,13 @@ impl Rgb {
 /// windows are taken from a half-crop grid and chosen greedily so that picks
 /// do not overlap while non-overlapping candidates remain.
 pub fn rich_windows(img: &Rgb, crop: u32, k: usize) -> Vec<(i64, i64)> {
+    let start = std::time::Instant::now();
+    let picks = rank_windows(img, crop, k);
+    crate::stats::VIEWS_TIME.since(start);
+    picks
+}
+
+fn rank_windows(img: &Rgb, crop: u32, k: usize) -> Vec<(i64, i64)> {
     let (w, h, c) = (img.w as usize, img.h as usize, crop as usize);
     if w < c || h < c {
         return vec![(0, 0); k.max(1)];
@@ -390,6 +399,15 @@ impl View {
 
     /// As [`View::apply`], reusing precomputed [`rich_windows`] when given.
     pub fn apply_with(self, img: &Rgb, rich: Option<&[(i64, i64)]>) -> Rgb {
+        crate::stats::MATERIALISED_VIEWS.add(1);
+        // (A rich view left to rank for itself counts its ranking twice.)
+        let start = std::time::Instant::now();
+        let out = self.cut(img, rich);
+        crate::stats::VIEWS_TIME.since(start);
+        out
+    }
+
+    fn cut(self, img: &Rgb, rich: Option<&[(i64, i64)]>) -> Rgb {
         match self {
             View::NativeRich { crop, rank } => {
                 if img.w.min(img.h) < crop {

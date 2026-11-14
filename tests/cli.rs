@@ -298,5 +298,47 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = stdout(&o);
     assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
+    // Each image's own time is printed only with the diagnostic counters.
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("latency_ms"));
+    let o = Command::new(env!("CARGO_BIN_EXE_tintype"))
+        .args(["latency", "--weights", weights.to_str().unwrap(), "--manifest", dir.join("manifest.tsv").to_str().unwrap(), "--n", "3", "--device", "cpu"])
+        .env("TINTYPE_STATS", "1")
+        .current_dir(common::repo())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert_eq!(err.lines().filter(|l| l.starts_with("latency_ms ")).count(), 3, "{err}");
+    assert!(err.lines().any(|l| l.starts_with("stats: ")), "{err}");
+    assert_eq!(stdout(&o).split(':').next(), out.split(':').next());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn work_counters_go_to_standard_error_only_when_asked_for() {
+    let dir = common::scratch("cli-stats");
+    let png = dir.join("fixture.png");
+    common::write_fixture(&png);
+    let weights = common::photo_weights();
+    let args = ["detect", "--device", "cpu", "--all-views", "--json", "--weights", weights.to_str().unwrap(), png.to_str().unwrap()];
+    let run = |stats: Option<&str>| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        c.args(args).current_dir(common::repo()).env_remove("TINTYPE_STATS");
+        if let Some(v) = stats {
+            c.env("TINTYPE_STATS", v);
+        }
+        c.output().expect("running the tintype binary")
+    };
+    let (plain, asked, zero) = (run(None), run(Some("1")), run(Some("0")));
+    assert!(plain.status.success() && asked.status.success(), "{}", String::from_utf8_lossy(&asked.stderr));
+    // Standard output is the same either way; the counters are one line on standard error.
+    assert_eq!(stdout(&plain), stdout(&asked));
+    assert!(!String::from_utf8_lossy(&plain.stderr).contains("stats:") && !String::from_utf8_lossy(&zero.stderr).contains("stats:"));
+    let err = String::from_utf8_lossy(&asked.stderr).to_string();
+    let line = err.lines().find(|l| l.starts_with("stats: ")).unwrap_or_else(|| panic!("no stats line in: {err}"));
+    let value = |name: &str| -> u64 { line.split_whitespace().find_map(|f| f.strip_prefix(&format!("{name}="))).unwrap_or_else(|| panic!("no {name} in {line}")).parse().unwrap() };
+    // One photo, every view looked at: six logical views, no video frames.
+    assert_eq!(value("views_scored") + value("views_reused"), 6, "{line}");
+    assert!(value("views_materialised") <= 6 && value("views_materialised") >= 1, "{line}");
+    assert_eq!((value("frames_decoded"), value("frames_converted"), value("clips_reopened")), (0, 0, 0), "{line}");
     let _ = std::fs::remove_dir_all(&dir);
 }
