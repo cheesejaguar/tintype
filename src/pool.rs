@@ -83,6 +83,19 @@ impl Pool {
         })
     }
 
+    /// A short name without spaces, for file names: `mean`, `trimmed`,
+    /// `median`, `max`, `top2`, `weights`.
+    pub fn slug(&self) -> String {
+        match self {
+            Pool::Mean => "mean".into(),
+            Pool::Weighted(_) => "weights".into(),
+            Pool::Trimmed => "trimmed".into(),
+            Pool::Median => "median".into(),
+            Pool::TopK(1) => "max".into(),
+            Pool::TopK(k) => format!("top{k}"),
+        }
+    }
+
     pub fn name(&self) -> String {
         match self {
             Pool::Mean => "mean".into(),
@@ -282,6 +295,10 @@ pub fn fit_threshold(values: &[f32], items: &[Item], target_fpr: f64, rule: Rule
 /// (finite, so that the schedule still reads and writes as JSON).
 pub const NEVER: f32 = 1.0e9;
 
+/// Per stage, the index into the grid of the `(below, above)` margins;
+/// `None` is no exit in that direction.
+type GridState = Vec<(Option<usize>, Option<usize>)>;
+
 /// What [`refit_margins`] searches over and holds to.
 #[derive(Clone, Debug)]
 pub struct Refit {
@@ -380,8 +397,7 @@ fn tally(margins: &[f32], total: usize, labels: &[u8], stages: &[Option<(f32, f3
 pub fn refit_margins(pool: &Pool, order: &[usize], logits: &[Vec<f32>], labels: &[u8], threshold: f32, opts: &Refit) -> EarlyExit {
     let total = order.len();
     let margins: Vec<f32> = logits.iter().flat_map(|all| pool.partials(order, all).into_iter().map(|z| z - threshold)).collect();
-    // Per stage, the index into the grid of (below, above); None is no exit.
-    let mut state: Vec<(Option<usize>, Option<usize>)> = vec![(None, None); total.saturating_sub(1)];
+    let mut state: GridState = vec![(None, None); total.saturating_sub(1)];
     let as_stages = |state: &[(Option<usize>, Option<usize>)]| -> Vec<Option<(f32, f32)>> {
         let m = |i: Option<usize>| i.map_or(NEVER, |i| opts.grid[i]);
         state.iter().map(|&(b, a)| (b.is_some() || a.is_some()).then(|| (m(b), m(a)))).collect()
@@ -395,7 +411,7 @@ pub fn refit_margins(pool: &Pool, order: &[usize], logits: &[Vec<f32>], labels: 
     let moves: &[(bool, bool)] = if opts.symmetric { &[(true, true)] } else { &[(true, false), (false, true)] };
     let mut views = reference.views;
     loop {
-        let mut best: Option<(usize, Vec<(Option<usize>, Option<usize>)>)> = None;
+        let mut best: Option<(usize, GridState)> = None;
         for n in 0..state.len() {
             for &(below, above) in moves {
                 // Walk this stage down the grid to the first margin that lets any item out earlier.
@@ -570,6 +586,8 @@ pub struct Candidate {
     pub exit: EarlyExit,
     /// How this row is named in the tables.
     pub label: String,
+    /// How it is named in the score files `--write-scores` writes.
+    pub slug: String,
 }
 
 /// What a candidate decides for one set of items.
@@ -719,8 +737,8 @@ pub fn run(args: Args, out: &mut impl Write) -> Result<()> {
     let mean_all: Vec<f32> = fit.iter().map(|it| Pool::Mean.of_all(&it.logits)).collect();
     let mean_fit = fit_threshold(&mean_all, &fit, args.target_fpr, args.rule)?;
     let shipped = match &spec {
-        Some(s) => Candidate { pool: Pool::Mean, calibration: Calibration { threshold: -s.logit_bias / s.logit_scale, scale: s.logit_scale, sources: 0 }, exit: shipped_exit.clone(), label: "shipped (mean, spec as is)".into() },
-        None => Candidate { pool: Pool::Mean, calibration: mean_fit, exit: shipped_exit.clone(), label: "baseline (mean, standard schedule)".into() },
+        Some(s) => Candidate { pool: Pool::Mean, calibration: Calibration { threshold: -s.logit_bias / s.logit_scale, scale: s.logit_scale, sources: 0 }, exit: shipped_exit.clone(), label: "shipped (mean, spec as is)".into(), slug: "shipped".into() },
+        None => Candidate { pool: Pool::Mean, calibration: mean_fit, exit: shipped_exit.clone(), label: "baseline (mean, standard schedule)".into(), slug: "baseline".into() },
     };
 
     // Orders to try; `greedy` depends on the pool, so it is resolved per pool.
@@ -781,7 +799,11 @@ pub fn run(args: Args, out: &mut impl Write) -> Result<()> {
             seen_orders.push(order.clone());
             let exit = refit_margins(&pool, &order, &fit_logits, &fit_labels, calibration.threshold, &args.refit);
             let label = if name == "fitted" { format!("fitted {}", pool.name()) } else { pool.name() };
-            let c = Candidate { pool: pool.clone(), calibration, exit, label };
+            // Two sets of fixed weights would share a name: number the later ones.
+            let base = if name == "fitted" { "fitted".to_string() } else { pool.slug() };
+            let taken = candidates.iter().filter(|c| c.pool != pool && (c.slug == base || c.slug.starts_with(&format!("{base}-")))).map(|c| &c.slug).collect::<std::collections::BTreeSet<_>>().len();
+            let slug = if taken == 0 { base } else { format!("{base}-{}", taken + 1) };
+            let c = Candidate { pool: pool.clone(), calibration, exit, label, slug };
             let d = c.decide(&fit);
             let thr = calibration.threshold;
             let rates = |z: &[f32]| -> (f64, f64) {
@@ -841,7 +863,7 @@ pub fn run(args: Args, out: &mut impl Write) -> Result<()> {
             writeln!(out, "| {row} | {:.2} | {} | {} | {flagged} | {recall} | {changed} |", d.views.iter().sum::<usize>() as f64 / items.len().max(1) as f64, r_at(&d.exit, 0.01), r_at(&d.exit, 0.001))?;
             sliced.push((row, d.exit.iter().map(|&z| z > c.calibration.threshold).collect(), d.views.clone()));
             if let Some(dir) = &args.write_scores {
-                let file = dir.join(format!("{name}.{}.{}.tsv", c.label.split([' ', '(']).next().unwrap_or("pool"), order_name(&c.exit.order).replace(',', "")));
+                let file = dir.join(format!("{name}.{}.{}.tsv", c.slug, order_name(&c.exit.order).replace(',', "")));
                 let mut w = std::io::BufWriter::new(std::fs::File::create(&file).with_context(|| format!("writing {}", file.display()))?);
                 for ((it, &z), &n) in items.iter().zip(&d.exit).zip(&d.views) {
                     let looked: Vec<String> = c.exit.order[..n].iter().map(|&v| format!("{:.5}", it.logits[v])).collect();
@@ -1069,18 +1091,23 @@ mod tests {
         let its = items(&logits, &labels);
         let dir = tempfile::tempdir().unwrap();
         let (weights, scores) = (dir.path().join("w.safetensors"), dir.path().join("scores.tsv"));
-        crate::detector::ModelSpec::commfor(224).save_for(&weights).unwrap();
+        // A spec as `interpolate` writes it: marked as unfitted for two profiles.
+        crate::detector::ModelSpec { uncalibrated: Some(vec!["photo".into(), "video".into()]), ..crate::detector::ModelSpec::commfor(224) }.save_for(&weights).unwrap();
         let text: String = its.iter().map(|it| format!("{}\t{}\t{}\t{}\t0.5\t{}\n", it.path, it.label, it.generator, it.dataset, it.logits.iter().map(|x| format!("{x:.5}")).collect::<Vec<_>>().join("\t"))).collect();
         std::fs::write(&scores, text).unwrap();
-        let read = read_items(&[scores.clone()], 6).unwrap();
+        let read = read_items(std::slice::from_ref(&scores), 6).unwrap();
         let values: Vec<f32> = read.iter().map(|it| Pool::Mean.of_all(&it.logits)).collect();
         for (rule, theirs) in [(Rule::Balanced(100), crate::eval::Rule::Balanced(100)), (Rule::Pooled, crate::eval::Rule::Pooled)] {
-            crate::eval::calibrate(&weights, &[scores.clone()], 0.015, "photo", theirs).unwrap();
+            crate::eval::calibrate(&weights, std::slice::from_ref(&scores), 0.015, "photo", theirs).unwrap();
             let spec = crate::detector::ModelSpec::load_for(&weights).unwrap();
             let ours = fit_threshold(&values, &read, 0.015, rule).unwrap();
             assert_eq!(ours.scale, spec.logit_scale, "{rule:?}");
             assert_eq!((-(ours.scale as f64) * ours.threshold as f64) as f32, spec.logit_bias, "{rule:?}");
+            // Fitting the photo profile takes it off the unfitted list and leaves the others on it.
+            assert_eq!(spec.uncalibrated, Some(vec!["video".to_string()]));
         }
+        crate::eval::calibrate(&weights, std::slice::from_ref(&scores), 0.01, "video", crate::eval::Rule::Pooled).unwrap();
+        assert!(crate::detector::ModelSpec::load_for(&weights).unwrap().uncalibrated.is_none());
     }
 
     #[test]
@@ -1161,7 +1188,7 @@ mod tests {
             fit: vec![fit],
             test: vec![format!("held-out={test}")],
             spec: None,
-            pools: ["mean", "trimmed", "median", "top2", "max", "fitted", "weights:0/1/1/1/1/1"].map(String::from).to_vec(),
+            pools: ["mean", "trimmed", "median", "top2", "top3", "max", "fitted", "weights:0/1/1/1/1/1", "weights:1/1/0/0/0/0"].map(String::from).to_vec(),
             orders: vec!["shipped".into(), "greedy".into(), "0,1,2,3,4,5".into()],
             target_fpr: 0.015,
             rule: Rule::Balanced(100),
@@ -1178,6 +1205,9 @@ mod tests {
         // The baseline row changes no verdict against itself.
         assert!(out.lines().any(|l| l.starts_with("| baseline (mean, standard schedule) | 2,0,1,3,4,5 |") && l.ends_with("| +0 −0 AI, +0 −0 real |")), "{out}");
         // One score file per candidate, in the usual format, holding the views looked at.
+        for file in ["baseline.201345", "mean.201345", "trimmed.012345", "top2.012345", "top3.012345", "max.012345", "fitted.012345", "weights.012345", "weights-2.012345"] {
+            assert!(dir.path().join(format!("out/held-out.{file}.tsv")).is_file(), "{file}");
+        }
         let written = std::fs::read_to_string(dir.path().join("out/held-out.median.012345.tsv")).unwrap();
         assert_eq!(written.lines().count(), 2000);
         let cols = written.lines().next().unwrap().split('\t').count();
