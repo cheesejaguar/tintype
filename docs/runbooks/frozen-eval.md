@@ -379,3 +379,4 @@ every generated original is a PNG of 256 to 1,024 px.
 |---|---|---|---|
 | 2026-11-14 | `aa2f695` | The released photo model (`models/tintype.safetensors`, a copy under `runs/`), unchanged spec: `fit`, `calibrate` and `test` with `--all-views`, and `test` with the default profile. Apple M6, GPU engine | incumbent, first look |
 | 2026-11-14 | `aa2f695` | Two more copies of the released model with cutoffs refitted on `calibrate` (`--profile photo --target-fpr 0.01`; `--profile strict --target-fpr 0.001`), then `test` with each | incumbent, recalibrated |
+| 2026-11-14 | `caa15c3` | No new scoring: the incumbent's all-views files. Three sets of cutoffs for the released photo model fitted on `calibrate`, exit margins fitted on `fit` and a review band fitted on `calibrate`, then `test` once per set of cutoffs ([calibration runbook](calibration-abstention.md#on-the-frozen-split-the-released-photo-model)) | workstream 2, calibration and review |

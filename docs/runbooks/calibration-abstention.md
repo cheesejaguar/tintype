@@ -6,11 +6,15 @@ builds on the [frozen evaluation runbook](frozen-eval.md), which fixes the
 split, the operating points (recall at **0.1%** and **1%** false-positive
 rate), the declared prevalence (**1%**) and how abstention is counted.
 
-**Status.** The tooling exists and is tested. **No cutoff, review band or
-exit margin has been fitted for shipping**, and none may be until the
-views, the early exit, the model, the backend and any second stage of the
-other workstreams are fixed and the frozen split exists. Every number in
-this file comes from archived development data and is labelled
+**Status.** The tooling exists and is tested, and the photo steps have
+been run once on the frozen split for the released photo model
+([below](#on-the-frozen-split-the-released-photo-model)): **the gate
+failed**, at both operating points, on cutoff transfer. **No cutoff,
+review band or exit margin has been fitted for shipping**, and none may be
+until the views, the early exit, the model, the backend and any second
+stage of the other workstreams are fixed. The video steps have not been
+run: the frozen split has no video. The numbers under "Exploratory results
+on the archives" come from archived development data and are labelled
 exploratory. The released models and their specs are untouched.
 
 ## The gate
@@ -56,9 +60,10 @@ profile runs without early exit.
 2. **Score once**, every view, on each frozen set (Apple GPU).
 3. **Fit the global cutoff of each profile** on `calibrate`, authentic
    items only, parents counted once.
-4. **Fit the review band** on `calibrate`.
-5. **Refit the exit margins** on `fit` at the new thresholds, check them
+4. **Refit the exit margins** on `fit` at the new thresholds, check them
    on `calibrate`, and re-express or re-choose the routing bands.
+5. **Fit the review band** on `calibrate`, on the decisions of the
+   refitted schedule: the band works on what will be deployed.
 6. **Pre-register**: write the cutoffs, band, margins, budgets and strata
    into [PREREGISTRATION.md](../PREREGISTRATION.md).
 7. **Look at `test` once**: transfer by strata, coverage, early exit. Log
@@ -192,46 +197,7 @@ unprocessed original only: the bound then speaks for originals alone, and
 transfer to processed copies has to be shown in step 7. Declare which in
 the pre-registration.
 
-### 4. The review band, on `calibrate`
-
-The band works on the deployed decision, so first write what the profile
-decides (early exit and calibration applied) from the all-views file:
-
-```bash
-tintype refit-exit --weights $W --profile photo --report $E/calibrate-views.tsv --apply-out $E/calibrate-decided.tsv
-tintype report --operating-points --system "candidate=$E/calibrate-decided.tsv@0.5" \
-  --prevalence 0.01 --cluster-by parent --groups data/frozen-eval/calibrate.tsv \
-  --review-margin 0.25,0.5,0.75,1,1.5,2,3
-```
-
-The rule for choosing the margin, declared here: **the widest margin whose
-share of a stream reviewed at the declared prevalence is at most the
-review budget (2%)**. Then test the disagreement rule against the margin
-alone at the same coverage (`threshold_logit` is the profile's raw
-threshold, printed by `refit-exit` and by `detect --json`):
-
-```bash
-tintype report --operating-points --system "candidate=$E/calibrate-decided.tsv@0.5" \
-  --review-margin <narrower> --review-disagreement 0.5 --review-threshold-logit <threshold_logit>
-```
-
-Store the band in the candidate's spec (the default profile reads
-`review`, clips read `video.review`), or pass it as flags at run time:
-
-```bash
-python3 - "$E/<name>.json" <<'PY'
-import json, sys
-spec = json.load(open(sys.argv[1]))
-spec["review"] = {"margin": 1.0}          # the fitted margin
-open(sys.argv[1], "w").write(json.dumps(spec, indent=2))
-PY
-tintype detect --weights $W --review-margin 1.0 --json <files>     # the same, as a flag
-```
-
-What the fields mean, and the precedence when both reasons apply (the
-margin), is in [API.md](../API.md#review-fields-opt-in).
-
-### 5. Exit margins and routing bands
+### 4. Exit margins and routing bands
 
 The exit margins are raw-logit distances from one profile's threshold.
 After step 3 the thresholds have moved, so the stored schedule is checked
@@ -282,6 +248,46 @@ second-stage scores on `calibrate` and belongs to the routing workstream.
 The video band is in raw logits and does not move; `refit-exit --profile
 video` prints where the new threshold sits in it.
 
+### 5. The review band, on `calibrate`
+
+The band works on the deployed decision, so run it after step 4 has
+stored the refitted schedule, and first write what the profile decides
+(early exit and calibration applied) from the all-views file:
+
+```bash
+tintype refit-exit --weights $W --profile photo --report $E/calibrate-views.tsv --apply-out $E/calibrate-decided.tsv
+tintype report --operating-points --system "candidate=$E/calibrate-decided.tsv@0.5" \
+  --prevalence 0.01 --cluster-by parent --groups data/frozen-eval/calibrate.tsv \
+  --review-margin 0.25,0.5,0.75,1,1.5,2,3
+```
+
+The rule for choosing the margin, declared here: **the widest margin whose
+share of a stream reviewed at the declared prevalence is at most the
+review budget (2%)**. Then test the disagreement rule against the margin
+alone at the same coverage (`threshold_logit` is the profile's raw
+threshold, printed by `refit-exit` and by `detect --json`):
+
+```bash
+tintype report --operating-points --system "candidate=$E/calibrate-decided.tsv@0.5" \
+  --review-margin <narrower> --review-disagreement 0.5 --review-threshold-logit <threshold_logit>
+```
+
+Store the band in the candidate's spec (the default profile reads
+`review`, clips read `video.review`), or pass it as flags at run time:
+
+```bash
+python3 - "$E/<name>.json" <<'PY'
+import json, sys
+spec = json.load(open(sys.argv[1]))
+spec["review"] = {"margin": 1.0}          # the fitted margin
+open(sys.argv[1], "w").write(json.dumps(spec, indent=2))
+PY
+tintype detect --weights $W --review-margin 1.0 --json <files>     # the same, as a flag
+```
+
+What the fields mean, and the precedence when both reasons apply (the
+margin), is in [API.md](../API.md#review-fields-opt-in).
+
 ### 7. One look at `test`
 
 ```bash
@@ -308,6 +314,308 @@ recomputing them from the score file:
 tintype detect --weights $W --review-margin 1.0 --json <files> > $E/detect.jsonl
 tintype report --operating-points --system "candidate=$E/test-decided.tsv@0.5" --review-flags $E/detect.jsonl
 ```
+
+## On the frozen split: the released photo model
+
+Run on 2026-11-14 at commit `caa15c3` (the pre-registration entry, written
+and committed before the look; the code is that of `ec1b8e5`), CPU only, on
+an Apple M6 (12 cores, 32 GB, macOS 27.2). Entry:
+[PREREGISTRATION.md](../PREREGISTRATION.md#calibration-and-the-review-outcome-on-the-frozen-split-what-was-fixed-before-the-look-at-test).
+Raw output of every command and the four specs:
+[`docs/results/frozen-eval-calibration/`](../results/frozen-eval-calibration/).
+
+**Verdict: the gate failed.** Gate 1 (cutoffs transfer) fails at 1% and at
+0.1%; gates 2 and 4 pass; gate 3 fails, so the disagreement rule is not
+used. Nothing ships on these cutoffs, and the released cutoffs, margins
+and specs are unchanged.
+
+What was and was not run:
+
+- **No new scoring.** The system is the released photo model, and every
+  step is arithmetic on the incumbent's all-views score files
+  (`{fit,calibrate,test}.all.tsv`, archived as
+  [`docs/results/frozen-eval-incumbent/*.all.tsv.gz`](../results/frozen-eval-incumbent/)).
+  `$F` below is the folder that holds them and `$D` the folder of the set
+  manifests (`data/frozen-eval`). `calibrate` and `refit-exit` read the
+  spec beside `--weights` and no weights, so each arm is a copy of
+  `models/tintype.json` under `runs/frozen/ws2/`.
+- **The fast profile was not scored again.** Its two views are views 1
+  and 3 of the six, so its score file is those two columns.
+- **Video: not run.** The frozen split has no video data. The video
+  commands above stand as written.
+- **Latency: not measured.** The machine was shared with a training run.
+- **Order.** The exit margins were refitted before the review band was
+  fitted, so that the band is fitted on the decisions that would be
+  deployed; the Order section above now says so.
+
+Caveats that go with every number here: every authentic original is a
+camera JPEG of 12 megapixels or more and every generated original is a PNG
+of 256 to 1,024 px, so the clean rows carry that confound (the processed
+copies re-encode both classes the same way). FloreView is 36 scenes
+photographed by 46 phones and CSAFE is ten units of one phone model:
+intervals and bounds count parents, and scenes and devices are far fewer.
+There are no real platform round trips and no learned-codec copies. `test`
+is not blind: it had been looked at for the incumbent and for the
+processing-chain arms, and the pre-registration entry says what I already
+knew from those looks.
+
+### Cutoffs, fitted on `calibrate`
+
+```bash
+E=runs/frozen/ws2; mkdir -p $E
+for arm in bound-max bound-orig balanced; do cp models/tintype.json $E/$arm.json; done
+# Arm A: the bound rule, parents counted once, the highest score of a parent's versions.
+tintype calibrate --weights $E/bound-max.safetensors --scores $F/calibrate.all.tsv --profile photo     --target-fpr 0.01  --rule bound --confidence 0.95 --groups $D/calibrate.tsv --per-parent max
+tintype calibrate --weights $E/bound-max.safetensors --scores $F/calibrate.all.tsv --profile strict    --target-fpr 0.001 --rule bound --groups $D/calibrate.tsv
+tintype calibrate --weights $E/bound-max.safetensors --scores $F/calibrate.all.tsv --profile sensitive --target-fpr 0.05  --rule bound --groups $D/calibrate.tsv
+awk -F'\t' 'BEGIN{OFS="\t"}{print $1,$2,$3,$4,$5,$6,$8}' $F/calibrate.all.tsv > $E/calibrate.fast.tsv
+tintype calibrate --weights $E/bound-max.safetensors --scores $E/calibrate.fast.tsv --profile fast     --target-fpr 0.005 --rule bound --groups $D/calibrate.tsv
+# Arm B: the same with --per-parent original (photo, strict, sensitive), on bound-orig.
+# Arm C: the default rule, no --rule and no --groups (photo, strict, sensitive), on balanced.
+tintype verify-models
+```
+
+`calibrate` holds 3,457 authentic parents; 200 of them also have twelve
+processed copies (5,857 authentic rows) and there are 6,600 generated rows.
+
+| Arm | Rule | 1% (photo profile) | 0.1% (strict profile) | 5% (sensitive) | 0.5% (fast) |
+|---|---|---|---|---|---|
+| **A** | bound, one score per parent, the highest of its versions | 1.636: 24 of 3,457 parents flagged, bound 0.975%, recall 0.8617 | 3.504: 0 flagged, bound 0.087%, recall 0.7980 | −0.494: 151 flagged, bound 4.984%, recall 0.9114 | 2.280: 10 flagged, bound 0.490%, recall 0.8406 |
+| B | bound, the unprocessed original only | 0.450: 24 flagged, 0.975%, recall 0.8891 | 2.563: 0 flagged, 0.087%, recall 0.8333 | −1.384: 151 flagged, 4.984%, recall 0.9288 | not fitted |
+| C | default (`balanced`), rows as items | 0.985: 58 of 5,857 rows flagged, bound 1.231%, recall 0.8756 | 2.965: 5 flagged, 0.179%, recall 0.8188 | −0.795: 297 flagged, 5.568%, recall 0.9171 | not fitted |
+
+Thresholds are raw logits on the mean of the views; recall is on the
+generated rows of `calibrate` with every view. Arm C's photo and strict
+thresholds are the ones the incumbent's refit wrote. Counting parents and
+taking the highest version makes arm A the strictest of the three; taking
+originals only makes arm B the loosest.
+
+### Exit margins, fitted on `fit`, reported on `calibrate`
+
+```bash
+tintype refit-exit --weights $E/bound-max.safetensors --profile photo,strict,sensitive --target-fpr 0.01,0.001,0.05 \
+  --report $F/calibrate.all.tsv                                           # the shipped margins at the new thresholds
+cp $E/bound-max.json $E/bound-max.before-refit.json
+tintype refit-exit --weights $E/bound-max.safetensors --profile photo,strict,sensitive --target-fpr 0.01,0.001,0.05 \
+  --fit $F/fit.all.tsv --report $F/calibrate.all.tsv --tolerance 0.001 --write
+tintype verify-models
+```
+
+Fitted on the 3,759 items of `fit` for the three profiles at once:
+**6.5, 4, 4, 1.75, 1** raw logits after 1 to 5 views (shipped: 6, 3, 2,
+1.5, 1). On `calibrate` (12,457 rows), early exit against every view:
+
+| Profile (threshold) | Margins | Views per image | Verdicts that differ | Authentic rows flagged: every view, early exit | Recall: every view, early exit | Precision: every view, early exit |
+|---|---|---|---|---|---|---|
+| photo (1.636) | shipped | 1.66 | 45 | 28, 25 of 5,857 | 86.17%, 86.14% | 0.9951, 0.9956 |
+| photo (1.636) | fitted | 1.87 | 19 | 28, 26 | 86.17%, 86.15% | 0.9951, 0.9954 |
+| strict (3.504) | shipped | 1.66 | 63 | 0, 0 | 79.80%, 79.85% | 1.0000, 1.0000 |
+| strict (3.504) | fitted | 1.86 | 30 | 0, 0 | 79.80%, 79.74% | 1.0000, 1.0000 |
+| sensitive (−0.494) | shipped | 1.86 | 77 | 220, 199 | 91.14%, 91.35% | 0.9647, 0.9680 |
+| sensitive (−0.494) | fitted | 2.16 | 32 | 220, 214 | 91.14%, 91.23% | 0.9647, 0.9657 |
+
+The shipped margins leave the 0.001 tolerance on the sensitive profile
+(precision +0.0033, recall +0.0021); the fitted ones halve the verdicts
+that differ at the cost of about 0.2 to 0.3 more views per image.
+
+### Review band, fitted on `calibrate`
+
+```bash
+for p in photo strict; do
+  tintype refit-exit --weights $E/bound-max.safetensors --profile $p --report $F/calibrate.all.tsv --apply-out $E/calibrate.decided-$p.tsv
+  tintype report --operating-points --system "bound-max-$p=$E/calibrate.decided-$p.tsv@0.5" --prevalence 0.01 \
+    --cluster-by parent --groups $D/calibrate.tsv --review-margin 0.25,0.5,0.75,1,1.25,1.5,1.75,2,2.5,3
+done
+```
+
+The declared rule (the widest margin with at most 2% of a stream reviewed
+at 1% prevalence) gives **0.75** at the 1% cutoff and **1.5** at the 0.1%
+cutoff:
+
+| Cutoff | Margin | Stream reviewed at 1% prevalence | Authentic rows flagged without review | Recall, reviewed AI items as misses |
+|---|---|---|---|---|
+| 1% | none | 0.00% | 26 of 5,857 | 86.15% |
+| 1% | 0.5 | 0.78% | 10 | 84.06% |
+| 1% | **0.75** | 1.44% | 4 | 82.45% |
+| 1% | 1 | 2.24% | 2 | 80.65% |
+| 0.1% | none | 0.00% | 0 of 5,857 | 79.74% |
+| 0.1% | 1.25 | 1.13% | 0 | 66.71% |
+| 0.1% | **1.5** | 1.58% | 0 | 64.02% |
+| 0.1% | 1.75 | 3.06% | 0 | 58.95% |
+
+At the 0.1% cutoff no authentic row of `calibrate` is flagged with or
+without a band, so there the band gives up 15.72 points of automatic
+recall and removes no false alarm on these rows. The rule looks only at
+review capacity; it was applied as declared.
+
+**Gate 3, on `calibrate`: failed.** With the photo profile's raw
+threshold 1.6363:
+
+```bash
+tintype report --operating-points --system "p=$E/calibrate.decided-photo.tsv@0.5" --prevalence 0.01 \
+  --review-margin 0.25 --review-disagreement 0.5 --review-threshold-logit 1.6363401638331643
+```
+
+| Band | Coverage | Authentic rows flagged without review | Recall, reviewed AI items as misses |
+|---|---|---|---|
+| margin 0.5 | 97.56% | 10 of 5,857 | 84.06% |
+| margin 0.25, or half the views disagreeing | 97.30% | 16 | 83.85% |
+| margin 0.6 | 96.73% | 8 | 83.32% |
+| margin 0.5, or half the views disagreeing | 96.52% | 10 | 83.30% |
+
+The margin alone covers more, leaves fewer authentic rows flagged and
+keeps more recall. The disagreement rule was not computed on `test`.
+
+### The look at `test`
+
+```bash
+# Gate 4, and the decisions of each profile under the fitted schedule.
+tintype refit-exit --weights $E/bound-max.safetensors --profile photo,strict,sensitive --target-fpr 0.01,0.001,0.05 \
+  --report $F/test.all.tsv --apply-out $E/test.A-photo.tsv
+tintype refit-exit --weights $E/bound-max.before-refit.safetensors --profile photo,strict,sensitive --target-fpr 0.01,0.001,0.05 --report $F/test.all.tsv
+tintype refit-exit --weights $E/bound-max.safetensors --profile strict    --report $F/test.all.tsv --apply-out $E/test.A-strict.tsv
+tintype refit-exit --weights $E/bound-max.safetensors --profile sensitive --report $F/test.all.tsv --apply-out $E/test.A-sensitive.tsv
+# (arms B and C the same, on bound-orig and balanced; the fast profile's file is
+#  columns 6 and 8 of test.all.tsv through the fast calibration, no early exit)
+# Gates 1 and 2.
+tintype report --operating-points --system "A-photo=$E/test.A-photo.tsv@0.5" --fpr 0.001,0.01 --prevalence 0.01 \
+  --slice-by source,transform,family --cluster-by parent --groups $D/test.tsv --min-slice 100 \
+  --transfer-budget 0.01 --review-margin 0.75
+tintype report --operating-points --system "A-strict=$E/test.A-strict.tsv@0.5" --fpr 0.001,0.01 --prevalence 0.01 \
+  --slice-by source,transform,family --cluster-by parent --groups $D/test.tsv --min-slice 100 \
+  --transfer-budget 0.001 --review-margin 1.5
+```
+
+`test` has 9,726 authentic rows of 7,326 parents (3,996 of them the
+held-out phone source) and 9,600 generated rows of 7,200 parents. The
+clean and degraded rows of a decided file were separated by the
+`transform` column of the manifest and reported the same way.
+
+**At the cutoffs frozen on `calibrate`** (early exit as each arm would
+deploy it: fitted margins for arm A, shipped margins for B and C):
+
+| Arm, cutoff | Authentic rows flagged, all (upper bound) | Recall, all | Clean: flagged, recall | Degraded: flagged, recall |
+|---|---|---|---|---|
+| **A, 1%** | 82 of 9,726, 0.84% (1.01%) | 90.98% | 35 of 7,326 (0.48%), 94.90% | 47 of 2,400 (1.96%), 79.21% |
+| B, 1% | 185, 1.90% (2.15%) | 93.26% | 82 (1.12%), 96.14% | 103 (4.29%), 84.62% |
+| C, 1% | 120, 1.23% (1.43%) | 92.34% | 51 (0.70%), 95.71% | 69 (2.88%), 82.25% |
+| **A, 0.1%** | 12, 0.12% (0.20%) | 86.12% | 6 (0.08%), 91.72% | 6 (0.25%), 69.33% |
+| B, 0.1% | 29, 0.30% (0.41%) | 88.82% | 9 (0.12%), 93.47% | 20 (0.83%), 74.88% |
+| C, 0.1% | 18, 0.19% (0.27%) | 87.70% | 5 (0.07%), 92.72% | 13 (0.54%), 72.62% |
+| A, 5% (sensitive) | 368, 3.78% (4.12%) | 94.73% | – | – |
+| A, 0.5% (fast) | 37, 0.38% (0.50%) | 89.47% | – | – |
+
+Arm C reproduces the incumbent's logged numbers (120 and 18 flagged). Arm
+A is the only arm whose pooled rate is under its budget at 1% (0.84%; the
+upper bound, 1.01%, is not), and it comes closest at 0.1% (0.12% against
+0.10%), for 1.4 and 1.6 points of recall less than arm C.
+
+**At the empirical cutoffs of `test` itself** (a ranking measure, not a
+transfer result; from arm A's decided files, the photo file for 1% and the
+strict file for 0.1%, since early exit follows the profile's threshold):
+
+| Rows | Recall at 1% empirical FPR | Recall at 0.1% empirical FPR |
+|---|---|---|
+| all | 91.47% (90.58%–92.36%) | 84.52% (83.29%–85.77%) |
+| clean | 96.08% (95.62%–96.54%) | 92.85% (92.25%–93.40%) |
+| degraded | 75.04% (71.67%–78.28%) | 62.88% (59.10%–66.67%) |
+
+**Gate 1, cutoffs transfer: failed at both operating points.** Authentic
+parents counted once per stratum; one-sided 95% bounds.
+
+| Stratum | 1% cutoff: flagged (lower to upper bound) | Against 1% | 0.1% cutoff: flagged (lower to upper bound) | Against 0.1% |
+|---|---|---|---|---|
+| `noise-a10` | 21 of 200, 10.50% (7.14% to 14.77%) | **exceeds** | 1 of 200 (0.03% to 2.35%) | not resolved |
+| `noise-a40` | 13 of 200, 6.50% (3.89% to 10.14%) | **exceeds** | 5 of 200, 2.50% (0.99% to 5.18%) | **exceeds** |
+| `csafe-iphone14pro` (held out) | 46 of 3,996, 1.15% (0.89% to 1.47%) | not resolved; within twice the budget | 10 of 3,996, 0.25% (0.14% to 0.42%) | **exceeds**; not within twice the budget |
+| `floreview-xiaomi` | 4 of 292 (0.47% to 3.11%) | not resolved | 2 of 292, 0.68% (0.12% to 2.14%) | **exceeds** |
+| `hdrplus` | 7 of 1,456, 0.48% (0.23% to 0.90%) | within | 0 of 1,456 (0.00% to 0.21%) | not resolved |
+| unprocessed (`none`) | 35 of 7,326, 0.48% (0.35% to 0.63%) | within | 6 of 7,326, 0.08% (0.04% to 0.16%) | not resolved |
+| the other 20 strata | 0 to 3 flagged each | not resolved | none flagged | not resolved |
+
+At 1%: 2 of 26 strata exceed the budget, 2 are within it (HDR+ and the
+unprocessed rows), 22 are not resolved. At 0.1%: 3 exceed, none is within,
+23 are not resolved. The added-noise copies are where the cutoff does not
+hold, by a wide margin at 1%; at 0.1% the held-out phone source also
+exceeds, by a smaller one (lower bound 0.14% against 0.10%). Twenty-six
+strata were each judged at 95%, so a stratum that exceeds narrowly on one
+or two flags (FloreView Xiaomi at 0.1%) is weaker evidence than its label
+suggests; the noise strata and the phone source do not depend on that.
+Arms B and C fail the same gate on more strata: at 1%, arm C exceeds on
+the phone source (61 of 3,996), FloreView Xiaomi, both noise copies and
+`repost-720-qv9x1`; arm B on those and four more.
+
+The sensitive and fast cutoffs of arm A fail it too: at 5%, FloreView
+Doogee (14 of 42), `blur-s3.0` (27 of 200), `noise-a10` (62 of 200) and
+`noise-a40` (36 of 200) exceed; at 0.5%, `noise-a10` (6 of 200) does.
+
+**Gate 2, coverage: passed.** Arm A with its bands, on `test`:
+
+| Cutoff, margin | Stream reviewed at 1% prevalence | Coverage of these rows | Authentic rows reviewed | Generated rows reviewed | Authentic rows flagged without review (upper bound) | Recall, reviewed generated rows as misses | Recall without the band |
+|---|---|---|---|---|---|---|---|
+| 1%, 0.75, all | **1.67%** | 96.44% | 159 of 9,726 (1.63%) | 529 of 9,600 (5.51%) | 24, 0.25% (0.35%) | 88.00% (86.96%–89.12%) | 90.98% |
+| 1%, 0.75, clean | 0.98% | 97.81% | 70 of 7,326 (0.96%) | 248 of 7,200 (3.44%) | 9, 0.12% (0.21%) | 92.78% | 94.90% |
+| 1%, 0.75, degraded | 3.79% | 92.29% | 89 of 2,400 (3.71%) | 281 of 2,400 (11.71%) | 15, 0.62% (0.96%) | 73.67% | 79.21% |
+| 0.1%, 1.5, all | **1.77%** | 88.81% | 153 of 9,726 (1.57%) | 2,009 of 9,600 (20.93%) | 0, 0.00% (0.03%) | 72.95% (71.47%–74.44%) | 86.12% |
+| 0.1%, 1.5, clean | 1.01% | 91.61% | 63 of 7,326 (0.86%) | 1,156 of 7,200 (16.06%) | 0 (0.04%) | 80.15% | 91.72% |
+| 0.1%, 1.5, degraded | 4.07% | 80.35% | 90 of 2,400 (3.75%) | 853 of 2,400 (35.54%) | 0 (0.12%) | 51.33% | 69.33% |
+
+Both bands stay under the 2% review budget on all of `test`. The price is
+what the accounting is for: with reviewed generated items counted as
+misses, recall falls by 2.98 points at 1% and by 13.17 points at 0.1%. At
+0.1% all twelve false alarms on authentic rows land in review, so no
+authentic row is flagged automatically; one generated row in five goes to
+a person. On the degraded slice alone the review share is about 4%, twice
+the budget: a stream of processed files would need a narrower band.
+Coverage here is on the rows of `test`, which are half generated; the
+share of a stream at 1% prevalence is the gate's quantity.
+
+**Gate 3, disagreement: failed on `calibrate`** (above); not used.
+
+**Gate 4, early exit: passed with the fitted margins.** On `test`, early
+exit against every view:
+
+| Profile (threshold) | Margins | Views per image | Verdicts that differ | Authentic rows flagged: every view, early exit | Recall | Precision | Mean rate over real sources, early exit (target) |
+|---|---|---|---|---|---|---|---|
+| photo (1.636) | fitted | 1.70 | 29 | 86, 82 of 9,726 | 90.93%, 90.98% | 0.9902, 0.9907 | 0.68% (1%) |
+| strict (3.504) | fitted | 1.71 | 31 | 15, 12 | 86.12%, 86.12% | 0.9982, 0.9986 | 0.09% (0.1%) |
+| sensitive (−0.494) | fitted | 1.99 | 20 | 372, 368 | 94.65%, 94.73% | 0.9607, 0.9611 | 3.49% (5%) |
+| photo (1.636) | shipped | 1.53 | 61 | 86, 67 | 90.93%, 91.01% | 0.9902, 0.9924 | 0.58% |
+| strict (3.504) | shipped | 1.53 | 68 | 15, 9 | 86.12%, 86.17% | 0.9982, 0.9989 | 0.07% |
+| sensitive (−0.494) | shipped | 1.73 | 83 | 372, 336 | 94.65%, 94.78% | 0.9607, 0.9644 | 3.18% |
+
+With the fitted margins every pooled rate is within 0.001 of scoring
+every view, and the per-source means are within the targets. The shipped
+margins at these thresholds are outside the tolerance on precision for the
+photo profile (+0.0021) and the sensitive profile (+0.0037), in the
+direction of fewer flags, for about 0.2 fewer views per image.
+
+### What this says
+
+- **A bound on the calibration population did not carry to the strata.**
+  The bound rule did what it promises on `calibrate` (0.975% and 0.087%),
+  and pooled over `test` it comes close (0.84% and 0.12%). The failure is
+  in particular strata: authentic photos with added noise at both points,
+  and the phone model that calibration never saw at 0.1%. Only 200 of the
+  3,457 calibration parents have processed copies, so the noise copies
+  barely move a pooled cutoff. No rule fitted on pooled authentic items
+  fixes that; it is a ranking problem on those inputs (workstream 1) or a
+  calibration set whose strata are each large enough to be bounded.
+- **The 0.1% point cannot be resolved by stratum on this split.** Apart
+  from the unprocessed rows as a whole, no stratum has the 2,995 parents
+  that showing 0.1% takes, and the unprocessed rows are not shown within
+  it either (6 of 7,326, upper bound 0.16%).
+- **Counting parents with their worst version is the most conservative
+  rule of the three and the closest to budget on `test`**; taking
+  originals only overshoots most (1.90% and 0.30%).
+- **The review band meets its capacity budget and removes most automatic
+  false alarms** (82 to 24 at 1%, 12 to 0 at 0.1%), at a recall cost that
+  is large at 0.1%. A margin band is a stricter cutoff for automatic
+  flags plus a queue; whether the queue is worth 13 points of automatic
+  recall is a product decision the gate does not make.
+- **View disagreement did not help**, on the archives or here.
+- **Exit margins need refitting when thresholds move**, and the refit on
+  `fit` held on `calibrate` and on `test`.
 
 ## The NTIRE regression case (diagnostic)
 
@@ -487,4 +795,4 @@ shipped schedule.
 
 | Date | Commit | What was fitted or looked at, on which set | By |
 |---|---|---|---|
-| – | – | Nothing yet: the frozen split has not been built. | – |
+| 2026-11-14 | `caa15c3` | Released photo model, arithmetic on the incumbent's all-views files. On `calibrate`: cutoffs of three arms (bound with the highest version per parent, bound with originals only, the default rule) for the photo, strict, sensitive and fast profiles; review margins 0.75 (1% cutoff) and 1.5 (0.1% cutoff); the disagreement rule (rejected). On `fit`: exit margins 6.5, 4, 4, 1.75, 1. On `test`, once per arm after the pre-registration commit: transfer by source and transform, clean and degraded slices, review accounting and early exit for arm A. Gate: failed (cutoff transfer, both operating points). CPU only, Apple M6 | workstream 2 |
