@@ -364,3 +364,65 @@ fn coverage_modes_report_every_window_and_the_default_output_has_none_of_it() {
         assert!(o.stdout.is_empty());
     }
 }
+
+/// A 480 x 384 picture built from the fixture, different for each `seed`.
+fn varied_picture(seed: u32) -> image::RgbImage {
+    let base = common::fixture_pixels();
+    image::RgbImage::from_fn(480, 384, |x, y| {
+        let p = base.get_pixel((x + 37 * seed) % 320, (y + 53 * seed) % 256);
+        image::Rgb([p[0], p[(1 + seed as usize) % 3], p[2] ^ (seed as u8 * 16)])
+    })
+}
+
+#[test]
+fn partial_edit_store_is_built_scored_and_reported_apart_from_the_global_score() {
+    let dir = common::scratch("cli-partial");
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let mut manifest = String::new();
+    for k in 0..3u32 {
+        varied_picture(k).save(dir.join(format!("real{k}.png"))).unwrap();
+        varied_picture(k + 7).save(dir.join(format!("fake{k}.png"))).unwrap();
+        manifest += &format!("real{k}.png\t0\treal:fixture\tfixtures\nfake{k}.png\t1\tgen-fixture\tfixtures\n");
+    }
+    std::fs::write(dir.join("manifest.tsv"), manifest).unwrap();
+    let o = tintype(&["paste-edits", "--real", &d("manifest.tsv"), "--fake", &d("manifest.tsv"), "--out", &d("store"), "--parents", "3", "--areas", "0.12", "--blends", "hard", "--min-side", "224"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(stdout(&o).contains("15 items from 3 authentic parents"), "{}", stdout(&o));
+    let store = std::fs::read_to_string(dir.join("store/manifest.tsv")).unwrap();
+    let transforms: std::collections::BTreeSet<&str> = store.lines().map(|l| l.split('\t').nth(8).unwrap()).collect();
+    assert_eq!(transforms.into_iter().collect::<Vec<_>>(), vec!["authentic-paste-hard-area0.12", "generated-paste-hard-area0.12", "parent", "resave", "self-paste-hard-area0.12"]);
+    // Only the composites with generated pixels are labelled 1, and each row names its parent.
+    assert!(store.lines().all(|l| (l.split('\t').nth(1) == Some("1")) == l.ends_with("\tgenerated-paste-hard-area0.12") && l.split('\t').nth(4).is_some_and(|p| p.contains("/real"))), "{store}");
+
+    let weights = common::photo_weights();
+    let o = tintype(&["score-windows", "--weights", weights.to_str().unwrap(), "--manifest", &d("store/manifest.tsv"), "--out", &d("windows.tsv"), "--device", "cpu", "--stride", "224", "--threads", "2"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let scored = std::fs::read_to_string(dir.join("windows.tsv")).unwrap();
+    assert_eq!(scored.lines().count(), 15);
+    // 480 x 384 at a stride of 224: three by two windows, the last flush with the border.
+    assert!(scored.lines().all(|l| l.contains("\tsize=480x384\t") && l.split("\tgrid=").nth(1).is_some_and(|g| g.split(';').count() == 6 && g.contains(";256,160,224,224,"))), "{scored}");
+
+    // The global score in that file is the one `detect` gives for the same file.
+    let parent = dir.join("store").join(store.lines().find(|l| l.ends_with("\tparent")).unwrap().split('\t').next().unwrap());
+    let detected = score_of(&json_lines(&detect(&[&parent], &["--json"]))[0]).unwrap();
+    let row = scored.lines().find(|l| l.starts_with(&format!("{}\t", parent.display()))).unwrap();
+    let deployed: f64 = row.split("\tdeployed=").nth(1).unwrap().split('/').next().unwrap().parse().unwrap();
+    assert!((deployed - detected).abs() < 1e-4, "score-windows says {deployed}, detect says {detected}");
+
+    let o = tintype(&["partial-report", "--scores", &d("windows.tsv"), "--manifest", &d("store/manifest.tsv"), "--fpr", "0.34", "--out", &d("per-item.tsv")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let report = stdout(&o);
+    assert!(report.contains("## Images flagged at 34% authentic FPR") && report.contains("Cutoffs may flag 1 of 3 authentic images."), "{report}");
+    assert!(report.contains("| slice | images | global (deployed) | views mean | views max | views top-2 | grid mean | grid max | grid top-3 |"), "{report}");
+    // Every rule flags exactly its allowance of the authentic parents: the columns are at the same rate.
+    let parents = report.lines().find(|l| l.starts_with("| parent | 3 |")).unwrap();
+    assert_eq!(parents.matches("1/3 (33.3%)").count(), 7, "{report}");
+    assert!(report.contains("| generated-paste-hard-area0.12 | 3 |") && report.contains("## Localisation from the grid windows"), "{report}");
+    // The per-item output keeps the global score and adds the local ones.
+    let items = std::fs::read_to_string(dir.join("per-item.tsv")).unwrap();
+    assert!(items.starts_with("# path\ttransform\tkind\tparent_id\tgenerated\tglobal_prob\t") && items.lines().count() == 16, "{items}");
+    // A second store in the same place is refused, not merged.
+    let o = tintype(&["paste-edits", "--real", &d("manifest.tsv"), "--fake", &d("manifest.tsv"), "--out", &d("store"), "--min-side", "224"]);
+    assert!(!o.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}

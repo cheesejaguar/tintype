@@ -33,6 +33,36 @@ calibrate and test sets without separating related items, and
 `tintype verify-split` fails if any group crosses; see
 [the frozen evaluation runbook](runbooks/frozen-eval.md).
 
+### Partial-edit stores
+
+A store of partially edited images (or clips) is a manifest with these
+columns plus a side file `edits.tsv` in the same directory. `parent_id` is
+the authentic original, `transform` names the edit and its size
+(`generated-paste-hard-area0.05`, `inpaint-<model>-area0.12`,
+`generated-splice-2s`) and the controls (`parent`, `resave`,
+`self-paste-…`, `authentic-paste-…`, `reencode`, `authentic-splice-…`).
+In such a store the label column means "contains generated pixels", not
+"wholly generated", and the generator of an edited item is
+`partial:<donor generator>`. It is an evaluation target of its own: keep
+these manifests out of `train`, `calibrate` and `finalize`.
+
+`edits.tsv` for images, tab-separated, `#` lines ignored, paths relative to
+the file:
+
+`path  mask  kind  generated  x  y  w  h  area  donor  donor_generator`
+
+Only the first four columns are required. `mask` is an 8-bit greyscale
+image the size of the item (0 = untouched, 255 = replaced, in between = the
+blend weight) or `-`; `kind` is the edit without its size; `generated` is 1
+when the replaced pixels came from a generator. For clips
+(`scripts/build-splice-clips.py`) the columns are
+
+`path  kind  generated  start_s  end_s  duration_s  donor  donor_generator  parent_cuts`
+
+`tintype paste-edits` writes such a store from images on disk, and
+[the partial-edit runbook](runbooks/partial-edits.md) says what an external
+inpainting pipeline has to emit.
+
 ## What is pinned
 
 A plan reads every repository at a fixed commit and checks every file it
