@@ -300,3 +300,32 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn augment_bench_times_the_loader_with_and_without_chains() {
+    let dir = common::scratch("cli-augment-bench");
+    let mut text = String::new();
+    for i in 0..4 {
+        common::write_fixture(&dir.join(format!("{i}.png")));
+        text.push_str(&format!("{i}.png\t{}\treal:fixture\tdemo\n", i % 2));
+    }
+    std::fs::write(dir.join("manifest.tsv"), text).unwrap();
+    let manifest = dir.join("manifest.tsv");
+    let run = |extra: &[&str]| {
+        let mut args = vec!["augment-bench", "--manifest", manifest.to_str().unwrap(), "--images", "4", "--rounds", "2", "--threads", "2"];
+        args.extend_from_slice(extra);
+        tintype(&args)
+    };
+    let o = run(&[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    assert!(out.starts_with("augmentation: the phase-6 recipe\n4 photos, ") && out.contains("\ndecode ") && out.contains("\naugment ") && out.contains("\nloader "), "{out}");
+    let o = run(&["--p-chain", "1", "--chain-ops", "1,5", "--chain-severity", "1", "--chain-kinds", "resize,jpeg,blur,noise,sharpen,repost,motion-blur,lens-blur,shot-noise,impulse-noise,pixelate,tone", "--messenger-cycles", "1,6", "--messenger-cap", "720,2048"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    assert!(out.starts_with("augmentation: messenger cap (720.0, 2048.0) px") && out.contains("chains p 1 of 1-5 operations from [resize,jpeg,blur,noise,sharpen,repost,motion-blur"), "{out}");
+    // A value that makes no sense is refused before any file is read.
+    let o = run(&["--chain-kinds", "webp"]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("unknown chain operation `webp`"), "{}", String::from_utf8_lossy(&o.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
