@@ -3,6 +3,7 @@ use clap::Args;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use tintype::detector::{self, Detector, Device, ModelSpec};
+use tintype::review::{self, Reason, Review, ReviewArgs};
 use tintype::{ingest, video};
 
 const CHUNK: usize = 256;
@@ -103,6 +104,8 @@ pub struct ScanOptions {
     /// Inference engine (auto, gpu, gpu-f32, or cpu).
     #[arg(long, default_value = "auto")]
     device: String,
+    #[command(flatten)]
+    review: ReviewArgs,
 }
 
 fn parse_frames(value: &str) -> Result<usize, String> {
@@ -179,6 +182,10 @@ struct Scan {
     photo: Option<Detector>,
     video: Option<Detector>,
     video_frames: usize,
+    /// The review band in use for photos and for clips; `None` adds nothing
+    /// to the output.
+    photo_review: Option<Review>,
+    video_review: Option<Review>,
     photo_second: Option<PathBuf>,
     video_second: Option<PathBuf>,
 }
@@ -213,6 +220,8 @@ impl Scan {
             photo: None,
             video: None,
             video_frames: 0,
+            photo_review: None,
+            video_review: None,
             photo_second,
             video_second,
         })
@@ -225,6 +234,10 @@ impl Scan {
         if self.photo.is_none() {
             let weights = resolve_weights(self.options.weights.clone())?;
             let mut spec = ModelSpec::load_for(&weights)?;
+            // A band stored with the model is in the default profile's calibrated
+            // logits; the other profiles take one from the flags only.
+            let stored = spec.review.filter(|_| matches!(self.profile, Profile::Default));
+            self.photo_review = self.options.review.resolve(stored);
             match self.profile {
                 Profile::Default => {}
                 Profile::Fast => Detector::use_fast_profile(&mut spec),
@@ -243,6 +256,7 @@ impl Scan {
             self.photo = Some(Detector::load(&weights, Some(spec), batch, self.device)?);
         }
         let det = self.photo.as_ref().unwrap();
+        let threshold = det.threshold_logit();
         let exit = det.spec.early_exit.as_ref().filter(|e| {
             !self.options.fast && !self.options.all_views && e.covers(det.spec.views.len())
         });
@@ -270,6 +284,7 @@ impl Scan {
                 let mut row = Row::empty(path, "image", self.profile.name());
                 if let Some(values) = result {
                     row.set_score(det.probability(values), mean(values), det.threshold_logit());
+                    row.calibrated = det.calibrated_logit(values);
                     row.views = Some(values.len());
                 } else {
                     row.error = Some(decode_error(tintype::image_io::load(path)));
@@ -293,7 +308,16 @@ impl Scan {
             {
                 if score.is_finite() {
                     rows[i].score = Some(score);
+                    rows[i].calibrated = review::logit_of(score);
                     rows[i].second_opinion = true;
+                }
+            }
+        }
+        if let Some(band) = self.photo_review {
+            // From the view logits already scored: no further inference.
+            for (row, values) in rows.iter_mut().zip(&logits) {
+                if let (Some(values), true) = (values, row.score.is_some()) {
+                    row.review = Some(band.reason(row.calibrated, values, threshold));
                 }
             }
         }
@@ -320,6 +344,7 @@ impl Scan {
             } else {
                 64
             };
+            self.video_review = self.options.review.resolve(spec.video.as_ref().and_then(|v| v.review));
             let mut det = Detector::load(&weights, Some(spec), batch, self.device)?;
             self.video_frames = det.use_video_profile();
             ensure!(
@@ -354,25 +379,25 @@ impl Scan {
             .min(paths.len())
             .min(if frames > 32 { 1 } else { 4 });
         let (results, _) = det.score_videos_with_coverage(paths, sampling, threads, exit);
-        #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+        let threshold = det.threshold_logit();
+        // One logit per frame looked at (its views averaged), kept for the review band.
+        let mut frames_seen: Vec<Vec<f32>> = Vec::with_capacity(paths.len());
         let mut rows: Vec<_> = paths
             .iter()
             .zip(results)
             .map(|(path, result)| {
                 let mut row = Row::empty(path, "video", "video");
+                let mut per_frame = Vec::new();
                 if let Some(result) = result {
-                    let logit = video::aggregate(
-                        &result
-                            .frame_logits
-                            .iter()
-                            .map(|v| mean(v))
-                            .collect::<Vec<_>>(),
-                    );
+                    per_frame = result.frame_logits.iter().map(|v| mean(v)).collect();
+                    let logit = video::aggregate(&per_frame);
                     row.set_score(det.probability(&[logit]), logit, det.threshold_logit());
+                    row.calibrated = det.calibrated_logit(&[logit]);
                     row.coverage = Some(result.coverage);
                 } else {
                     row.error = Some(decode_error(video::frame_at(path, 0.0)));
                 }
+                frames_seen.push(per_frame);
                 row
             })
             .collect();
@@ -399,9 +424,19 @@ impl Scan {
                 let (second, _) = tintype::eval::waverep_logits(weights, &paths, self.device, 16)?;
                 for ((i, _), second) in pick.into_iter().zip(second) {
                     if let Some(z) = second {
-                        rows[i].score = Some(band.probability(rows[i].logit.unwrap(), z));
+                        let score = band.probability(rows[i].logit.unwrap(), z);
+                        rows[i].score = Some(score);
+                        rows[i].calibrated = review::logit_of(score);
                         rows[i].second_opinion = true;
                     }
+                }
+            }
+        }
+        if let Some(band) = self.video_review {
+            // From the frame logits already scored: no further decoding or inference.
+            for (row, frames) in rows.iter_mut().zip(&frames_seen) {
+                if row.score.is_some() {
+                    row.review = Some(band.reason(row.calibrated, frames, threshold));
                 }
             }
         }
@@ -558,6 +593,12 @@ struct Row {
     coverage: Option<video::Coverage>,
     fixture_label: Option<&'static str>,
     error: Option<String>,
+    /// The logit of `score` (0 at the decision threshold): what the review
+    /// margin is measured on.
+    calibrated: f32,
+    /// `None` when no review band is in use (the output then has no review
+    /// fields); otherwise whether, and why, this result needs review.
+    review: Option<Option<Reason>>,
 }
 
 impl Row {
@@ -574,6 +615,8 @@ impl Row {
             coverage: None,
             fixture_label: None,
             error: None,
+            calibrated: f32::NAN,
+            review: None,
         }
     }
 
@@ -632,6 +675,9 @@ impl Row {
                 object["analysed_until_s"] = c.until.into();
                 object["complete"] = c.complete.into();
             }
+            if let Some(reason) = self.review {
+                review::annotate(&mut object, reason);
+            }
             writeln!(out, "{object}")?;
             return Ok(());
         }
@@ -650,6 +696,9 @@ impl Row {
                     c.frames, c.frames_expected
                 )?;
             }
+        }
+        if let Some(Some(reason)) = self.review {
+            write!(out, "  [needs review: {}]", reason.name().replace('_', " "))?;
         }
         writeln!(out)?;
         Ok(())

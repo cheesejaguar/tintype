@@ -300,3 +300,127 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A JSON row without the review fields.
+fn without_review(row: &serde_json::Value) -> serde_json::Value {
+    let mut r = row.clone();
+    if let Some(o) = r.as_object_mut() {
+        o.remove("review");
+        o.remove("review_reason");
+    }
+    r
+}
+
+#[test]
+fn review_is_off_by_default_and_only_adds_fields_when_on() {
+    let dir = common::scratch("cli-review");
+    let (a, b, bad) = (dir.join("a.png"), dir.join("b.png"), dir.join("broken.png"));
+    common::write_fixture(&a);
+    image::imageops::flip_vertical(&common::fixture_pixels()).save(&b).unwrap();
+    std::fs::write(&bad, b"not an image").unwrap();
+    let video = common::repo().join("tests/fixtures/video.mp4");
+    let files: [&Path; 4] = [&a, &video, &bad, &b];
+
+    // Off: no review key in JSON, no review note in text.
+    let plain = detect(&files, &["--json", "--frames", "4"]);
+    let plain_rows = json_lines(&plain);
+    assert_eq!(plain_rows.len(), 4);
+    assert!(plain_rows.iter().all(|r| r.get("review").is_none() && r.get("review_reason").is_none()), "{}", stdout(&plain));
+    let plain_text = detect(&files, &["--frames", "4"]);
+    assert!(!stdout(&plain_text).contains("needs review"), "{}", stdout(&plain_text));
+
+    for margin in [0.000001f64, 0.75, 3.0, 50.0] {
+        let m = margin.to_string();
+        let on = detect(&files, &["--json", "--frames", "4", "--review-margin", &m]);
+        // The exit status does not change: 2 here, for the unreadable file.
+        assert_eq!(on.status.code(), plain.status.code());
+        let rows = json_lines(&on);
+        assert_eq!(rows.len(), 4);
+        for (row, before) in rows.iter().zip(&plain_rows) {
+            // Everything that was there is there unchanged, the verdict and the score included.
+            assert_eq!(&without_review(row), before, "margin {margin}");
+            if row.get("error").is_some() {
+                // An unreadable file has no verdict to review.
+                assert!(row.get("review").is_none(), "{row}");
+                continue;
+            }
+            // The fields are consistent with the score: its logit is 0 at the threshold.
+            let score = score_of(row).unwrap();
+            let calibrated = (score / (1.0 - score)).ln();
+            let review = row["review"].as_bool().unwrap_or_else(|| panic!("no review field in {row}"));
+            if (calibrated.abs() - margin).abs() > 1e-3 {
+                assert_eq!(review, calibrated.abs() < margin, "margin {margin}: {row}");
+            }
+            assert_eq!(row.get("review_reason").and_then(|r| r.as_str()), review.then_some("margin"), "{row}");
+        }
+        // Text: the same lines, with a note on the ones that need review.
+        let text = detect(&files, &["--frames", "4", "--review-margin", &m]);
+        assert_eq!(text.status.code(), plain_text.status.code());
+        let (with_note, before) = (stdout(&text), stdout(&plain_text));
+        assert_eq!(with_note.lines().count(), 4);
+        for ((line, old), row) in with_note.lines().zip(before.lines()).zip(&rows) {
+            let expect = if row.get("review").and_then(|r| r.as_bool()) == Some(true) { format!("{old}  [needs review: margin]") } else { old.to_string() };
+            assert_eq!(line, expect);
+        }
+    }
+    // The widest band marks every scored file and the narrowest marks none.
+    let all = json_lines(&detect(&files, &["--json", "--frames", "4", "--review-margin", "50"]));
+    assert!(all.iter().filter(|r| r.get("error").is_none()).all(|r| r["review"] == true));
+    let none = json_lines(&detect(&files, &["--json", "--frames", "4", "--review-margin", "0"]));
+    assert!(none.iter().filter(|r| r.get("error").is_none()).all(|r| r["review"] == false && r.get("review_reason").is_none()));
+
+    // Disagreement alone: `view_disagreement` is the only reason it can give.
+    let split = json_lines(&detect(&files, &["--json", "--frames", "4", "--all-views", "--review-disagreement", "0.01"]));
+    for (row, before) in split.iter().zip(json_lines(&detect(&files, &["--json", "--frames", "4", "--all-views"]))) {
+        assert_eq!(without_review(row), before);
+        if let Some(review) = row.get("review").and_then(|r| r.as_bool()) {
+            assert_eq!(row.get("review_reason").and_then(|r| r.as_str()), review.then_some("view_disagreement"), "{row}");
+        }
+    }
+
+    // `batch` takes the same flag.
+    let o = tintype(&["batch", "--device", "cpu", "--json", "--review-margin", "50", a.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(json_lines(&o)[0]["review_reason"], "margin");
+
+    // A malformed band is a usage error, before any inference.
+    for flags in [["--review-margin", "-1"], ["--review-margin", "NaN"], ["--review-disagreement", "0"], ["--review-disagreement", "1.5"]] {
+        let o = detect(&[&a], &[flags[0], flags[1]]);
+        assert_eq!(o.status.code(), Some(2), "{flags:?}");
+        assert!(o.stdout.is_empty());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_review_band_in_the_spec_applies_to_the_default_profile_only() {
+    let dir = common::scratch("cli-review-spec");
+    let png = dir.join("fixture.png");
+    common::write_fixture(&png);
+    // A candidate checkpoint: the released weights (linked, not rewritten) with a band in a spec of its own.
+    let weights = dir.join("candidate.safetensors");
+    if std::fs::hard_link(common::photo_weights(), &weights).is_err() {
+        std::fs::copy(common::photo_weights(), &weights).unwrap();
+    }
+    let mut spec: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(common::repo().join("models/tintype.json")).unwrap()).unwrap();
+    spec["review"] = serde_json::json!({"margin": 50.0});
+    std::fs::write(dir.join("candidate.json"), serde_json::to_string_pretty(&spec).unwrap()).unwrap();
+    let run = |extra: &[&str]| {
+        let mut args = vec!["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        args.push(png.to_str().unwrap());
+        json_lines(&tintype(&args)).remove(0)
+    };
+    let stored = run(&[]);
+    assert_eq!((stored["review"].as_bool(), stored["review_reason"].as_str()), (Some(true), Some("margin")), "{stored}");
+    // The released spec gives the same result without the fields.
+    assert_eq!(without_review(&stored), json_lines(&detect(&[&png], &["--json"])).remove(0));
+    // A flag overrides the stored margin.
+    assert_eq!(run(&["--review-margin", "0"])["review"], false);
+    // The stored band is in the default profile's calibrated logits: other profiles ignore it ...
+    assert!(run(&["--strict"]).get("review").is_none());
+    // ... unless a flag gives one.
+    assert_eq!(run(&["--strict", "--review-margin", "50"])["review"], true);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+

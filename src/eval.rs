@@ -496,6 +496,7 @@ fn standard_spec(size: u32) -> ModelSpec {
         strict: None,
         early_exit: Some(crate::detector::EarlyExit::standard()),
         second_opinion: None,
+        review: None,
         arch: String::new(),
     }
 }
