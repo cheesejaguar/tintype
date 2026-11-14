@@ -354,6 +354,105 @@ was scored.** Nothing above changed.
 - **Cutoffs are fitted on all authentic rows of `calibrate`**, originals
   and processed copies together, with `tintype calibrate`'s default rule.
 
+## Photo policy comparison on the frozen split: what was fixed before the test set was looked at
+
+Written on 2026-11-14 at 21:40 UTC, on top of commit `6a2c258`. The `fit`
+and `calibrate` sets were being scored while this was written; no number
+from them had been read, and nothing had been scored or computed on `test`
+for this comparison. `test` is not blind: it has been looked at for the
+released model and for the two processing-chain arms. The gate is the one
+of [the policy-comparison runbook](runbooks/policy-comparison.md), with the
+bounds it left open filled in here.
+
+- **What is scored** (Apple M6, GPU engine; the released weights as copies
+  under `runs/`, never `models/`): the released photo model with its
+  default, sensitive and strict profiles; its six-view scores, taken from
+  the incumbent's files of the frozen-evaluation run; Community Forensics
+  384 px alone; and, on `test` only, the real two-stage route at the shipped
+  band `(-7, 0.5, 0.5, 0)` and at the narrowed band `(-3, 0.5, 0.5, 0)` on a
+  copied spec. GPTTrace and the encoder probes (PE, DINOv3, MetaCLIP 2) are
+  not on disk and are not downloaded: they are not part of this run.
+- **Operating points**: 0.1% and 1% false-positive rate, both always.
+  Every policy's cutoff is the empirical one on **all authentic rows of
+  `calibrate`**, originals and processed copies together, flagged strictly
+  above (`floor(rate x rows)` authentic rows may be flagged), and is applied
+  to `test` unchanged. This is the pooled rule of
+  `scripts/compare-policies.py`, the same for every policy; it is not the
+  balanced-over-sources rule `tintype calibrate` used for the incumbent's
+  refitted cutoffs, so the baseline's numbers here need not equal those.
+  Recall at empirical cutoffs chosen on `test` itself is printed beside it
+  and labelled as a ranking measure.
+- **The degraded slice** is every row of `test` whose `transform` is not
+  none: the processed copies (2,400 authentic, 2,400 generated).
+- **Baseline**: the default profile of the released model at its two
+  cutoffs frozen as above.
+- **Candidates**, all fixed now:
+  1. retuned single profiles: sensitive, strict, and all six views;
+  2. Community Forensics alone;
+  3. the shipped band, at retuned cutoffs and at its shipped decision;
+  4. the narrowed band, likewise;
+  5. one fusion with Community Forensics as the second model, chosen on
+     `calibrate` from this family: a 50:50 blend of the two logits for
+     `abs(first logit) <= m` with `m` in 1, 2, 3; a 50:50 blend for every
+     photo; and the same four with weights fitted by plain logistic
+     regression on `fit` (inside the gate on both logits, outside it on
+     the first logit alone).
+  `fit` holds originals only, and there every authentic photo is a large
+  camera JPEG and every generated one a small PNG, so the fitted weights
+  are fitted under that confound.
+- **Choosing on `calibrate`**, with the cutoffs above (in-sample there):
+  the member of family 5 with the highest recall on `calibrate`'s
+  processed rows at the 1% cutoff, among the members whose recall on those
+  rows at the 0.1% cutoff is not below the baseline's. Ties: the smaller
+  routed share on `calibrate`, then a 50:50 blend before a fitted one, then
+  the smaller margin. If no member is at or above the baseline at 0.1%, the
+  member with the highest processed-row recall at 1% is carried to `test`
+  and reported as the family's best. The harness prints every member on
+  `test`; only the chosen one is a candidate, and none can be promoted from
+  what `test` shows.
+- **The gate**, per candidate, on `test` at the cutoffs frozen on
+  `calibrate`, against the baseline:
+  1. recall on the degraded slice at the 1% cutoff is higher by **at least
+     5.00 points**;
+  2. recall on the degraded slice at the 0.1% cutoff is not lower;
+  3. authentic photos hold: at each of the two cutoffs it flags no more of
+     `test`'s authentic rows than the baseline does at its cutoff for the
+     same target, and its worst authentic source and worst transform
+     (slices of 100 authentic rows or more) are not flagged at a higher
+     rate than the baseline's worst;
+  4. recall on unprocessed generated rows is within one point of the
+     baseline's at both cutoffs;
+  5. cost: the share of `test` photos sent to the second model is no higher
+     than the shipped band's share on `calibrate` (the number is added
+     below, before `test` is looked at), and p95 single-image latency and
+     peak memory are no higher than the shipped two-stage route's on the
+     same hardware. Latency and memory are **not measured in this run** (the
+     machine is shared), so that half of item 5 cannot be evaluated now; a
+     candidate that meets everything else is reported as such and no
+     further.
+  A candidate that gains at 1% and loses at 0.1% fails.
+- **The narrowed band as an opt-in speed candidate** is judged separately,
+  on `test` at the shipped decision (probability 0.5), against the shipped
+  band: (a) it sends fewer photos to the second model; (b) it reaches
+  Community Forensics at its own cutoff on at least as many slices as the
+  shipped band does, a slice being a generator family of 100 generated
+  rows or more (it flags at least as many) or an authentic source of 100
+  rows or more (it flags no more). The sets of this split hold one class
+  each, so the per-set precision-and-recall count of confirmation 7 is not
+  defined here and this count stands in for it; (c) its recall on the
+  degraded slice is not more than one point below the shipped band's, and
+  it flags no more authentic rows. Meeting all three does not ship it: that
+  still needs selection on development data and its own entry.
+- **Checks and analyses, not candidates**: the two real two-stage runs on
+  `test` against the same policy computed from the separate score files
+  (verdicts that differ are counted); the first-stage misses each gate
+  leaves outside; and the spread of the six view logits as a routing
+  feature. No learned gate is fitted.
+- **Intervals**: `tintype report --operating-points --cluster-by parent`
+  on the harness's score files, at the frozen cutoffs.
+- **Looks at `test`**: one scoring pass per system and one evaluation with
+  the commands of the runbook, logged there.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames

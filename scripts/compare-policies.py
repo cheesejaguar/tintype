@@ -278,6 +278,9 @@ def group_value(item, key):
         return groups.get(key) or "path:" + item["key"]
     if key == "transform":
         return groups.get("transform") or "-"
+    if key == "processing":
+        # The degraded slice of the frozen evaluation: every transform other than none.
+        return "original" if groups.get("transform") in (None, "", "-", "none") else "processed"
     raise ValueError(f"unknown grouping key `{key}`")
 
 
@@ -325,6 +328,42 @@ def set_parity(datasets, samples, cutoff, reference_flags):
     (`joint_set_wins` of the replay script, with any reference in the place of Community Forensics)."""
     rows = [{"dataset": d, "commfor": 1.0 if flagged else 0.0} for d, flagged in zip(datasets, reference_flags)]
     return replay.joint_set_wins(rows, samples, cutoff)
+
+
+def slice_counts(items, flags, key, label):
+    """`{slice: [photos, flagged]}` over the photos of one class."""
+    out = {}
+    for it, flagged in zip(items, flags):
+        if it["label"] == label:
+            c = out.setdefault(group_value(it, key), [0, 0])
+            c[0] += 1
+            c[1] += bool(flagged)
+    return out
+
+
+def worst_slice(items, flags, key, label, minimum):
+    """The slice of one class, among those with `minimum` photos or more, with the highest flagged share
+    for authentic photos (label 0) or the lowest for generated ones (label 1): `(name, flagged, photos)`."""
+    slices = [(c[1] / c[0], name, c) for name, c in slice_counts(items, flags, key, label).items() if c[0] >= minimum]
+    if not slices:
+        return None
+    _, name, c = max(slices, key=lambda x: (x[0], x[1])) if label == 0 else min(slices, key=lambda x: (x[0], x[1]))
+    return name, c[1], c[0]
+
+
+def slices_reaching(items, flags, reference_flags, minimum):
+    """How a policy compares with a reference detector slice by slice, where sets hold one class only:
+    generator families (of `minimum` generated photos or more) on which it flags at least as many as the
+    reference, and authentic sources on which it flags no more. `(families reached, families, sources
+    reached, sources)`."""
+    out = []
+    for key, label in (("family", 1), ("source", 0)):
+        ours = slice_counts(items, flags, key, label)
+        theirs = slice_counts(items, reference_flags, key, label)
+        names = [n for n, c in ours.items() if c[0] >= minimum]
+        reached = sum((ours[n][1] >= theirs[n][1]) if label == 1 else (ours[n][1] <= theirs[n][1]) for n in names)
+        out += [reached, len(names)]
+    return tuple(out)
 
 
 def auroc(positives, negatives):
@@ -535,7 +574,7 @@ def resolve_budgets(tokens, policies, samples_of):
     return budgets
 
 
-def report_cohort(title, items, policies, scores, opts, out, frozen=None, chosen_on="this cohort"):
+def report_cohort(title, items, policies, scores, opts, out, frozen=None, chosen_on="this cohort", whole=False):
     """Print the tables of one cohort. `scores[policy]` is aligned with `items`; `frozen[policy]` holds the
     cutoffs frozen on the calibration set."""
     labels = [it["label"] for it in items]
@@ -625,6 +664,32 @@ def report_cohort(title, items, policies, scores, opts, out, frozen=None, chosen
                 row += [f"{cutoff:.5f}", f"{fp}/{n_real} ({pct(fp, n_real)})", cell(tp, n_gen)]
             rows.append(row)
         table(header, rows, out)
+
+    minimum = opts["min_slice"]
+    if whole and frozen is not None and opts["worst_slices"]:
+        out.write(f"\nWorst slices at the frozen cutoffs (slices of {minimum} photos of the class or more): the authentic source and "
+                  "the transform with the highest flagged share, and the generator family with the lowest recall.\n\n")
+        header = ["Policy"] + [c for fpr in opts["fprs"] for c in (f"target {100 * fpr:g}% FPR: worst authentic source", "worst transform (authentic)", "weakest family")]
+        rows = []
+        for policy in policies:
+            row = [policy.name]
+            for cutoff in frozen["cutoffs"][policy]:
+                flags = [z > cutoff for z in scores[policy]]
+                for key, label in (("source", 0), ("transform", 0), ("family", 1)):
+                    worst = worst_slice(items, flags, key, label, minimum)
+                    row.append("n/a" if worst is None else f"{worst[0]} {worst[1]}/{worst[2]} ({pct(worst[1], worst[2])})")
+            rows.append(row)
+        table(header, rows, out)
+    if whole and opts["slice_parity"]:
+        name, cutoff = opts["slice_parity"]
+        reference_flags = [it["z"][name] > cutoff for it in items]
+        out.write(f"\nSlice by slice against {display(name)} at its own cutoff, each policy at its own cutoff (slices of {minimum} photos of the class "
+                  "or more): generator families on which the policy flags at least as many generated photos, and authentic sources on which it flags no more.\n\n")
+        rows = []
+        for policy in policies:
+            fam, n_fam, src, n_src = slices_reaching(items, [z > 0.0 for z in scores[policy]], reference_flags, minimum)
+            rows.append([policy.name, f"{fam}/{n_fam}", f"{src}/{n_src}", f"{fam + src}/{n_fam + n_src}"])
+        table(["Policy", "Families reached", "Sources reached", "Together"], rows, out)
     return results
 
 
@@ -761,9 +826,10 @@ def compare(items, opts, out):
     """Score every policy and print the report. `items` carry `set` (fit, calibrate, test) when a split is given."""
     systems = set(items[0]["z"])
     sets = Counter(it.get("set") for it in items)
-    use_sets = "test" in sets
+    report = opts["report_on"]
+    use_sets = report in sets
     with_fitted = bool(opts["seconds"]) and (use_sets or opts["cross_fit"] > 0)
-    if use_sets and sets.get("fit", 0) == 0:
+    if use_sets and (sets.get("fit", 0) == 0 or report == "fit"):
         with_fitted = False
     policies = build_policies(systems, opts["first"], opts["profiles"], opts["stored"], opts["cf"], opts["bands"], opts["seconds"], opts["margins"], with_fitted)
     fitted = [p for p in policies if p.fitted]
@@ -817,25 +883,31 @@ def compare(items, opts, out):
                     samples = list(zip(cal_labels, cal_scores[policy]))
                     frozen["cutoffs"][policy] = [rate_point(samples, fpr)[1] for fpr in opts["fprs"]]
                 out.write(f"\nCutoffs are frozen on the `{calibration}` set ({len(cal_items)} photos, {n_real} authentic)"
-                          + (": no calibration set was given, so the fit set stands in for it.\n" if calibration == "fit" else ".\n"))
-        report_items, report_scores = subset(lambda it: it["set"] == "test")
-        chosen_on = "the test set itself (a ranking comparison, not a frozen operating point)"
-        report_cohort("Test set", report_items, policies, report_scores, opts, out, frozen, chosen_on)
-        gate_report(report_items, policies, opts, out)
+                          + (": no calibration set was given, so the fit set stands in for it.\n" if calibration == "fit" and report != "fit" else ".\n"))
+                if calibration == report:
+                    out.write(f"The `{report}` set is reported here, so these cutoffs are in-sample: this is the view for choosing on `{report}`, not a transfer result.\n")
+        report_items, report_scores = subset(lambda it: it["set"] == report)
+        title = {"test": "Test set", "calibrate": "Calibration set", "fit": "Fit set"}[report]
+        chosen_on = f"the {report} set itself (a ranking comparison, not a frozen operating point)"
+        report_cohort(title, report_items, policies, report_scores, opts, out, frozen, chosen_on, whole=True)
+        if opts["gates"]:
+            gate_report(report_items, policies, opts, out)
         if opts["cohort_by"] != "all":
             for name, members in split_cohorts(report_items, opts["cohort_by"]).items():
                 keys = {it["key"] for it in members}
-                part, part_scores = subset(lambda it: it["set"] == "test" and it["key"] in keys)
-                report_cohort(f"Test set, {opts['cohort_by']} {name}", part, policies, part_scores, opts, out, frozen, chosen_on)
-                gate_report(part, policies, opts, out)
+                part, part_scores = subset(lambda it: it["set"] == report and it["key"] in keys)
+                report_cohort(f"{title}, {opts['cohort_by']} {name}", part, policies, part_scores, opts, out, frozen, chosen_on)
+                if opts["gates"]:
+                    gate_report(part, policies, opts, out)
     else:
         report_items, report_scores = items, scores
         for name, members in split_cohorts(items, opts["cohort_by"]).items():
             keys = {it["key"] for it in members}
             part, part_scores = subset(lambda it: it["key"] in keys)
             title = "All photos" if opts["cohort_by"] == "all" else name
-            report_cohort(title, part, policies, part_scores, opts, out, None, "this cohort, so exploratory")
-            gate_report(part, policies, opts, out)
+            report_cohort(title, part, policies, part_scores, opts, out, None, "this cohort, so exploratory", whole=opts["cohort_by"] == "all")
+            if opts["gates"]:
+                gate_report(part, policies, opts, out)
     if opts["write_scores"]:
         written = write_scores(opts["write_scores"], report_items, policies, report_scores)
         out.write(f"\nWrote {len(written)} score files to {opts['write_scores']} (`path label generator dataset prob`).\n")
@@ -866,7 +938,7 @@ def default_opts():
     return {"first": "tintype", "profiles": [], "stored": [], "cf": None, "bands": shipped_bands(), "seconds": [], "margins": [2.0],
             "reference": None, "fprs": [0.001, 0.01], "budgets": [], "cohort_by": "all", "cross_fit": 0, "group_by": "parent",
             "fit_cohort": None, "sweep": [1.0, 2.0, 3.0, 4.0, 6.0, 8.0], "view_spread": None, "slice_by": None, "max_slices": 15,
-            "write_scores": None}
+            "write_scores": None, "report_on": "test", "gates": True, "worst_slices": False, "slice_parity": None, "min_slice": 100}
 
 
 def archive_opts(name, items):
@@ -1139,6 +1211,14 @@ def self_test():
     weights, _ = fit_logistic([(it["z"]["a"], it["z"]["b"]) for it in items if it["set"] == "fit"], [it["label"] for it in items if it["set"] == "fit"])
     k = next(i for i, it in enumerate(items) if it["set"] == "test")
     assert close(scores[fitted][k], weights[0] * items[k]["z"]["a"] + weights[1] * items[k]["z"]["b"] + weights[2])
+    # Reporting on the calibration set instead: its own cutoffs, said to be in-sample, and no test photo in the tables.
+    text = io.StringIO()
+    compare(items, dict(opts, report_on="calibrate", worst_slices=True, slice_parity=("b", 0.0), min_slice=1), text)
+    chosen = text.getvalue()
+    assert "## Calibration set: 60 photos" in chosen and "these cutoffs are in-sample" in chosen and "## Test set" not in chosen
+    tp, fp = operate([(it["label"], it["z"]["a"]) for it in items if it["set"] == "calibrate"], calibrate[3])
+    assert fp == 3 and f"| a | {calibrate[3]:.5f} | 3/30 (10.00%) | {cell(tp, 30)} |" in chosen, chosen
+    assert "Worst slices at the frozen cutoffs" in chosen and "Slice by slice against b" in chosen
     # Without a split or folds nothing is fitted.
     for it in items:
         del it["set"]
@@ -1155,6 +1235,24 @@ def self_test():
     weights, _ = fit_logistic([(it["z"]["a"], it["z"]["b"]) for it in others], [it["label"] for it in others])
     assert close(scores[fitted][0], weights[0] * items[0]["z"]["a"] + weights[1] * items[0]["z"]["b"] + weights[2])
     assert "3 folds of whole `parent` groups (90 groups)" in text.getvalue()
+
+    # Slices. Families a (3 generated) and b (2); sources s (3 authentic) and t (2). The policy flags 2 of a, 0 of b,
+    # 1 of s and 0 of t; the reference flags 1 of a, 1 of b, 1 of s and 1 of t.
+    def photo(label, family, source, transform, flagged, ref):
+        it = item(1.0 if flagged else -1.0, 1.0 if ref else -1.0, label)
+        it["groups"] = {"family": family, "source": source, "transform": transform}
+        return it
+    photos = ([photo(1, "a", "x", "-", f, r) for f, r in ((1, 1), (1, 0), (0, 0))] + [photo(1, "b", "x", "jpeg", f, r) for f, r in ((0, 1), (0, 0))]
+              + [photo(0, "real", "s", "-", f, r) for f, r in ((1, 0), (0, 1), (0, 0))] + [photo(0, "real", "t", "jpeg", f, r) for f, r in ((0, 1), (0, 0))])
+    flags = [it["z"]["a"] > 0 for it in photos]
+    reference = [it["z"]["b"] > 0 for it in photos]
+    assert slice_counts(photos, flags, "family", 1) == {"a": [3, 2], "b": [2, 0]} and slice_counts(photos, flags, "source", 0) == {"s": [3, 1], "t": [2, 0]}
+    # Family a is reached (2 >= 1), b is not (0 < 1); both sources are (1 <= 1, 0 <= 1). With slices of 3 or more only a and s count.
+    assert slices_reaching(photos, flags, reference, 1) == (1, 2, 2, 2) and slices_reaching(photos, flags, reference, 3) == (1, 1, 1, 1)
+    # Worst authentic source: s with 1 of 3 flagged; weakest family: b with 0 of 2; worst transform among authentic: "-" (1 of 3).
+    assert worst_slice(photos, flags, "source", 0, 1) == ("s", 1, 3) and worst_slice(photos, flags, "family", 1, 1) == ("b", 0, 2)
+    assert worst_slice(photos, flags, "transform", 0, 1) == ("-", 1, 3) and worst_slice(photos, flags, "source", 0, 4) is None
+    assert [group_value(it, "processing") for it in (photos[0], photos[3])] == ["original", "processed"] and group_value(item(0.0, 0.0), "processing") == "original"
 
     # The gate table on five photos: misses at -0.5 (inside |z| <= 2) and -3 (outside, second model flags it),
     # one false alarm at 2.5 (outside, second model clears it).
@@ -1187,7 +1285,14 @@ def main():
     parser.add_argument("--reference", metavar="NAME[@CUTOFF]", help="reference detector for the per-set comparison, cutoff in probability (default commfor@0.5 when present)")
     parser.add_argument("--fpr", type=floats, help="empirical false-positive rates (default 0.001,0.01)")
     parser.add_argument("--fp-budget", help="false-positive counts, comma-separated; `own:NAME` is the count of column NAME at 0.5")
-    parser.add_argument("--cohort-by", choices=["all", "dataset", "generator", "source", "family", "transform"], help="report each of these cohorts with its own cutoffs")
+    parser.add_argument("--cohort-by", choices=["all", "dataset", "generator", "source", "family", "transform", "processing"],
+                        help="report each of these cohorts as well; `processing` is originals against processed copies (any transform)")
+    parser.add_argument("--report-on", choices=["fit", "calibrate", "test"], default="test",
+                        help="the set that is reported (default test). `calibrate` is the view for choosing a policy before the test set is looked at")
+    parser.add_argument("--no-gate-tables", action="store_true", help="leave out the tables of first-stage errors per gate")
+    parser.add_argument("--worst-slices", action="store_true", help="with frozen cutoffs: the worst authentic source and transform and the weakest generator family per policy")
+    parser.add_argument("--slice-parity", metavar="NAME[@CUTOFF]", help="count the families and sources on which each policy reaches this detector (for splits whose sets hold one class)")
+    parser.add_argument("--min-slice", type=int, default=100, help="smallest slice that counts for --worst-slices and --slice-parity (default 100)")
     parser.add_argument("--cross-fit", type=int, metavar="K", help="fit the fusion on K-1 folds of whole groups and score the fold left out (exploratory)")
     parser.add_argument("--group-by", choices=["parent", "scene", "source", "family", "dataset", "path"], help="what a fold keeps together (default parent)")
     parser.add_argument("--fit-cohort", help="with --cross-fit: fit only on this cohort of the other folds")
@@ -1269,8 +1374,8 @@ def main():
         out.write(f"\nSplit: {counts.get('fit', 0)} fit, {counts.get('calibrate', 0)} calibrate, {counts.get('test', 0)} test photos; "
                   f"{len(items) - len(kept)} scored photos are in no set and are left out.\n")
         items = kept
-        if not counts.get("test"):
-            parser.error("no scored photo is in the test set: are the manifest paths those the files were scored with?")
+        if not counts.get(args.report_on):
+            parser.error(f"no scored photo is in the {args.report_on} set: are the manifest paths those the files were scored with?")
 
     if args.first:
         opts["first"] = args.first
@@ -1305,6 +1410,13 @@ def main():
     opts["view_spread"] = args.view_spread
     opts["slice_by"] = args.slice_by
     opts["write_scores"] = args.write_scores
+    opts["report_on"] = args.report_on
+    opts["gates"] = not args.no_gate_tables
+    opts["worst_slices"] = args.worst_slices
+    opts["min_slice"] = args.min_slice
+    if args.slice_parity:
+        name, _, cutoff = args.slice_parity.partition("@")
+        opts["slice_parity"] = (name, replay.logit(cutoff or "0.5"))
     if any(not 0 <= f < 1 for f in opts["fprs"]):
         parser.error("--fpr takes fractions, e.g. 0.001,0.01")
     if opts["cross_fit"] == 1 or opts["cross_fit"] < 0:
