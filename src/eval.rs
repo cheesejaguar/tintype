@@ -270,15 +270,53 @@ pub enum Rule {
     Strictest(usize),
     /// Mean per-source rate over real sources with at least `min` items.
     Balanced(usize),
+    /// The loosest threshold whose one-sided Clopper–Pearson upper bound on
+    /// the false-positive rate, over independent real items, is within the
+    /// target ([`crate::calibration::bound_cutoff`]). One global budget: no
+    /// source gets a threshold of its own.
+    Bound,
+}
+
+/// What [`calibrate_with`] takes beyond the rule. The defaults are what
+/// [`calibrate`] has always done.
+#[derive(Clone, Debug)]
+pub struct CalibrateOptions {
+    /// Confidence of the Clopper–Pearson bound: the one [`Rule::Bound`]
+    /// fits to, and the one printed for every rule.
+    pub confidence: f64,
+    /// Manifest rows by path. With them, real items that share a
+    /// `parent_id` count once towards the bound.
+    pub groups: BTreeMap<String, Item>,
+    /// Which score stands for a parent with derivatives.
+    pub per_parent: crate::calibration::PerParent,
+    /// Print, and never store, what each group of this kind (`source`,
+    /// `transform`, `dataset`, `generator`, `family`) would get as a
+    /// threshold of its own.
+    pub group_diagnostic: Option<String>,
+    /// Smallest group the diagnostic lists.
+    pub min_group: usize,
+}
+
+impl Default for CalibrateOptions {
+    fn default() -> Self {
+        Self { confidence: 0.95, groups: BTreeMap::new(), per_parent: crate::calibration::PerParent::Max, group_diagnostic: None, min_group: 100 }
+    }
 }
 
 /// Fit `profile` ("photo", "fast" or "video") of the spec next to `weights`.
 pub fn calibrate(weights: &Path, scores: &[PathBuf], target_fpr: f64, profile: &str, rule: Rule) -> Result<()> {
+    calibrate_with(weights, scores, target_fpr, profile, rule, &CalibrateOptions::default())
+}
+
+/// As [`calibrate`], with the options of `tintype calibrate`.
+pub fn calibrate_with(weights: &Path, scores: &[PathBuf], target_fpr: f64, profile: &str, rule: Rule, opts: &CalibrateOptions) -> Result<()> {
     let mut spec = ModelSpec::load_for(weights)?;
     let (mut real, mut fake) = (Vec::new(), Vec::new());
     let mut by_source: BTreeMap<String, Vec<f32>> = Default::default();
+    // The manifest row of each real item (grouping columns from `opts.groups`), in step with `real`.
+    let mut real_items: Vec<Item> = Vec::new();
     for p in scores {
-        for r in report::read_scores(p)?.values() {
+        for (path, r) in report::read_scores(p)?.iter() {
             if r.logits.is_empty() {
                 continue;
             }
@@ -288,13 +326,24 @@ pub fn calibrate(weights: &Path, scores: &[PathBuf], target_fpr: f64, profile: &
             } else {
                 real.push(z);
                 by_source.entry(r.generator.clone()).or_default().push(z);
+                let extra = opts.groups.get(path).map(|it| it.extra.clone()).unwrap_or_default();
+                real_items.push(Item { path: path.into(), label: 0, generator: r.generator.clone(), dataset: r.dataset.clone(), extra });
             }
         }
     }
     anyhow::ensure!(real.len() >= 200, "need at least 200 real items to calibrate (have {})", real.len());
+    // One score per independent real item: derivatives of one parent count once.
+    let units = if opts.groups.is_empty() {
+        crate::calibration::Units { scores: real.clone(), items: real.len(), dropped: 0 }
+    } else {
+        let parents: Vec<Option<&str>> = real_items.iter().map(|it| it.parent_id()).collect();
+        let original: Vec<bool> = real_items.iter().map(|it| it.transform().is_none()).collect();
+        crate::calibration::one_per_parent(&real, &parents, &original, opts.per_parent)
+    };
     let mut thr = crate::metrics::fpr_threshold(&real, target_fpr);
     match rule {
         Rule::Pooled => {}
+        Rule::Bound => thr = crate::calibration::bound_cutoff(&units.scores, target_fpr, opts.confidence)?.cutoff,
         Rule::Strictest(min) => {
             for (src, z) in by_source.iter().filter(|(_, z)| z.len() >= min) {
                 let t = crate::metrics::fpr_threshold(z, target_fpr);
@@ -324,6 +373,39 @@ pub fn calibrate(weights: &Path, scores: &[PathBuf], target_fpr: f64, profile: &
     let (scale, bias, thr) = crate::metrics::calibrate_at(&real, &fake, thr);
     let recall = fake.iter().filter(|&&z| z > thr).count() as f64 / fake.len().max(1) as f64;
     println!("{profile}: {} real / {} AI items; logit threshold {thr:.3} for a {:.2}% target; recall on these AI items {recall:.4}", real.len(), fake.len(), 100.0 * target_fpr);
+    // What the threshold achieves, whatever rule set it: the bound counts independent items.
+    let (flagged, n, upper) = crate::calibration::achieved(&units.scores, thr, opts.confidence);
+    let counted = if opts.groups.is_empty() {
+        "real items, taken as independent".to_string()
+    } else {
+        format!(
+            "real parents ({} items, one score per parent: {}{})",
+            units.items,
+            match opts.per_parent {
+                crate::calibration::PerParent::Max => "the highest of its versions",
+                crate::calibration::PerParent::Original => "its unprocessed original",
+            },
+            if units.dropped > 0 { format!("; {} without an original left out", units.dropped) } else { String::new() }
+        )
+    };
+    println!("  flagged at the threshold: {flagged} of {n} {counted}; one-sided {}% Clopper–Pearson upper bound on the false-positive rate {:.3}%", 100.0 * opts.confidence, 100.0 * upper);
+    if !matches!(rule, Rule::Balanced(_)) {
+        for (src, z) in &by_source {
+            println!("  {src:<28} n={:<5} false positives at threshold {:.2}%", z.len(), 100.0 * z.iter().filter(|&&v| v > thr).count() as f64 / z.len() as f64);
+        }
+    }
+    if let Some(by) = &opts.group_diagnostic {
+        println!("  DIAGNOSTIC ONLY, by {by}: the threshold each group would get on its own at this target. Nothing below is stored or used at inference. A group threshold is admissible only where the group can be observed at inference, has enough calibration data and is shown to transfer.");
+        let mut by_group: BTreeMap<String, Vec<f32>> = Default::default();
+        for (it, &z) in real_items.iter().zip(&real) {
+            by_group.entry(report::slice_value(by, it)?).or_default().push(z);
+        }
+        for (group, z) in by_group.iter().filter(|(_, z)| z.len() >= opts.min_group) {
+            let own = crate::metrics::fpr_threshold(z, target_fpr);
+            let (k, n, up) = crate::calibration::achieved(z, thr, opts.confidence);
+            println!("  [diagnostic] {group:<28} n={n:<5} own threshold {own:.3} ({:+.3} from the global one); at the global threshold {k} flagged, upper bound {:.3}%", own - thr, 100.0 * up);
+        }
+    }
     let size = spec.img as u32;
     match profile {
         "video" => {

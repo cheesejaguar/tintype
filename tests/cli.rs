@@ -424,3 +424,144 @@ fn a_review_band_in_the_spec_applies_to_the_default_profile_only() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn report_accounts_for_review_and_transfer_only_when_asked() {
+    let dir = common::scratch("cli-review-report");
+    // 200 real items with logits -6.01..1.95 and 200 AI items with logits -3.01..4.95, in steps of 0.04
+    // (off the band edges, so rounding decides nothing): prob = sigmoid(logit). Each has two "view"
+    // logits, 1 either side of it for real items and 3 either side for AI items.
+    let sigmoid = |z: f64| 1.0 / (1.0 + (-z).exp());
+    let mut text = String::new();
+    for i in 0..200 {
+        let z = -4.01 + 0.04 * i as f64;
+        text.push_str(&format!("r{i}.jpg\t0\treal:{}\tdemo\t{:.6}\t{:.5}\t{:.5}\n", if i < 150 { "cam" } else { "phone" }, sigmoid(z - 2.0), z - 2.0 + 1.0, z - 2.0 - 1.0));
+        text.push_str(&format!("f{i}.png\t1\tgen-a\tdemo\t{:.6}\t{:.5}\t{:.5}\n", sigmoid(z + 1.0), z + 1.0 + 3.0, z + 1.0 - 3.0));
+    }
+    let scores = dir.join("scores.tsv");
+    std::fs::write(&scores, text).unwrap();
+    let system = format!("demo={}@0.5", scores.display());
+    let base = tintype(&["report", "--system", &system, "--operating-points", "--slice-by", "generator"]);
+    assert!(base.status.success(), "{}", String::from_utf8_lossy(&base.stderr));
+    assert!(!stdout(&base).contains("review") && !stdout(&base).contains("transfer"), "{}", stdout(&base));
+
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--slice-by", "generator", "--review-margin", "0.5,1", "--transfer-budget", "0.05"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    // Every line of the plain report is still there, in order.
+    let mut rest = out.lines();
+    for line in stdout(&base).lines() {
+        assert!(rest.any(|l| l == line), "the plain report's line is missing or out of order: {line}");
+    }
+    // 49 real and 124 AI items are above 0 (flagged). A band of half-width 0.5 holds 25 of each class,
+    // 12 of them flagged; one of half-width 1 holds 50 of each, 25 of them flagged.
+    for want in [
+        "demo, review accounting at the frozen cutoff 0.5.",
+        "| none | 100.00% | 0 of 200 (0.00%) | 0 of 200 (0.00%) | 0 of 0 | 49 of 200 | 24.50% |",
+        "| margin 0.5 | 87.50% | 25 of 200 (12.50%) | 25 of 200 (12.50%) | 50 of 50 | 37 of 200 | 18.50% |",
+        "| margin 1 | 75.00% | 50 of 200 (25.00%) | 50 of 200 (25.00%) | 100 of 100 | 24 of 200 | 12.00% |",
+        "demo transfer by generator: authentic items flagged at the frozen cutoff 0.5, against a false-positive budget of 5.00%.",
+        "| real:cam | 150 | 0 | 0.00% | 0.00% | 1.98% | within |",
+        "| real:phone | 50 | 49 | 98.00% |",
+        "| exceeds |",
+        "1 of 2 authentic generator strata are shown within the budget, 1 exceed it, 0 are not resolved.",
+    ] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // Recall with reviewed AI items as misses: 112 of 200 at margin 0.5, against 124 of 200 without the band.
+    let row = out.lines().find(|l| l.starts_with("| margin 0.5 |")).unwrap();
+    assert!(row.contains("| 56.00% (") && row.contains("| 62.00% |"), "{row}");
+
+    // Disagreement needs the raw threshold; with it, rows whose two logits straddle it are reviewed too.
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--review-margin", "0", "--review-disagreement", "0.5"]);
+    assert!(!o.status.success());
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--review-margin", "0", "--review-disagreement", "0.5", "--review-threshold-logit", "0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // A real row's two logits straddle 0 when its own is within 1 of it (50 rows); an AI row's within 3 (150 rows).
+    assert!(stdout(&o).contains("| margin 0, or disagreement of 0.5 or more | 50.00% | 50 of 200 (25.00%) | 150 of 200 (75.00%) | 0 of 200 |"), "{}", stdout(&o));
+
+    // Decisions recorded by `detect --json`, or as plain rows.
+    let mut flags = String::from("{\"path\":\"unreadable.jpg\",\"kind\":\"image\",\"error\":\"could not decode\"}\n");
+    for i in 0..200 {
+        flags.push_str(&format!("{{\"path\":\"r{i}.jpg\",\"review\":{}}}\n", i == 0));
+        flags.push_str(&format!("f{i}.png\t{}\tview_disagreement\n", (i >= 190) as u8));
+    }
+    let recorded = dir.join("flags.jsonl");
+    std::fs::write(&recorded, &flags).unwrap();
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--review-flags", recorded.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    // One real and the ten highest AI items reviewed: recall 114 of 200 with them as misses.
+    assert!(stdout(&o).contains("| recorded decisions | 97.25% | 1 of 200 (0.50%) | 10 of 200 (5.00%) | 1 of 11 | 49 of 200 | 24.50% |"), "{}", stdout(&o));
+    assert!(stdout(&o).lines().find(|l| l.starts_with("| recorded decisions |")).unwrap().contains("| 57.00% ("));
+    // A scored item without a recorded decision is an error, not a silent "not reviewed".
+    std::fs::write(&recorded, "r0.jpg\t1\n").unwrap();
+    let o = tintype(&["report", "--system", &system, "--operating-points", "--review-flags", recorded.to_str().unwrap()]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("399 of 400 scored items have no row"), "{}", String::from_utf8_lossy(&o.stderr));
+    // The review flags belong to the fixed-budget tables.
+    assert!(!tintype(&["report", "--system", &system, "--review-margin", "1"]).status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `calibrate` is one of the commands that only build on macOS. It reads
+/// score files and the spec beside `--weights`, and runs no network.
+#[cfg(target_os = "macos")]
+#[test]
+fn calibrate_bound_rule_counts_parents_and_says_how_many_it_needs() {
+    let dir = common::scratch("cli-calibrate-bound");
+    let spec_text = std::fs::read_to_string(common::repo().join("models/tintype.json")).unwrap();
+    let fresh = |name: &str| {
+        std::fs::write(dir.join(format!("{name}.json")), &spec_text).unwrap();
+        dir.join(format!("{name}.safetensors")).to_str().unwrap().to_string()
+    };
+    // 400 real parents, each an original and a JPEG copy, and 400 AI items. Real logits rise with the parent.
+    let (mut scores, mut manifest) = (String::new(), String::new());
+    for p in 0..400 {
+        let z = -6.0 + p as f64 * 0.01;
+        for (suffix, shift, transform) in [("", 0.0, ""), ("-jpeg", 0.5, "jpeg-q70")] {
+            scores.push_str(&format!("{}/r{p}{suffix}.jpg\t0\treal:cam\tdemo\t0.1\t{:.5}\t{:.5}\n", dir.display(), z + shift, z + shift));
+            manifest.push_str(&format!("r{p}{suffix}.jpg\t0\treal:cam\tdemo\tp{p}\t\t\t\t{transform}\n"));
+        }
+        scores.push_str(&format!("{}/f{p}.png\t1\tgen-a\tdemo\t0.9\t{:.5}\t{:.5}\n", dir.display(), 2.0 + p as f64 * 0.01, 2.0 + p as f64 * 0.01));
+    }
+    let (score_file, manifest_file) = (dir.join("calibrate.tsv"), dir.join("manifest.tsv"));
+    std::fs::write(&score_file, scores).unwrap();
+    std::fs::write(&manifest_file, manifest).unwrap();
+    let s = score_file.to_str().unwrap();
+
+    // The default rule writes what it always wrote, and now also says what bound it achieved.
+    let w = fresh("balanced");
+    let o = tintype(&["calibrate", "--weights", &w, "--scores", s, "--target-fpr", "0.01"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    assert!(out.contains("photo: 800 real / 400 AI items; logit threshold ") && out.contains("  flagged at the threshold: 8 of 800 real items, taken as independent; one-sided 95% Clopper–Pearson upper bound on the false-positive rate 1.797%"), "{out}");
+
+    // Items: 800 look like enough to show 1% (299 needed), and the bound rule flags 3 of them.
+    let w = fresh("items");
+    let o = tintype(&["calibrate", "--weights", &w, "--scores", s, "--target-fpr", "0.01", "--rule", "bound"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(stdout(&o).contains("flagged at the threshold: 3 of 800 real items, taken as independent; one-sided 95% Clopper–Pearson upper bound on the false-positive rate 0.966%"), "{}", stdout(&o));
+    // Parents: 400 independent units, one score each (the higher, here the JPEG copy's). One flag
+    // among 400 would put the bound at 1.18%, so none may be flagged.
+    let w = fresh("parents");
+    let o = tintype(&["calibrate", "--weights", &w, "--scores", s, "--target-fpr", "0.01", "--rule", "bound", "--groups", manifest_file.to_str().unwrap(), "--group-diagnostic", "transform"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    for want in ["flagged at the threshold: 0 of 400 real parents (800 items, one score per parent: the highest of its versions); one-sided 95% Clopper–Pearson upper bound on the false-positive rate 0.746%", "  real:cam                     n=800   false positives at threshold ", "DIAGNOSTIC ONLY, by transform", "[diagnostic] jpeg-q70", "[diagnostic] none"] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    let o = tintype(&["calibrate", "--weights", &fresh("original"), "--scores", s, "--target-fpr", "0.01", "--rule", "bound", "--groups", manifest_file.to_str().unwrap(), "--per-parent", "original"]);
+    assert!(stdout(&o).contains("0 of 400 real parents (800 items, one score per parent: its unprocessed original)"), "{}", stdout(&o));
+    // The threshold was written to the copy, as the calibrated zero of the photo profile.
+    let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("parents.json")).unwrap()).unwrap();
+    let thr = -written["logit_bias"].as_f64().unwrap() / written["logit_scale"].as_f64().unwrap();
+    // Flag strictly above the highest parent score, the top JPEG copy's: -6 + 399 * 0.01 + 0.5.
+    assert!((thr - (-6.0 + 3.99 + 0.5)).abs() < 1e-3, "{thr}");
+
+    // 0.1% cannot be shown from 400 parents: the error says how many it takes, and nothing is written.
+    let w = fresh("short");
+    let o = tintype(&["calibrate", "--weights", &w, "--scores", s, "--target-fpr", "0.001", "--rule", "bound", "--groups", manifest_file.to_str().unwrap()]);
+    assert!(!o.status.success());
+    let err = String::from_utf8_lossy(&o.stderr).to_string();
+    assert!(err.contains("at least 2995 with none flagged") && err.contains("these scores hold 400"), "{err}");
+    assert_eq!(std::fs::read_to_string(dir.join("short.json")).unwrap(), spec_text);
+    let _ = std::fs::remove_dir_all(&dir);
+}
