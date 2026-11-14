@@ -23,9 +23,13 @@ is the point:
                 store (leave one store out). Says whether the rule
                 transfers between collections.
 
-AUROC is reported with a 95% interval from a bootstrap over clusters (a
-real source, an AI generator), not over files: files of one source share
-their metadata and are not independent. Where a class has a single cluster
+A fold's files are scored by one model, so the AUROC of a fold scheme
+counts only pairs of files from the same fold (folds weighted by their
+number of pairs); scores of different models are never ranked against each
+other, except in the pooled "other stores" row, which says so. AUROC is
+reported with a 95% interval from a bootstrap over clusters (a real source,
+an AI generator), not over files: files of one source share their metadata
+and are not independent. Where a class has a single cluster
 its files are resampled instead and the interval is marked `†`; it is then
 too narrow. Single-column AUROCs (per-bin class odds, same folds) show
 which columns carry the separation.
@@ -274,26 +278,34 @@ class Odds:
 
 
 def auroc_from_counts(pos, neg):
-    """AUROC from `{score: weight}` of each class, ties counted half."""
-    p, n = sum(pos.values()), sum(neg.values())
-    if p <= 0 or n <= 0:
-        return None
-    below, total = 0.0, 0.0
-    for s in sorted(set(pos) | set(neg)):
-        here = neg.get(s, 0.0)
-        total += pos.get(s, 0.0) * (below + 0.5 * here)
+    """AUROC from `{(fold, score): weight}` of each class, ties counted half.
+    Only pairs within one fold are compared: scores of different folds come
+    from different models and are not on one scale. The folds are weighted
+    by their number of pairs."""
+    wins, pairs = 0.0, 0.0
+    fold, below, p_fold, n_fold = None, 0.0, 0.0, 0.0
+    for key in sorted(set(pos) | set(neg)):
+        if key[0] != fold:
+            pairs += p_fold * n_fold
+            fold, below, p_fold, n_fold = key[0], 0.0, 0.0, 0.0
+        here, mine = neg.get(key, 0.0), pos.get(key, 0.0)
+        wins += mine * (below + 0.5 * here)
         below += here
-    return total / (p * n)
+        p_fold += mine
+        n_fold += here
+    pairs += p_fold * n_fold
+    return wins / pairs if pairs > 0 else None
 
 
-def auroc(examples, scores, replicates=0, rng=None):
-    """`(auroc, lo, hi, item_level)`: the pooled AUROC of scored examples and
-    a 95% percentile interval from resampling clusters within each class.
-    `item_level` is true when a class had one cluster and its files were
-    resampled instead."""
+def auroc(examples, scores, replicates=0, rng=None, folds=None):
+    """`(auroc, lo, hi, item_level)`: the AUROC of scored examples and a 95%
+    percentile interval from resampling clusters within each class. With
+    `folds` (the fold that scored each example) only pairs of one fold are
+    compared. `item_level` is true when a class had one cluster and its
+    files were resampled instead."""
     per_cluster = [defaultdict(Counter), defaultdict(Counter)]
-    for e, s in zip(examples, scores):
-        per_cluster[e.label][e.cluster][round(s, 6)] += 1
+    for k, (e, s) in enumerate(zip(examples, scores)):
+        per_cluster[e.label][e.cluster][(folds[k] if folds else 0, round(s, 6))] += 1
     whole = [Counter(), Counter()]
     for label in (0, 1):
         for c in per_cluster[label].values():
@@ -369,9 +381,16 @@ def group_folds(examples, folds, seed):
     return [fold[e.cluster] for e in examples], k
 
 
-def kept(examples, scores):
-    pairs = [(e, s) for e, s in zip(examples, scores) if s is not None]
-    return [p[0] for p in pairs], [p[1] for p in pairs]
+def kept(examples, scores, folds=None):
+    """The scored examples, their scores and (with `folds`) their folds."""
+    keep = [k for k, s in enumerate(scores) if s is not None]
+    return [examples[k] for k in keep], [scores[k] for k in keep], ([folds[k] for k in keep] if folds else None)
+
+
+def cv_auroc(examples, fold_of, folds, make, replicates=0, rng=None):
+    """Out-of-fold AUROC over within-fold pairs, with its cluster interval."""
+    e, s, f = kept(examples, fold_scores(examples, fold_of, folds, make), fold_of)
+    return auroc(e, s, replicates, rng, f)
 
 
 def fmt_auroc(result):
@@ -405,17 +424,17 @@ def probe(examples, features, args, fit_on=None, out=sys.stdout):
         cells = ["–", "–", "–", "–", ""]
         if s in two_class:
             folds = item_folds(rows, args.folds)
-            cells[0] = fmt_auroc(auroc(*kept(rows, fold_scores(rows, folds, args.folds, make)), args.bootstrap, rng))
+            cells[0] = fmt_auroc(cv_auroc(rows, folds, args.folds, make, args.bootstrap, rng))
             gf, k = group_folds(rows, args.folds, args.seed)
             if gf:
-                cells[1] = fmt_auroc(auroc(*kept(rows, fold_scores(rows, gf, k, make)), args.bootstrap, rng))
+                cells[1] = fmt_auroc(cv_auroc(rows, gf, k, make, args.bootstrap, rng))
             if loso:
-                cells[2] = fmt_auroc(auroc(*kept(rows, [loso[id(e)] for e in rows]), args.bootstrap, rng))
+                cells[2] = fmt_auroc(auroc(*kept(rows, [loso[id(e)] for e in rows])[:2], args.bootstrap, rng))
             if transfer:
                 cells[3] = fmt_auroc(auroc(rows, [transfer.score(e.bins) for e in rows], args.bootstrap, rng))
             single = []
             for k_feature, name in enumerate(features):
-                a = auroc(*kept(rows, fold_scores(rows, folds, args.folds, lambda: Odds(k_feature))))[0]
+                a = cv_auroc(rows, folds, args.folds, lambda: Odds(k_feature))[0]
                 if a is not None:
                     single.append((a, name))
             single.sort(reverse=True)
@@ -432,19 +451,19 @@ def probe(examples, features, args, fit_on=None, out=sys.stdout):
     if gf:
         schemes.append(("group folds", gf, k))
     print("| Pooled | AUROC [95% interval over clusters] |\n|---|---|", file=out)
-    pooled_scores = {}
     for name, folds, k in schemes:
-        pooled_scores[name] = fold_scores(examples, folds, k, make)
-        print(f"| {name} | {fmt_auroc(auroc(*kept(examples, pooled_scores[name]), args.bootstrap, rng))} |", file=out)
+        print(f"| {name} | {fmt_auroc(cv_auroc(examples, folds, k, make, args.bootstrap, rng))} |", file=out)
     if loso:
-        print(f"| fitted on the other {args.by}s | {fmt_auroc(auroc(*kept(examples, [loso[id(e)] for e in examples]), args.bootstrap, rng))} |", file=out)
+        # Single-class stores can only be compared with files of other stores, so here the
+        # scores of the per-store models are pooled as they are.
+        print(f"| fitted on the other {args.by}s, scores pooled | {fmt_auroc(auroc(*kept(examples, [loso[id(e)] for e in examples])[:2], args.bootstrap, rng))} |", file=out)
     if transfer:
         print(f"| fitted on --fit-on | {fmt_auroc(auroc(examples, [transfer.score(e.bins) for e in examples], args.bootstrap, rng))} |", file=out)
 
     print("\n| Column alone | " + " | ".join(f"AUROC, {name}" for name, _, _ in schemes) + " |\n|---|" + "---|" * len(schemes), file=out)
     table = []
     for k_feature, name in enumerate(features):
-        row = [auroc(*kept(examples, fold_scores(examples, folds, k, lambda: Odds(k_feature))))[0] for _, folds, k in schemes]
+        row = [cv_auroc(examples, folds, k, lambda: Odds(k_feature))[0] for _, folds, k in schemes]
         table.append((row, name))
     table.sort(key=lambda t: -(t[0][0] or 0))
     for row, name in table:
@@ -460,8 +479,11 @@ def self_test():
     # The solver and the AUROC.
     x = cholesky_solve([[4.0, 2.0], [2.0, 3.0]], [10.0, 8.0])
     assert abs(x[0] - 1.75) < 1e-9 and abs(x[1] - 1.5) < 1e-9, x
-    assert auroc_from_counts({1.0: 2, 0.5: 1}, {0.0: 2, 0.5: 1}) == (2 * 3 + 1 * 2.5) / 9
-    assert auroc_from_counts({1.0: 1}, {}) is None
+    assert auroc_from_counts({(0, 1.0): 2, (0, 0.5): 1}, {(0, 0.0): 2, (0, 0.5): 1}) == (2 * 3 + 1 * 2.5) / 9
+    assert auroc_from_counts({(0, 1.0): 1}, {}) is None
+    # Two folds whose scores sit on different scales: each separates its own files perfectly,
+    # and pooled as one list they would not.
+    assert auroc_from_counts({(0, 0.2): 1, (1, 5.0): 1}, {(0, 0.1): 1, (1, 4.0): 1}) == 1.0
     assert cut(75, [50, 60, 70, 75, 80]) == "75-80" and cut(10, [50, 60]) == "<50" and cut(99, [50, 60]) == ">=60"
     assert aspect_bin(1024, 1024) == "1:1" and aspect_bin(4032, 3024) == "4:3" and aspect_bin(1000, 300) == "wide"
 
@@ -488,32 +510,34 @@ def self_test():
     make = lambda: Model(features, min_count=5)  # noqa: E731
     # Format follows the class in nine files of ten: about 0.9 AUROC, from the format column.
     confounded = make_examples(4000, 6, 40, 0.9, 0.1)
-    scores = fold_scores(confounded, item_folds(confounded, 5), 5, make)
-    result = auroc(*kept(confounded, scores), 100, random.Random(1))
+    result = cv_auroc(confounded, item_folds(confounded, 5), 5, make, 100, random.Random(1))
     assert 0.86 < result[0] < 0.94 and result[1] < result[0] < result[2] and not result[3], result
-    single = [auroc(*kept(confounded, fold_scores(confounded, item_folds(confounded, 5), 5, lambda: Odds(k))))[0] for k in range(3)]
+    single = [cv_auroc(confounded, item_folds(confounded, 5), 5, lambda: Odds(k))[0] for k in range(3)]
     assert single[0] > 0.86 and abs(single[2] - 0.5) < 0.05, single
     top = make().fit(confounded).largest_weights(2)
     assert {t[1] for t in top} == {"format"} and all((t[0] > 0) == (t[2] == "png") for t in top), top
     # Metadata that does not follow the class: chance.
     matched = make_examples(4000, 6, 40, 0.5, 0.5)
-    result = auroc(*kept(matched, fold_scores(matched, item_folds(matched, 5), 5, make)))
+    result = cv_auroc(matched, item_folds(matched, 5), 5, make)
     assert abs(result[0] - 0.5) < 0.05, result
     # EXIF in half the real sources and never in AI files: item folds see it, and so do group
     # folds, because the sources that lack it look like AI either way; the cluster interval is
     # wider than a file interval would be because a source is all or nothing.
     exif = make_examples(4000, 6, 40, 0.5, 0.5, exif_sources=(0, 1, 2))
-    item = auroc(*kept(exif, fold_scores(exif, item_folds(exif, 5), 5, make)), 200, random.Random(2))
+    item = cv_auroc(exif, item_folds(exif, 5), 5, make, 200, random.Random(2))
     assert 0.70 < item[0] < 0.80, item
     gf, k = group_folds(exif, 5, 1)
     assert k == 5 and len({(f, e.cluster) for f, e in zip(gf, exif)}) == 46
     assert all(len({e.label for f, e in zip(gf, exif) if f == fold}) == 2 for fold in range(5))
-    grouped = auroc(*kept(exif, fold_scores(exif, gf, k, make)), 200, random.Random(2))
+    grouped = cv_auroc(exif, gf, k, make, 200, random.Random(2))
     assert 0.6 < grouped[0] < 0.85 and grouped[2] - grouped[1] > 0.05, grouped
     # One cluster per class: no group folds, and the interval is marked as file-level.
     lone = make_examples(600, 1, 1, 0.9, 0.1)
     assert group_folds(lone, 5, 1) == (None, 0)
-    assert auroc(*kept(lone, fold_scores(lone, item_folds(lone, 5), 5, make)), 50, random.Random(3))[3]
+    assert cv_auroc(lone, item_folds(lone, 5), 5, make, 50, random.Random(3))[3]
+    # A column that says nothing gives exactly 0.5, however the folds' constants differ.
+    flat = [Example(i % 2, "s", (i % 2, f"c{i % 7}"), f"s/{i}", ("same",), mg.stable_hash(1, f"s/{i}")) for i in range(700)]
+    assert cv_auroc(flat, item_folds(flat, 5), 5, lambda: Odds(0))[0] == 0.5
     # A bin unseen in training falls in the feature's `other` column instead of failing.
     model = make().fit(confounded)
     assert math.isfinite(model.score(("webp", "0", "9")))

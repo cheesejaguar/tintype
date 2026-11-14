@@ -532,5 +532,8 @@ mod tests {
         let n = (0..10_000).filter(|&i| is_val(&item(0, "g", i), 3)).count();
         assert!((200..400).contains(&n), "{n}");
         assert_eq!(is_val(&item(0, "g", 5), 3), is_val(&item(0, "g", 5), 3));
+        // Fixed vectors, shared with scripts/manifest_groups.py (`is_val`), which must agree.
+        let held: Vec<usize> = (0..400).filter(|i| is_val(&Item { path: PathBuf::from(format!("data/store/openfake/train-00000/{i:07}.jpg")), ..Default::default() }, 3)).collect();
+        assert_eq!(held, vec![49, 215, 222, 326, 361]);
     }
 }

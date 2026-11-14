@@ -141,3 +141,14 @@ def stable_hash(seed, text):
 def relative_to(file, directory):
     """`file` as a path relative to `directory`, with forward slashes."""
     return os.path.relpath(file, directory).replace(os.sep, "/")
+
+
+def is_val(path, val_pct):
+    """Whether `tintype train` holds an item out for validation: the same
+    path hash as `is_val` in src/data.rs (FNV-1a over the bytes of the item
+    path, which is the manifest's directory joined with the row's path, as
+    the manifest was named on the command line)."""
+    h = 0xCBF29CE484222325
+    for b in str(path).encode("utf-8"):
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return (h >> 20) % 100 < val_pct
