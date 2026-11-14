@@ -19,7 +19,8 @@ mean over all runs, and over each file's fastest run ("best"), which is the
 steadier figure on a shared machine; every binary after the first also gets
 the median, over files, of its best time divided by the first binary's best
 time for the same file. `--env LABEL:NAME=VALUE` sets a variable for one
-binary, e.g. `--env new:TINTYPE_VIEW_REUSE=off`.
+binary, e.g. `--env new:TINTYPE_VIEW_REUSE=off`, and `--weights-of
+LABEL=PATH` gives one binary its own photo weights.
 
 Every report also gives the counters the binary prints with TINTYPE_STATS=1
 for one pass over the list (frames decoded and converted, views
@@ -93,6 +94,7 @@ def main():
     ap.add_argument("--manifest", help="manifest of images (--latency)")
     ap.add_argument("--n", type=int, default=200, help="images to time with --latency, after its five warm-up images")
     ap.add_argument("--weights", default="models/tintype.safetensors", help="photo weights for --latency")
+    ap.add_argument("--weights-of", action="append", default=[], metavar="LABEL=PATH", help="photo weights for one binary, in every mode (repeatable); the same binary may be given under several labels")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--extra", default="", help="more detect flags, e.g. '--all-views'")
     ap.add_argument("--env", action="append", default=[], metavar="LABEL:NAME=VALUE", help="a variable for one binary (repeatable)")
@@ -119,8 +121,9 @@ def main():
             if who == label:
                 name, _, value = kv.partition("=")
                 env[name] = value
-        bins.append({"label": label, "path": path, "env": env, "times": [[] for _ in files], "walls": [], "counters": {}, "peak": 0.0, "rows": []})
-    latency = (a.weights, a.manifest, a.n) if a.latency else None
+        own = [w.partition("=")[2] for w in a.weights_of if w.partition("=")[0] == label]
+        bins.append({"label": label, "path": path, "env": env, "times": [[] for _ in files], "walls": [], "counters": {}, "peak": 0.0, "rows": [],
+                     "extra": extra + (["--weights", own[-1]] if own and not a.latency else []), "latency": (own[-1] if own else a.weights, a.manifest, a.n) if a.latency else None, "weights": own[-1] if own else None})
 
     def note(b, counters, rows, peak, first_pass):
         b["peak"] = max(b["peak"], peak)
@@ -135,24 +138,24 @@ def main():
     # One untimed run each first, so nobody pays for a cold file cache.
     for b in bins:
         if not a.latency:
-            run(b["path"], files[:1], a.device, extra, b["env"])
+            run(b["path"], files[:1], a.device, b["extra"], b["env"])
     for n in range(a.repeat):
         order = bins[n % len(bins):] + bins[:n % len(bins)]
         if a.latency:
             for b in order:
-                _, c, per_image, peak = run(b["path"], [], a.device, extra, b["env"], latency)
+                _, c, per_image, peak = run(b["path"], [], a.device, b["extra"], b["env"], b["latency"])
                 for k, ms in per_image:
                     b["times"][k - 5].append(ms)
                 note(b, c, [], peak, n == 0)
         elif a.each:
             for k, f in enumerate(files):
                 for b in order:
-                    s, c, r, peak = run(b["path"], [f], a.device, extra, b["env"])
+                    s, c, r, peak = run(b["path"], [f], a.device, b["extra"], b["env"])
                     b["times"][k].append(s * 1e3)
                     note(b, c, r, peak, n == 0)
         else:
             for b in order:
-                s, c, r, peak = run(b["path"], files, a.device, extra, b["env"])
+                s, c, r, peak = run(b["path"], files, a.device, b["extra"], b["env"])
                 b["walls"].append(s)
                 note(b, c, r, peak, n == 0)
 
@@ -160,7 +163,7 @@ def main():
         b["counters"] = {k: round(v / a.repeat) if k.endswith("_ms") else v for k, v in b["counters"].items()}
         looked = [r.get("views", r.get("frames")) for r in b["rows"] if "score" in r]
         result = {
-            "label": b["label"], "bin": b["path"], "device": a.device, "extra": a.extra, "env": [e for e in a.env if e.startswith(b["label"] + ":")],
+            "label": b["label"], "bin": b["path"], "device": a.device, "extra": a.extra, "env": [e for e in a.env if e.startswith(b["label"] + ":")], "weights": b["weights"],
             "files": len(files), "passes": a.repeat, "scored_rows": len(looked),
             "mean_views_or_frames_looked_at": round(sum(looked) / len(looked), 3) if looked else None,
             "peak_rss_mb": round(b["peak"], 1), "counters": b["counters"],
