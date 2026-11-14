@@ -682,7 +682,7 @@ pub fn report(entries: &[Entry], o: &ReportOptions) -> String {
         out.push('\n');
     };
     let (authentic, reported) = partition(entries, o);
-    line(format!("Partial edits: {} scored images, {} reported, cutoffs set on {} authentic `{}` images{}.", entries.len(), reported.len(), authentic.len(), o.cutoff_on, if o.disjoint { " of the other half of the parents" } else { " (the same images the `parent` row reports: in-sample)" }));
+    line(format!("Partial edits: {} scored images, {} reported, cutoffs set on {} authentic `{}` images{}.", entries.len(), reported.len(), authentic.len(), o.cutoff_on, if o.disjoint { " of the other half of the parents".to_string() } else { format!(" (the same images the `{}` row reports: in-sample)", o.cutoff_on) }));
     line("Every pooling rule is operated at its own cutoff, the one that lets the stated share of those authentic images through, so the columns compare at equal authentic FPR. Cells are images flagged.".into());
     if stats.is_empty() || authentic.is_empty() {
         line(format!("\nNothing to compare: no `{}` images to set cutoffs on, or no pooling rule every image has a value for.", o.cutoff_on));
