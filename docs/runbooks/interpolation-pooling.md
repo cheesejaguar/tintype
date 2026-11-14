@@ -267,8 +267,9 @@ done
 
 The three manifests are cut from the validation split that `finalize`
 wrote for the released weights (the 3% of each training store that
-training never saw, by path hash; `/Users/aaron/Code/veracity-scratch/data/splits/val_images.tsv`
-here), keeping the files still on disk:
+training never saw, by path hash; `$SCRATCH/data/splits/val_images.tsv`,
+where `$SCRATCH` is the folder that holds the development data and runs),
+keeping the files still on disk:
 
 | Set | AI | Real |
 |---|---|---|
@@ -346,7 +347,7 @@ images), `runs/scores-c7/*.veracity-views.tsv` (Confirmation 7, 23,052),
 `runs/scores-c6/*.veracity-views.tsv` (Confirmation 6, 16,324) and
 `runs/scores-next/*.v7-views.tsv` (the development benchmarks, almost all
 of them inside the calibration file), all under
-`/Users/aaron/Code/veracity-scratch/`. Every probability in them equals
+`$SCRATCH/`. Every probability in them equals
 the released calibration applied to the mean of the six logits.
 
 ### What the tool does
@@ -452,7 +453,7 @@ change behind a new optional spec field, re-scored for real, with its
 ### Exploratory replay (development data)
 
 ```bash
-R=/Users/aaron/Code/veracity-scratch/runs; C7=$R/scores-c7; v=veracity-views.tsv
+R=$SCRATCH/runs; C7=$R/scores-c7; v=veracity-views.tsv
 tintype replay-pool --fit $R/scores-v7/calib_images.tsv --spec models/tintype.json \
   --test "confirm7=$C7/*.$v" --test "confirm6=$R/scores-c6/*.$v" \
   --test "c7-legacy-gan=$C7/fresh8-classic-biggan.$v,$C7/fresh8-classic-cyclegan.$v,$C7/fresh8-classic-gaugan.$v,$C7/fresh8-classic-stargan.$v,$C7/fresh8-classic-stylegan.$v,$C7/fresh8-classic-stylegan2.$v,$C7/fresh8-aigibench-ProGAN.$v,$C7/fresh8-aigibench-R3GAN.$v,$C7/fresh8-aigibench-StyleGAN-XL.$v,$C7/fresh8-aigibench-StyleGAN3.$v,$C7/fresh8-aigibench-StyleSwim.$v,$C7/fresh8-aigibench-WFIR.$v" \
