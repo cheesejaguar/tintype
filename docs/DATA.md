@@ -33,6 +33,18 @@ calibrate and test sets without separating related items, and
 `tintype verify-split` fails if any group crosses; see
 [the frozen evaluation runbook](runbooks/frozen-eval.md).
 
+Two scripts write these columns. `scripts/stress-photo.py` renders
+paired per-operation evaluation suites (resizing, JPEG, blur, noise,
+sharpening, reposts, and files registered after a real upload round trip),
+with `parent_id` on every original and copy and the recipe as `transform`.
+`scripts/build-codec-store.py` registers training copies made offline by
+a learned codec or an enhancement tool, the same share of every generator
+and real source in both classes, with the parent's label. No such store
+exists yet, and no codec has been downloaded: the licence of each
+implementation is checked and recorded here and in
+[NOTICE.md](../NOTICE.md) first. See
+[the processing-chains runbook](runbooks/processing-chains.md).
+
 ## What is pinned
 
 A plan reads every repository at a fixed commit and checks every file it

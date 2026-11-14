@@ -329,8 +329,6 @@ enum Cmd {
         threads: usize,
         #[arg(long, default_value_t = 1)]
         seed: u64,
-        #[arg(long, default_value_t = 0.5)]
-        p_native: f32,
         #[arg(long, default_value_t = 0.8)]
         layer_decay: f64,
         #[arg(long, default_value_t = 0.05)]
@@ -340,9 +338,44 @@ enum Cmd {
         /// Generator sampling weight exponent (count^alpha).
         #[arg(long, default_value_t = 0.5)]
         sampler_alpha: f64,
-        /// Probability of the messenger-style downscale + JPEG augmentation.
-        #[arg(long, default_value_t = 0.25)]
-        p_messenger: f32,
+        #[command(flatten)]
+        aug: AugArgs,
+    },
+    /// Write the two sides of the path-hash validation split as manifests:
+    /// `train.tsv` and `val.tsv` in `--out-dir`, with absolute paths. `train`
+    /// holds out `--val-pct` percent of every manifest by a hash of each
+    /// path as spelled on its command line, and `finalize` calibrates on
+    /// that share; pass the manifests here exactly as there. For tooling
+    /// that must know the sides (derivatives of held-out items do not belong
+    /// in training); training on these two files would hash the absolute
+    /// paths into a different split.
+    HashSplit {
+        #[arg(long, required = true)]
+        manifest: Vec<PathBuf>,
+        #[arg(long, default_value_t = 3)]
+        val_pct: u64,
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
+    /// Time the CPU side of the training loader (decode and augment) on the photos of a manifest.
+    AugmentBench {
+        #[arg(long, required = true)]
+        manifest: Vec<PathBuf>,
+        /// Photos to draw from the manifests, the way training draws them.
+        #[arg(long, default_value_t = 512)]
+        images: usize,
+        /// Generator sampling weight exponent (count^alpha), as in `train`.
+        #[arg(long, default_value_t = 0.5)]
+        sampler_alpha: f64,
+        /// Augmented views to time per photo.
+        #[arg(long, default_value_t = 4)]
+        rounds: usize,
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        #[command(flatten)]
+        aug: AugArgs,
     },
     /// Download and prepare a dataset plan (`tintype data list` shows them).
     Data {
@@ -541,6 +574,93 @@ fn quantile(sorted: &[f64], f: f64) -> f64 {
     sorted[((sorted.len() - 1) as f64 * f) as usize]
 }
 
+/// `lo,hi` on the command line.
+fn parse_pair<T: std::str::FromStr>(text: &str) -> Result<(T, T), String> {
+    let parse = |v: &str| v.trim().parse::<T>().map_err(|_| format!("`{text}` is not two numbers `lo,hi`"));
+    match text.split_once(',') {
+        Some((lo, hi)) => Ok((parse(lo)?, parse(hi)?)),
+        None => Err(format!("`{text}` is not two numbers `lo,hi`")),
+    }
+}
+
+/// The training augmentation. With none of these flags given it is the
+/// phase-6 recipe, draw for draw.
+#[derive(clap::Args)]
+struct AugArgs {
+    #[arg(long, default_value_t = 0.5)]
+    p_native: f32,
+    /// Probability of the messenger-style downscale + JPEG augmentation.
+    #[arg(long, default_value_t = 0.25)]
+    p_messenger: f32,
+    /// Long-side cap of a messenger trip in pixels, drawn from `lo,hi`.
+    #[arg(long, default_value = "960,1700", value_parser = parse_pair::<f32>)]
+    messenger_cap: (f32, f32),
+    /// JPEG quality of a messenger trip, drawn from `lo,hi`.
+    #[arg(long, default_value = "55,90", value_parser = parse_pair::<f32>)]
+    messenger_quality: (f32, f32),
+    /// Messenger trips in a row (share cycles), drawn from `lo,hi` inclusive.
+    #[arg(long, default_value = "1,1", value_parser = parse_pair::<u32>)]
+    messenger_cycles: (u32, u32),
+    /// Probability of a processing chain, applied to real and generated items alike. 0 = off.
+    #[arg(long, default_value_t = 0.0)]
+    p_chain: f32,
+    /// Operations per chain, drawn from `lo,hi` inclusive.
+    #[arg(long, default_value = "1,3", value_parser = parse_pair::<u32>)]
+    chain_ops: (u32, u32),
+    /// How far each chain operation may go, 0 (barely visible) to 1 (heaviest).
+    #[arg(long, default_value_t = 0.5)]
+    chain_severity: f32,
+    /// Operations a chain draws from: resize, jpeg, blur, noise, sharpen, repost,
+    /// motion-blur, lens-blur, shot-noise, impulse-noise, pixelate, tone.
+    #[arg(long, default_value = "resize,jpeg,blur,noise,sharpen,repost")]
+    chain_kinds: String,
+    /// Share of chains applied to the finished 224 px view instead of the source image.
+    #[arg(long, default_value_t = 0.25)]
+    chain_post: f32,
+    /// A chain on a larger source image first cuts a random window of this many pixels.
+    #[arg(long, default_value_t = 4_000_000)]
+    chain_max_pixels: u64,
+    /// Curriculum `step:p:max_ops:severity,...`: from each step on, these replace
+    /// --p-chain, the upper end of --chain-ops and --chain-severity.
+    #[arg(long, default_value = "")]
+    chain_schedule: String,
+}
+
+impl AugArgs {
+    fn config(&self) -> Result<tintype::data::AugConfig> {
+        use tintype::data::{AugConfig, ChainOp, ChainStage};
+        let unit = |name: &str, v: f32| -> Result<f32> {
+            anyhow::ensure!((0.0..=1.0).contains(&v), "--{name} must be within 0..1");
+            Ok(v)
+        };
+        let ordered = |name: &str, lo: f64, hi: f64, min: f64| -> Result<()> {
+            anyhow::ensure!(lo <= hi && lo >= min, "--{name} takes lo,hi with {min} <= lo <= hi");
+            Ok(())
+        };
+        ordered("messenger-cap", self.messenger_cap.0 as f64, self.messenger_cap.1 as f64, 1.0)?;
+        ordered("messenger-quality", self.messenger_quality.0 as f64, self.messenger_quality.1 as f64, 1.0)?;
+        anyhow::ensure!(self.messenger_quality.1 <= 100.0, "--messenger-quality is at most 100");
+        ordered("messenger-cycles", self.messenger_cycles.0 as f64, self.messenger_cycles.1 as f64, 1.0)?;
+        ordered("chain-ops", self.chain_ops.0 as f64, self.chain_ops.1 as f64, 1.0)?;
+        anyhow::ensure!(self.chain_max_pixels >= 224 * 224, "--chain-max-pixels must hold at least one 224 px view");
+        Ok(AugConfig {
+            p_native: self.p_native,
+            p_messenger: self.p_messenger,
+            messenger_cap: self.messenger_cap,
+            messenger_quality: self.messenger_quality,
+            messenger_cycles: self.messenger_cycles,
+            p_chain: unit("p-chain", self.p_chain)?,
+            chain_ops: self.chain_ops,
+            chain_severity: unit("chain-severity", self.chain_severity)?,
+            chain_kinds: ChainOp::parse_list(&self.chain_kinds)?,
+            chain_post: unit("chain-post", self.chain_post)?,
+            chain_max_pixels: self.chain_max_pixels,
+            chain_schedule: ChainStage::parse_list(&self.chain_schedule)?,
+            ..Default::default()
+        })
+    }
+}
+
 fn load_manifests(ms: &[PathBuf]) -> Result<Vec<ingest::Item>> {
     let mut v = Vec::new();
     for m in ms {
@@ -717,7 +837,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         #[cfg(target_os = "macos")]
-        Cmd::Train { init, init_prefix, manifest, out, steps, batch, lr, warmup, val_pct, val_max, eval_every, threads, seed, p_native, layer_decay, weight_decay, smoothing, sampler_alpha, p_messenger } => {
+        Cmd::Train { init, init_prefix, manifest, out, steps, batch, lr, warmup, val_pct, val_max, eval_every, threads, seed, layer_decay, weight_decay, smoothing, sampler_alpha, aug } => {
             tintype::train_cmd::run(tintype::train_cmd::TrainArgs {
                 init,
                 init_prefix,
@@ -732,7 +852,7 @@ fn main() -> Result<()> {
                 eval_every,
                 threads,
                 seed,
-                aug: tintype::data::AugConfig { p_native, p_messenger, ..Default::default() },
+                aug: aug.config()?,
                 opt: tintype::trainer::OptConfig { layer_decay, weight_decay, smoothing, ..Default::default() },
                 sampler_alpha,
             })
@@ -740,6 +860,32 @@ fn main() -> Result<()> {
         #[cfg(not(target_os = "macos"))]
         Cmd::Score { .. } | Cmd::ScoreVideo { .. } | Cmd::Evaluate { .. } | Cmd::Finalize { .. } | Cmd::FinalizeVideo { .. } | Cmd::Calibrate { .. } | Cmd::Profile { .. } | Cmd::Train { .. } => {
             anyhow::bail!("this command uses the Apple GPU engine and needs macOS on Apple Silicon; `detect --device cpu` works everywhere")
+        }
+        Cmd::HashSplit { manifest, val_pct, out_dir } => {
+            let items = load_manifests(&manifest)?;
+            anyhow::ensure!(!items.is_empty(), "the manifests list no items");
+            std::fs::create_dir_all(&out_dir)?;
+            let (mut train, mut val, mut counts) = (String::new(), String::new(), [0usize; 2]);
+            for it in &items {
+                let side = tintype::data::is_val(it, val_pct);
+                counts[side as usize] += 1;
+                let line = it.manifest_line(&std::path::absolute(&it.path)?.display().to_string()) + "\n";
+                if side { val.push_str(&line) } else { train.push_str(&line) }
+            }
+            std::fs::write(out_dir.join("train.tsv"), train)?;
+            std::fs::write(out_dir.join("val.tsv"), val)?;
+            println!("{} items on the training side, {} held out ({val_pct}% by path hash)", counts[0], counts[1]);
+            Ok(())
+        }
+        Cmd::AugmentBench { manifest, images, sampler_alpha, rounds, threads, seed, aug } => {
+            let cfg = aug.config()?;
+            let t = tintype::data::bench_augment(&load_manifests(&manifest)?, &cfg, images, rounds, threads, seed, sampler_alpha)?;
+            println!("augmentation: {}", cfg.chain_summary().unwrap_or_else(|| "the phase-6 recipe".into()));
+            println!("{} photos, {:.2} megapixels on average, {rounds} views each", t.images, t.megapixels);
+            println!("decode   {:.2} ms per photo", t.decode_ms);
+            println!("augment  {:.2} ms per view (median {:.2}, 95th percentile {:.2})", t.augment_ms, t.augment_p50_ms, t.augment_p95_ms);
+            println!("loader   {:.1} views/s per thread; {:.0} views/s with 11 threads if they scale", t.per_thread(), 11.0 * t.per_thread());
+            Ok(())
         }
         Cmd::SetPhotoSecondOpinion { weights, band } => {
             let mut spec = ModelSpec::load_for(&weights)?;
@@ -974,6 +1120,54 @@ fn main() -> Result<()> {
             }
             anyhow::ensure!(ok, "the model files differ from the released ones");
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tintype::data::{AugConfig, ChainOp};
+
+    fn train_aug(extra: &[&str]) -> Result<AugConfig> {
+        let mut args = vec!["tintype", "train", "--init", "init.safetensors", "--manifest", "m.tsv", "--out", "runs/x"];
+        args.extend_from_slice(extra);
+        match Cli::try_parse_from(args)?.cmd {
+            Cmd::Train { aug, .. } => aug.config(),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn train_without_augmentation_flags_builds_the_phase_6_recipe() {
+        // data.rs proves this exact configuration byte-identical to the
+        // augmentation before chains existed.
+        assert_eq!(train_aug(&[]).unwrap(), AugConfig { p_native: 0.5, p_messenger: 0.25, ..Default::default() });
+        assert_eq!(train_aug(&["--p-messenger", "0", "--p-native", "0.3"]).unwrap(), AugConfig { p_native: 0.3, p_messenger: 0.0, ..Default::default() });
+    }
+
+    #[test]
+    fn chain_flags_reach_the_augmentation_and_bad_values_are_refused() {
+        let cfg = train_aug(&["--p-chain", "0.5", "--chain-ops", "1,5", "--chain-severity", "1", "--chain-kinds", "blur,tone", "--chain-post", "0", "--chain-max-pixels", "1000000", "--chain-schedule", "0:0:1:0,2000:0.5:3:0.5", "--messenger-cap", "720,2048", "--messenger-quality", "61,92", "--messenger-cycles", "1,6"]).unwrap();
+        assert_eq!((cfg.p_chain, cfg.chain_ops, cfg.chain_severity, cfg.chain_post, cfg.chain_max_pixels), (0.5, (1, 5), 1.0, 0.0, 1_000_000));
+        assert_eq!(cfg.chain_kinds, vec![ChainOp::Blur, ChainOp::Tone]);
+        assert_eq!(cfg.chain_schedule.len(), 2);
+        assert_eq!((cfg.messenger_cap, cfg.messenger_quality, cfg.messenger_cycles), ((720.0, 2048.0), (61.0, 92.0), (1, 6)));
+        for bad in [
+            vec!["--p-chain", "1.5"],
+            vec!["--chain-ops", "3,1"],
+            vec!["--chain-ops", "0,2"],
+            vec!["--chain-ops", "3"],
+            vec!["--chain-severity", "-0.1"],
+            vec!["--chain-kinds", "webp"],
+            vec!["--chain-post", "2"],
+            vec!["--chain-max-pixels", "100"],
+            vec!["--chain-schedule", "0:0.5"],
+            vec!["--messenger-cap", "2048,720"],
+            vec!["--messenger-quality", "55,101"],
+            vec!["--messenger-cycles", "0,3"],
+        ] {
+            assert!(train_aug(&bad).is_err(), "{bad:?}");
         }
     }
 }

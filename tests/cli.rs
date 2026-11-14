@@ -300,3 +300,56 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn augment_bench_times_the_loader_with_and_without_chains() {
+    let dir = common::scratch("cli-augment-bench");
+    let mut text = String::new();
+    for i in 0..4 {
+        common::write_fixture(&dir.join(format!("{i}.png")));
+        text.push_str(&format!("{i}.png\t{}\treal:fixture\tdemo\n", i % 2));
+    }
+    std::fs::write(dir.join("manifest.tsv"), text).unwrap();
+    let manifest = dir.join("manifest.tsv");
+    let run = |extra: &[&str]| {
+        let mut args = vec!["augment-bench", "--manifest", manifest.to_str().unwrap(), "--images", "4", "--rounds", "2", "--threads", "2"];
+        args.extend_from_slice(extra);
+        tintype(&args)
+    };
+    let o = run(&[]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    assert!(out.starts_with("augmentation: the phase-6 recipe\n4 photos, ") && out.contains("\ndecode ") && out.contains("\naugment ") && out.contains("\nloader "), "{out}");
+    let o = run(&["--p-chain", "1", "--chain-ops", "1,5", "--chain-severity", "1", "--chain-kinds", "resize,jpeg,blur,noise,sharpen,repost,motion-blur,lens-blur,shot-noise,impulse-noise,pixelate,tone", "--messenger-cycles", "1,6", "--messenger-cap", "720,2048"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    assert!(out.starts_with("augmentation: messenger cap (720.0, 2048.0) px") && out.contains("chains p 1 of 1-5 operations from [resize,jpeg,blur,noise,sharpen,repost,motion-blur"), "{out}");
+    // A value that makes no sense is refused before any file is read.
+    let o = run(&["--chain-kinds", "webp"]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("unknown chain operation `webp`"), "{}", String::from_utf8_lossy(&o.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hash_split_writes_the_two_sides_train_holds_apart() {
+    let dir = common::scratch("cli-hash-split");
+    write_family_manifest(&dir, 300);
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let o = tintype(&["hash-split", "--manifest", &d("manifest.tsv"), "--out-dir", &d("sides")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let side = |name: &str| std::fs::read_to_string(dir.join("sides").join(name)).unwrap();
+    let (train, val) = (side("train.tsv"), side("val.tsv"));
+    assert_eq!(train.lines().count() + val.lines().count(), 600);
+    assert_eq!(stdout(&o), format!("{} items on the training side, {} held out (3% by path hash)\n", train.lines().count(), val.lines().count()));
+    assert!((3..60).contains(&val.lines().count()), "{}", val.lines().count());
+    // Absolute paths, grouping columns kept, and the same sides on a second run.
+    assert!(train.lines().chain(val.lines()).all(|l| std::path::Path::new(l.split('\t').next().unwrap()).is_absolute()));
+    assert!(train.lines().any(|l| l.ends_with("\tjpeg-q70")) && train.lines().any(|l| l.split('\t').count() == 5));
+    let o = tintype(&["hash-split", "--manifest", &d("manifest.tsv"), "--out-dir", &d("again")]);
+    assert!(o.status.success());
+    assert_eq!(std::fs::read_to_string(dir.join("again/val.tsv")).unwrap(), val);
+    // A larger share holds out more; zero holds out nothing.
+    let o = tintype(&["hash-split", "--manifest", &d("manifest.tsv"), "--out-dir", &d("none"), "--val-pct", "0"]);
+    assert!(stdout(&o).starts_with("600 items on the training side, 0 held out"), "{}", stdout(&o));
+    let _ = std::fs::remove_dir_all(&dir);
+}

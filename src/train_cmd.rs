@@ -13,6 +13,7 @@ use anyhow::Result;
 use rayon::prelude::*;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -130,7 +131,11 @@ pub fn run(a: TrainArgs) -> Result<()> {
     let mut tr = Trainer::new(&w, cfg, a.batch, a.opt.clone())?;
     say(format!("init eval  {}", eval(&tr, &val).1));
 
-    let rx = spawn_loader(Arc::new(train_items), sampler, a.aug.clone(), a.batch, a.threads, a.seed);
+    if let Some(chains) = a.aug.chain_summary() {
+        say(format!("augmentation beyond the phase-6 recipe: {chains}"));
+    }
+    let loader_step = Arc::new(AtomicU64::new(0));
+    let rx = spawn_loader(Arc::new(train_items), sampler, a.aug.clone(), a.batch, a.threads, a.seed, loader_step.clone());
     let spec = ModelSpec {
         img: size as usize,
         views: crate::detector::thorough_views(size, a.aug.fit_resize),
@@ -161,6 +166,7 @@ pub fn run(a: TrainArgs) -> Result<()> {
             let p = (step - a.warmup) as f32 / (a.steps - a.warmup).max(1) as f32;
             a.lr * 0.5 * (1.0 + (std::f32::consts::PI * p).cos())
         };
+        loader_step.store(step, Ordering::Relaxed);
         let tw = Instant::now();
         let b = rx.recv()?;
         wait_s += tw.elapsed().as_secs_f64();
