@@ -262,6 +262,51 @@ fn split_groups_keeps_parents_together_and_verify_split_catches_a_leak() {
 }
 
 #[test]
+fn sampling_shares_prints_the_recipe_and_weights_and_replay_change_it() {
+    let dir = common::scratch("cli-sampling");
+    let store = |name: &str, rows: &[(usize, u8, &str)]| -> String {
+        let d = dir.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        let text: String = rows.iter().flat_map(|(n, label, generator)| (0..*n).map(move |i| format!("{generator}-{i}.png\t{label}\t{generator}\t{name}\n"))).collect();
+        std::fs::write(d.join("manifest.tsv"), text).unwrap();
+        d.join("manifest.tsv").to_str().unwrap().to_string()
+    };
+    let new = store("new", &[(400, 1, "flux"), (100, 1, "sdxl"), (300, 0, "real:cam")]);
+    let social = store("social", &[(900, 1, "reddit-wild"), (100, 0, "real:reddit")]);
+    let old = store("old", &[(400, 1, "stylegan"), (100, 0, "real:ffhq")]);
+    // No validation split, so the shares are exact: sqrt(400), sqrt(100), sqrt(900) of 60.
+    let plain = tintype(&["sampling-shares", "--manifest", &new, "--manifest", &social, "--val-pct", "0"]);
+    assert!(plain.status.success(), "{}", String::from_utf8_lossy(&plain.stderr));
+    let out = stdout(&plain);
+    for want in ["train 1800 images (2 real sources, 3 generators), val pool 0", "| new | main | 300 | 63.40% | 500 | 50.00% |", "| social | main | 100 | 36.60% | 900 | 50.00% |", "| reddit-wild | 900 | 50.00% | 0.78 |", "| sdxl | 100 | 16.67% | 2.33 |", "each generator is its own family"] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // Weights, a family map and a replay pool, through a weights file and the flags.
+    std::fs::write(dir.join("map.tsv"), "flux\tlatent-diffusion\nsdxl\tlatent-diffusion\nstylegan\tgan\n").unwrap();
+    std::fs::write(dir.join("weights.tsv"), "# halve the reposts\nmanifest\tsocial\t0.5\n").unwrap();
+    let d = |name: &str| dir.join(name).to_str().unwrap().to_string();
+    let o = tintype(&["sampling-shares", "--manifest", &new, "--manifest", &social, "--val-pct", "0", "--weights-file", &d("weights.tsv"), "--family-weight", "latent-diffusion=2", "--family-map", &d("map.tsv"), "--replay-manifest", &old, "--replay-share", "0.25"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    // Main pool, AI: (20 + 10) x 2 against 30 x 0.5, so 80% and 20% of the 75% that is not replay.
+    for want in ["replay pool of 1 real sources, 1 generators at 25% / 25% of real / AI draws", "| old | replay | 100 | 25.00% | 400 | 25.00% |", "| latent-diffusion | 500 | 60.00% |", "| reddit-wild | 900 | 15.00% |", "| gan | 400 | 25.00% |"] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // A suggested weights file moves the family shares to equal, and is read back by the same command.
+    let o = tintype(&["sampling-shares", "--manifest", &new, "--manifest", &social, "--val-pct", "0", "--family-map", &d("map.tsv"), "--rebalance-families", "0", "--write-weights", &d("equal.tsv")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let o = tintype(&["sampling-shares", "--manifest", &new, "--manifest", &social, "--val-pct", "0", "--family-map", &d("map.tsv"), "--weights-file", &d("equal.tsv")]);
+    assert!(stdout(&o).contains("| latent-diffusion | 500 | 50.00% |") && stdout(&o).contains("| reddit-wild | 900 | 50.00% |"), "{}", stdout(&o));
+    // A flag replaces the file's weight for the same name: back to 1, the shares are the plain ones.
+    let o = tintype(&["sampling-shares", "--manifest", &new, "--manifest", &social, "--val-pct", "0", "--weights-file", &d("weights.tsv"), "--manifest-weight", "social=1"]);
+    assert!(stdout(&o).contains("| social | main | 100 | 36.60% | 900 | 50.00% |"), "{} {}", stdout(&o), String::from_utf8_lossy(&o.stderr));
+    // A weight that names nothing is refused rather than ignored.
+    let o = tintype(&["sampling-shares", "--manifest", &new, "--manifest-weight", "socials=2"]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("no manifest is called socials"), "{}", String::from_utf8_lossy(&o.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn report_operating_points_gives_the_fixed_budget_tables() {
     let dir = common::scratch("cli-points");
     let mut text = String::new();

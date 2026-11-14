@@ -9,6 +9,7 @@ pub mod ingest;
 pub mod detector;
 pub mod metrics;
 pub mod data;
+pub mod sampling;
 pub mod train_cmd;
 pub mod training_init;
 pub mod report;
