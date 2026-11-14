@@ -49,6 +49,18 @@ The detector flags scores above `0.5` and reports `likely-real` otherwise. Succe
 
 For video, `profile` is `video`. The response reports `frames`, `frames_expected`, `duration_s`, `analysed_until_s`, and `complete`. `analysed_until_s` is the latest sampling target represented in the score. The decoder can use the nearest frame to each target. Both timestamps may be `null` if the information is unavailable. `complete` means the model obtained the evidence its sampling and early-exit profile required. A decodable clip with insufficient coverage receives the `inconclusive` verdict. The server samples at most the first 30 seconds of each clip.
 
+### Video coverage modes (CLI)
+
+`tintype detect --coverage uniform|segments|shots` is an opt-in evaluation mode of the command line. The HTTP API does not offer it, and without the flag no field below appears. The mode scores every planned frame, with no early exit, and adds to a video's JSON row:
+
+| Field | Meaning |
+|---|---|
+| `coverage_mode` | `uniform`: the default sampling positions over the first `--max-seconds`, as one window. `segments`: the same number of frames divided between `--segments` equal windows of the whole clip (three by default). `shots`: as `segments`, with a window boundary moved onto a hard cut that lies within a quarter of a window of it |
+| `segments` | One object per window, in clip order: `name` (`early`, `middle`, `late` for three windows, `1`…`N` otherwise, `span` for `uniform`), `start_s`, `end_s`, `frames`, `frames_expected`, `logit` (mean frame logit of the window), `score` (that logit through the clip calibration), `sampled_s` (time of each scored frame, seconds from the first frame) and `frame_logits` (each frame's mean view logit, in the same order). `score` and `logit` are `null` for a window with no decoded frame |
+| `cuts_s` | `shots` only: the hard cuts found, seconds from the first frame |
+
+`verdict`, `score`, `logit` and `threshold_logit` keep their meaning: the clip's score is the mean over all scored frames through the video calibration. `frames` and `frames_expected` count the planned frames, `analysed_until_s` is the latest planned time that was scored, and `complete` is true only when every planned frame was scored, so a clip that ends early is `inconclusive` as before. Window scores use the clip calibration on a few frames each; they are for evaluation ([runbook](runbooks/partial-edits.md)) and are not calibrated as decisions. `segments` and `shots` span the whole clip whatever `--max-seconds` says, `shots` reads the clip twice, and `--coverage` cannot be combined with `--second-opinion`.
+
 ## Detect a batch
 
 Repeat the field `file` up to 16 times. The `results` array follows upload order, including duplicate filenames and per-file errors. A structurally valid batch returns HTTP 200 even if individual files fail. Use the array index to associate results with inputs, and inspect each row before using a score. For large batches, use HTTP `Expect: 100-continue` so the server can reject unauthorized, oversized, or overloaded requests before the client sends the body.

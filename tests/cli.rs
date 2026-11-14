@@ -300,3 +300,67 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert!(out.starts_with("single-image latency over 3 images: median ") && out.contains(" ms, p90 ") && out.contains(" ms, p95 ") && out.contains(" ms, mean "), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn coverage_modes_report_every_window_and_the_default_output_has_none_of_it() {
+    let video = common::repo().join("tests/fixtures/video.mp4");
+    let one = |extra: &[&str]| {
+        let o = detect(&[&video], extra);
+        assert!(o.status.success(), "{extra:?}: {}", String::from_utf8_lossy(&o.stderr));
+        json_lines(&o).remove(0)
+    };
+    let floats = |v: &serde_json::Value| v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect::<Vec<f64>>();
+    // Without the flag nothing is added.
+    let plain = one(&["--json"]);
+    assert!(plain.get("segments").is_none() && plain.get("coverage_mode").is_none() && plain.get("cuts_s").is_none(), "{plain}");
+
+    // Early, middle and late windows share the profile's sixteen frames, and every one is scored.
+    let row = one(&["--json", "--coverage", "segments"]);
+    assert_eq!((row["coverage_mode"].as_str(), row["frames"].as_u64(), row["frames_expected"].as_u64(), row["complete"].as_bool()), (Some("segments"), Some(16), Some(16), Some(true)));
+    assert!(["ai-generated", "likely-real"].contains(&row["verdict"].as_str().unwrap()));
+    let segments = row["segments"].as_array().unwrap();
+    assert_eq!(segments.iter().map(|s| s["name"].as_str().unwrap()).collect::<Vec<_>>(), vec!["early", "middle", "late"]);
+    assert_eq!(segments.iter().map(|s| s["frames"].as_u64().unwrap()).collect::<Vec<_>>(), vec![6, 5, 5]);
+    assert_eq!((segments[0]["start_s"].as_f64(), segments[2]["end_s"].as_f64()), (Some(0.0), Some(1.0)));
+    let mut all = Vec::new();
+    for s in segments {
+        let (times, logits) = (floats(&s["sampled_s"]), floats(&s["frame_logits"]));
+        assert_eq!((times.len(), logits.len()), (s["frames"].as_u64().unwrap() as usize, s["frames"].as_u64().unwrap() as usize));
+        // A window's frames lie in it (the nearest frame may be a frame interval outside).
+        assert!(times.iter().all(|t| *t >= s["start_s"].as_f64().unwrap() - 0.1 && *t <= s["end_s"].as_f64().unwrap() + 0.1), "{s}");
+        // Its logit is the mean of its frames, and its score is below a half exactly when that is below the clip threshold.
+        let mean = logits.iter().sum::<f64>() / logits.len() as f64;
+        assert!((mean - s["logit"].as_f64().unwrap()).abs() < 1e-5, "{s}");
+        assert_eq!(s["score"].as_f64().unwrap() > 0.5, mean > row["threshold_logit"].as_f64().unwrap(), "{s}");
+        all.extend(logits);
+    }
+    // The clip's score is still the mean over every scored frame.
+    assert!((all.iter().sum::<f64>() / all.len() as f64 - row["logit"].as_f64().unwrap()).abs() < 1e-5);
+
+    // `uniform` is the default sampling with every frame reported: the same frames, so the same clip logit, as scoring all of them.
+    let uniform = one(&["--json", "--coverage", "uniform", "--frames", "4", "--max-seconds", "0"]);
+    let every = one(&["--json", "--all-views", "--frames", "4", "--max-seconds", "0"]);
+    assert_eq!(floats(&uniform["segments"][0]["sampled_s"]), vec![0.0, 0.25, 0.5, 0.75]);
+    assert_eq!(uniform["segments"][0]["name"], "span");
+    assert!((uniform["logit"].as_f64().unwrap() - every["logit"].as_f64().unwrap()).abs() < 1e-5, "{uniform} vs {every}");
+    assert_eq!(uniform["analysed_until_s"], every["analysed_until_s"]);
+
+    // `shots` also says which cuts it found; two windows are numbered.
+    let shots = one(&["--json", "--coverage", "shots", "--segments", "2", "--frames", "6"]);
+    assert!(shots["cuts_s"].is_array(), "{shots}");
+    assert_eq!(shots["segments"].as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect::<Vec<_>>(), vec!["1", "2"]);
+
+    // The text line keeps its shape and gains the windows.
+    let o = detect(&[&video], &["--coverage", "segments"]);
+    let text = stdout(&o);
+    assert!(text.lines().count() == 1 && text.contains("16 frames]  segments: early ") && text.contains(", late "), "{text}");
+
+    // The window count needs a coverage mode, and the mode must be a known one.
+    for flags in [vec!["--segments", "2"], vec!["--coverage", "everything"], vec!["--coverage", "segments", "--segments", "0"]] {
+        let mut args = vec!["detect", "test.mp4"];
+        args.extend(flags);
+        let o = tintype(&args);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert!(o.stdout.is_empty());
+    }
+}
