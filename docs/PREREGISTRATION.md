@@ -453,7 +453,7 @@ bounds it left open filled in here.
 - **Looks at `test`**: one scoring pass per system and one evaluation with
   the commands of the runbook, logged there.
 
-**Added on 2026-11-14 at 21:55 UTC, after choosing on `calibrate` and
+**Added on 2026-11-14 at 21:46 UTC, after choosing on `calibrate` and
 before anything was scored or computed on `test`.** Nothing above changed.
 The choice was made at commit `6fc5ecb` with
 `scripts/compare-policies.py ... --report-on calibrate --cohort-by processing`
