@@ -439,7 +439,8 @@ shipped here. The Community Forensics weights are MIT.
 | `verify-models`, `freeze-set`, `verify-set` | Verify released weights and reproduce the exact evaluation inputs |
 | `split-groups`, `verify-split` | Divide manifests into fit, calibrate and test sets that keep parents, scenes, sources and generator families together, and fail if any cross ([runbook](docs/runbooks/frozen-eval.md)) |
 | `data` | Download and prepare a dataset plan |
-| `train` | Fine-tune on image and video manifests |
+| `train` | Fine-tune on image and video manifests. Optional processing chains (`--p-chain`, `--chain-*`, `--messenger-*`), applied to real and generated items alike and off by default ([runbook](docs/runbooks/processing-chains.md)) |
+| `augment-bench`, `hash-split` | Time the training loader's decoding and augmentation on the CPU; write the two sides of the path-hash validation split as manifests |
 | `finalize`, `finalize-video`, `calibrate` | Freeze a checkpoint and fit its operating points |
 | `evaluate` | Score a whole suite with Tintype and the reference detectors, print tables |
 | `score`, `score-video` | Score one manifest (`--reference commfor|swinv2|waverep` runs a reference detector) |

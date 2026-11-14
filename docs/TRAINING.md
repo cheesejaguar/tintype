@@ -50,6 +50,20 @@ tintype calibrate --weights runs/photo/last.safetensors \
   --scores runs/photo-calibration.tsv --profile photo --target-fpr 0.01
 ```
 
+Training views pass through the augmentation of the released recipe:
+JPEG before and after the crop, a messenger-style round trip, random
+resampling kernels and scale. `--p-chain` adds processing chains on top:
+a few operations out of resizing, JPEG, blur, noise, sharpening and a
+simulated repost (`--chain-kinds` lists more), in random order, with
+`--chain-ops`, `--chain-severity` and a step curriculum
+(`--chain-schedule`); `--messenger-cap`, `--messenger-quality` and
+`--messenger-cycles` widen and repeat the messenger trip. Every operation
+is applied without regard to the label. All of it is off by default, and
+then the views are exactly those of the released recipe. `tintype
+augment-bench` times the loader for a setting on the CPU before a run.
+[The processing-chains runbook](runbooks/processing-chains.md) has the
+flags, the paired audit suites and the offline route for learned codecs.
+
 The training command exports a checkpoint and sidecar. Keep an independent
 test set away from training and threshold selection. The repository's
 `finalize` commands are recipes for the bundled training mix and use its
