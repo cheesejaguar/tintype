@@ -381,7 +381,9 @@ fn replay_pool_refits_each_pool_on_the_fit_file_and_reports_on_the_test_file() {
         p
     };
     let (fit, test) = (write("fit", 1, 3000), write("test", 77, 2000));
-    let test_arg = format!("held-out={}", dir.join("test.*.tsv").display());
+    // A test set may name several files, and a `*` in a file name matches.
+    std::fs::write(dir.join("empty.tsv"), "").unwrap();
+    let test_arg = format!("held-out={},{}", dir.join("test.*.tsv").display(), dir.join("empty.tsv").display());
     let spec = common::repo().join("models/tintype.json");
     let o = tintype(&["replay-pool", "--fit", fit.to_str().unwrap(), "--test", &test_arg, "--spec", spec.to_str().unwrap(), "--pool", "mean,median,top2,max,fitted", "--order", "shipped", "--order", "greedy", "--slice-by", "dataset", "--write-scores", dir.join("scores").to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));

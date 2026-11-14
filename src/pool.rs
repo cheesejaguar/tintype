@@ -644,7 +644,7 @@ fn pct(x: f64) -> String {
 pub struct Args {
     /// All-views score files the thresholds, margins and weights are fitted on.
     pub fit: Vec<String>,
-    /// `name=file`: all-views score files to report on (several per name are pooled).
+    /// `name=file[,file...]`: all-views score files to report on (several per name are pooled).
     pub test: Vec<String>,
     /// The spec the files were scored with: its threshold and early exit are
     /// "the shipped pool" every candidate is compared with. Only read.
@@ -691,8 +691,8 @@ pub fn run(args: Args, out: &mut impl Write) -> Result<()> {
     let mut fit = read_items(&fit_files, total)?;
     let mut tests: Vec<(String, Vec<Item>)> = Vec::new();
     for t in &args.test {
-        let (name, pattern) = t.split_once('=').ok_or_else(|| anyhow::anyhow!("use --test name=scores.tsv"))?;
-        let items = read_items(&expand(pattern)?, total)?;
+        let (name, patterns) = t.split_once('=').ok_or_else(|| anyhow::anyhow!("use --test name=scores.tsv"))?;
+        let items = read_items(&files_of(&patterns.split(',').map(String::from).collect::<Vec<_>>())?, total)?;
         match tests.iter_mut().find(|(n, _)| n == name) {
             Some((_, v)) => v.extend(items),
             None => tests.push((name.to_string(), items)),

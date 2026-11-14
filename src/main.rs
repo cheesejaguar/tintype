@@ -554,7 +554,7 @@ enum Cmd {
         /// All-views score files to fit thresholds, margins and weights on (`*` in a file name matches).
         #[arg(long, required = true)]
         fit: Vec<String>,
-        /// `name=scores.tsv`: all-views score files to report on, kept apart from `--fit` (repeatable; `*` matches).
+        /// `name=scores.tsv[,more.tsv]`: all-views score files to report on, kept apart from `--fit` (repeatable; `*` matches).
         #[arg(long)]
         test: Vec<String>,
         /// The spec the files were scored with (e.g. models/tintype.json): its threshold and early exit are the shipped pool the others are compared with. Only read.
