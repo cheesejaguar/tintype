@@ -479,6 +479,29 @@ refitted on `calibrate` for 1% and for 0.1%, beside the same thresholds
 with the shipped margins (the incumbent's recalibrated specs, replayed)
 and with all six views.
 
+**Added on 2026-11-14 after the `calibrate` stage of Part A, before the
+look at `test`.** Nothing above changed. Eligible by the rule: the
+phase-3 anchor at `alpha` 0.10, 0.20 and 0.30. Not eligible: the phase-3
+anchor at 0.50 (GAN recall below `alpha` 0's at both cutoffs) and every
+Community Forensics candidate (degraded recall on `calibrate` more than
+0.5 points below `alpha` 0's: −0.63 points at the 1% cutoff for `alpha`
+0.10, more for the others). **Chosen: the phase-3 anchor at `alpha`
+0.30**, the eligible candidate with the highest GAN recall at the 1%
+cutoff (95.67% against 95.45% for `alpha` 0; 88.00% against 87.38% at
+the 0.1% cutoff). It goes to `test` once.
+
+Stated now, before that look, because it bears on how a pass would read:
+condition (a) compares GAN recall at each candidate's own cutoff frozen
+on `calibrate`, and that cutoff does not hold the false-positive rate on
+the GAN sets' own authentic images fixed. The chosen candidate flags 81
+of their 3,858 authentic images at its 1% cutoff where `alpha` 0 flags
+74, and at empirical cutoffs on the GAN sets its recall is *lower* than
+`alpha` 0's (89.03% against 91.15% at 1%, 60.62% against 65.25% at
+0.1%). The Community Forensics candidates are the ones whose GAN recall
+rises at a matched rate (93.40% to 97.30% at 1%), and they are excluded
+by condition (b). The rule is applied as written; the write-up reports
+both readings.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames
