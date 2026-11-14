@@ -396,7 +396,7 @@ would make it a second first corpus.
 ### 6. Blur controls
 
 ```sh
-grep -P '\t0\t' data/splits/ws7-matched/test.tsv > runs/ws7/test-authentic.tsv
+awk -F'\t' '$2 == 0' data/splits/ws7-matched/test.tsv > runs/ws7/test-authentic.tsv
 tintype dump-video-features --weights runs/ws7/video.safetensors \
   --manifest runs/ws7/test-authentic.tsv --out $F/matched-test-blur3 --temporal-blur 3
 tintype eval-temporal-head --features $F/matched-test-blur3 --calibrate $F/matched-calibrate \

@@ -37,6 +37,8 @@ impl Embedder {
     pub fn new(w: &Weights, spec: &ModelSpec, batch: usize, device: Device, blocks: &[usize]) -> Result<Self> {
         let cfg = VitConfig::by_name(&spec.arch, spec.img).ok_or_else(|| anyhow::anyhow!("token embeddings need a ViT, not `{}`", spec.arch))?;
         anyhow::ensure!(blocks.iter().all(|&k| k <= cfg.depth), "block {:?} asked for, but the network has {} blocks", blocks.iter().max(), cfg.depth);
+        // Callers index tokens as the class token followed by the patches.
+        anyhow::ensure!(cfg.reg_tokens == 0, "token embeddings are not available for networks with register tokens");
         let batch = batch.max(1);
         let engine = match device {
             #[cfg(target_os = "macos")]
