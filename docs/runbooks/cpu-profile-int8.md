@@ -355,6 +355,24 @@ computes the same `y` from the rounded values in single precision, so it
 agrees with an integer kernel up to the rounding of the sums; step 4
 checks that on a real integer product.
 
+### The engines that were not to change
+
+The final binary of this branch against the base binary (`624fa39`), with no
+new flags, compared byte for byte with `scripts/view-reuse-parity.py` as in
+[the view-reuse runbook](view-reuse.md#how-parity-is-checked):
+
+| Engine | Scheme | Files | Profiles | Rows | Differing |
+|---|---|---|---|---:|---:|
+| `cpu` (Accelerate) | one process per file | 308 photos | default, `--all-views`, `--fast`, `--strict`, `--sensitive` | 1,540 | 0 |
+| `cpu` (Accelerate) | one process per file | 20 clips | default, `--all-views` | 40 | 0 |
+| `cpu` (pure-Rust kernels, both binaries built with `--features portable-cpu`) | one process per file | 308 photos | default, `--all-views` | 616 | 0 |
+| `cpu` (pure-Rust kernels) | all files in one process | 308 photos | default, `--all-views` | 616 | 0 (base against itself: 0) |
+| `gpu`, `gpu-f32` | all files in one process | 308 photos | default, `--all-views` | 1,232 | 0 (base against itself: 0) |
+| `cpu`, `gpu-f32`, default device | the demo image and the fixture clip with `detect --json`, and `demo --json` | | default (and `--all-views`, `--fast` on `cpu`) | 8 commands | 0 |
+
+`tintype verify-models` reports the four released files unchanged, and
+`scripts/replay-research.py` prints what it printed before.
+
 ## Step 3: agreement with FP32
 
 ### How it was measured
