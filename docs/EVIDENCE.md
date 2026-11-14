@@ -270,6 +270,8 @@ python3 scripts/report-davodi-video.py davodi-clips/inputs.tsv davodi-clips/tint
   --frame-rows davodi-clips/frame-scores.tsv.gz
 ```
 
+Adding `--grouped` also writes manifests with the grouping columns (`parent_id`, `scene_id`, `source_id`, `generator_family`, `transform`) that pair each normalized clip with its source file. The [video audit runbook](runbooks/video-audit.md) uses them to add held-out authentic collections, re-encode and repost variants, and watermark controls to this cohort.
+
 ### Comparisons still open
 
 - B-Free's authors report strong results with same-format controls and post-processing. Pangram Image 1.0 is a commercial comparison for the newest image generators. Establishing a broader image rank requires scores on identical inputs and at matched operating points. [B-Free](https://arxiv.org/abs/2412.17671) · [Pangram Image 1.0](https://www.pangram.com/blog/introducing-pangram-image-1-0).
