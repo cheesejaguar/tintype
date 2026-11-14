@@ -475,7 +475,7 @@ fn load_manifests(ms: &[PathBuf]) -> Result<Vec<ingest::Item>> {
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Detect { paths, options, second_opinion, photo_second_opinion } => {
-            scan::detect(paths, options, second_opinion, photo_second_opinion)
+            scan::detect(paths, options, photo_second_opinion, second_opinion)
         }
         Cmd::Batch { paths, options } => scan::batch(paths, options),
         Cmd::Demo(options) => scan::demo(options),

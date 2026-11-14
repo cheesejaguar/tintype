@@ -208,3 +208,33 @@ fn an_empty_model_dir_variable_counts_as_unset() {
     assert!(o.status.success(), "status {:?}, stderr: {}", o.status, String::from_utf8_lossy(&o.stderr));
     assert_eq!(json_lines(&o).len(), 1);
 }
+
+#[test]
+fn detect_gives_the_photo_second_opinion_weights_to_the_photo_stage() {
+    let dir = common::scratch("cli-detect-second");
+    let photo = dir.join("photo.png");
+    common::write_fixture(&photo);
+    // A copy of the released model whose band takes in every photo: the shipped files are never edited.
+    let weights = dir.join("copy.safetensors");
+    std::fs::copy(common::photo_weights(), &weights).unwrap();
+    std::fs::copy(common::photo_weights().with_extension("json"), weights.with_extension("json")).unwrap();
+    let o = tintype(&["set-photo-second-opinion", "--weights", weights.to_str().unwrap(), "--band", "-1000,1000,0.5,0"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let missing = dir.join("no-such-weights.safetensors");
+    let base = ["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap(), photo.to_str().unwrap()];
+    // The photo is inside the band, so the second network is needed and its missing weights are an error.
+    let mut args = base.to_vec();
+    args.extend_from_slice(&["--photo-second-opinion", missing.to_str().unwrap()]);
+    let o = tintype(&args);
+    assert!(!o.status.success(), "a photo inside the band must reach the second stage: {}", stdout(&o));
+    // The video second opinion has nothing to do with a photo (and exists on macOS only).
+    #[cfg(target_os = "macos")]
+    {
+        let mut args = base.to_vec();
+        args.extend_from_slice(&["--second-opinion", missing.to_str().unwrap()]);
+        let o = tintype(&args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(json_lines(&o)[0]["second_opinion"], false);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
