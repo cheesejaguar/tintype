@@ -14,6 +14,11 @@ Two reports from the archived detector scores and the organizers' files:
   and AUROC. This needs only the two label files (their SHA-256 is checked
   against the pins in docs/EVIDENCE.md) and the standard library.
 
+To run the second report for another checkpoint, `--extract SPLIT=DIR`
+unpacks a split's ZIP into `DIR/media` with a `DIR/manifest.tsv` for
+`tintype score`, and `--scores SPLIT=FILE` reads that score file in place
+of the archive (SPLIT is `hard-validation` or `public-test`).
+
 NTIRE applied one to five operations to each distorted image, so a row
 describes the images whose chain *contains* the operation, not the
 operation alone; the "without" column is the same count over the other
@@ -40,14 +45,41 @@ SPLITS = {
 SHIPPED = 0.5
 
 
-def join_labels(split, organizer, results):
-    """Archived scores joined to the organizer labels, without opening any image."""
+def pinned_labels(split, organizer):
     _, labels_name, pin = SPLITS[split]
     labels = organizer / labels_name
     if hashlib.sha256(labels.read_bytes()).hexdigest() != pin:
         raise ValueError(f"Unexpected hash for NTIRE {split} labels: {labels}")
-    with gzip.open(results / f"ntire-2026-{split}" / "scores.tsv.gz", "rt") as stream:
-        scores = {r["path"]: r for r in csv.DictReader(stream, delimiter="\t")}
+    return labels
+
+
+def extract(split, organizer, target):
+    """Unpack a split for `tintype score`: `target/media/<name>` and `target/manifest.tsv`."""
+    archive_name = SPLITS[split][0]
+    media = target / "media"
+    media.mkdir(parents=True)
+    lines = []
+    with pinned_labels(split, organizer).open(newline="") as stream, ZipFile(organizer / f"{archive_name}.zip") as archive:
+        for row in csv.DictReader(stream):
+            name = row["image_name"]
+            if Path(name).name != name:
+                raise ValueError(f"Unexpected image name {name!r}")
+            (media / name).write_bytes(archive.read(f"{archive_name}/{name}"))
+            lines.append(f"media/{name}\t{row['label']}\tunknown\tntire-{'distorted' if row['is_distorted'] == '1' else 'clean'}\n")
+    (target / "manifest.tsv").write_text("".join(lines), encoding="utf-8")
+    print(f"wrote {len(lines)} images and {target / 'manifest.tsv'}")
+
+
+def join_labels(split, organizer, results, score_file=None):
+    """Scores joined to the organizer labels, without opening any image:
+    the archived ones, or a `tintype score` file of the extracted split."""
+    labels = pinned_labels(split, organizer)
+    if score_file:
+        with score_file.open(newline="") as stream:
+            scores = {Path(r[0]).name: {"label": r[1], "dataset": r[3], "tintype": r[4]} for r in csv.reader(stream, delimiter="\t") if len(r) > 4}
+    else:
+        with gzip.open(results / f"ntire-2026-{split}" / "scores.tsv.gz", "rt") as stream:
+            scores = {r["path"]: r for r in csv.DictReader(stream, delimiter="\t")}
     rows = []
     with labels.open(newline="") as stream:
         for label_row in csv.DictReader(stream):
@@ -196,12 +228,33 @@ def main():
     parser.add_argument("--results", type=Path, default=Path("docs/results"))
     parser.add_argument("--operations", action="store_true",
                         help="print the per-operation and per-severity tables instead (label files only; no ZIP archives, no Pillow)")
+    parser.add_argument("--scores", action="append", default=[], metavar="SPLIT=FILE",
+                        help="with --operations: a `tintype score` file of that split, instead of the archived scores; only the splits given are reported")
+    parser.add_argument("--extract", action="append", default=[], metavar="SPLIT=DIR",
+                        help="unpack that split's ZIP into DIR/media and write DIR/manifest.tsv, then stop")
     args = parser.parse_args()
+
+    def pairs(values, flag):
+        out = {}
+        for value in values:
+            split, _, path = value.partition("=")
+            if split not in SPLITS or not path:
+                parser.error(f"{flag} takes SPLIT=PATH with SPLIT one of {', '.join(SPLITS)}")
+            out[split] = Path(path)
+        return out
+
+    if args.extract:
+        for split, target in pairs(args.extract, "--extract").items():
+            extract(split, args.organizer, target)
+        return
+    own = pairs(args.scores, "--scores")
+    if own and not args.operations:
+        parser.error("--scores needs --operations")
     if args.operations:
-        print("NTIRE 2026 per-operation diagnostics from archived Tintype scores. Diagnostic only: both splits were used in development.")
+        print(f"NTIRE 2026 per-operation diagnostics from {'the given' if own else 'archived'} Tintype scores. Diagnostic only: both splits were used in development.")
         print("A row covers the distorted images whose chain contains the operation; chains hold one to five operations.")
-        for split in SPLITS:
-            operation_tables(split, join_labels(split, args.organizer, args.results))
+        for split in (own or SPLITS):
+            operation_tables(split, join_labels(split, args.organizer, args.results, own.get(split)))
         return
     hard_rows = join("hard-validation", args.organizer, args.results)
     public_rows = join("public-test", args.organizer, args.results)
