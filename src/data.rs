@@ -55,9 +55,10 @@ pub struct AugConfig {
     pub chain_post: f32,
     /// A chain on a source image with more pixels than this first cuts a
     /// random window of this many pixels (same aspect ratio) and continues
-    /// on it. That bounds the cost without resampling, and without sparing
-    /// large images, which are mostly camera photos: sparing them would tie
-    /// "was processed" to the label.
+    /// on it, and cuts again after a step that enlarged it. That bounds the
+    /// cost without resampling and without skipping large images: skipping
+    /// them would make how often an item is processed depend on its size,
+    /// and size differs between sources and so between the classes.
     pub chain_max_pixels: u64,
     /// Curriculum: from each stage's step on, its probability, largest chain
     /// length and severity replace `p_chain`, `chain_ops` and
@@ -306,6 +307,22 @@ fn apply_chain_op(img: Rgb, op: ChainOp, cfg: &AugConfig, s: f32, keep_size: boo
     }
 }
 
+/// An image of at most `max_pixels` pixels to run chain operations on: the
+/// image itself when it is small enough (nothing is drawn then), else a
+/// random window of it with the same aspect ratio. Cropping, unlike
+/// shrinking, leaves the pixels as they were.
+fn chain_window(img: Rgb, max_pixels: u64, rng: &mut Rng) -> Rgb {
+    let (pixels, max_pixels) = (img.w as u64 * img.h as u64, max_pixels.max(1));
+    if pixels <= max_pixels {
+        return img;
+    }
+    let k = (max_pixels as f64 / pixels as f64).sqrt();
+    let (w, h) = (((img.w as f64 * k) as u32).max(1), ((img.h as f64 * k) as u32).max(1));
+    let x = rng.below((img.w - w + 1) as usize) as i64;
+    let y = rng.below((img.h - h + 1) as usize) as i64;
+    img.crop(x, y, w, h)
+}
+
 /// Draw the operations of one chain, in the order they will run.
 fn draw_chain(cfg: &AugConfig, rng: &mut Rng) -> Vec<ChainOp> {
     let (lo, hi) = (cfg.chain_ops.0.max(1), cfg.chain_ops.1.max(cfg.chain_ops.0).max(1));
@@ -333,16 +350,12 @@ pub fn augment(mut img: Rgb, cfg: &AugConfig, rng: &mut Rng) -> Rgb {
     // the finished view (after the crop) or on the source image (now).
     let chain = if cfg.p_chain > 0.0 && !cfg.chain_kinds.is_empty() && rng.chance(cfg.p_chain) { Some((draw_chain(cfg, rng), rng.chance(cfg.chain_post))) } else { None };
     if let Some((ops, false)) = &chain {
-        let pixels = img.w as u64 * img.h as u64;
-        if pixels > cfg.chain_max_pixels.max(1) {
-            let k = (cfg.chain_max_pixels.max(1) as f64 / pixels as f64).sqrt();
-            let (w, h) = (((img.w as f64 * k) as u32).max(1), ((img.h as f64 * k) as u32).max(1));
-            let x = rng.below((img.w - w + 1) as usize) as i64;
-            let y = rng.below((img.h - h + 1) as usize) as i64;
-            img = img.crop(x, y, w, h);
-        }
+        // The window is cut again after every step: an enlargement would
+        // otherwise let a chain of them grow the image without limit.
+        img = chain_window(img, cfg.chain_max_pixels, rng);
         for &op in ops {
             img = apply_chain_op(img, op, cfg, cfg.chain_severity, false, rng);
+            img = chain_window(img, cfg.chain_max_pixels, rng);
         }
     }
     if rng.chance(cfg.p_messenger) {
@@ -770,6 +783,29 @@ mod tests {
         let big = textured(1024, 768, 9);
         for seed in 0..8 {
             let o = augment(big.clone(), &cfg, &mut Rng::new(seed));
+            assert_eq!((o.w, o.h), (224, 224));
+        }
+    }
+
+    #[test]
+    fn the_chain_window_bounds_the_working_size_without_resampling() {
+        let img = textured(400, 300, 2);
+        // Small enough: returned as it is, and nothing is drawn.
+        let mut rng = Rng::new(1);
+        let same = chain_window(img.clone(), 120_000, &mut rng);
+        assert!(same.data == img.data);
+        assert_eq!(rng.u64(), Rng::new(1).u64());
+        // Too large: a window of the same shape, made of the image's own pixels.
+        for seed in 0..8 {
+            let win = chain_window(img.clone(), 30_000, &mut Rng::new(seed));
+            assert!(win.w as u64 * win.h as u64 <= 30_000 && win.w * 3 == win.h * 4, "{}x{}", win.w, win.h);
+            let found = (0..=300 - win.h).any(|y| (0..=400 - win.w).any(|x| img.crop(x as i64, y as i64, win.w, win.h).data == win.data));
+            assert!(found, "seed {seed}: the window is not a crop of the image");
+        }
+        // Five enlargements in a row stay bounded: the view still comes out, quickly.
+        let cfg = AugConfig { p_chain: 1.0, chain_ops: (5, 5), chain_severity: 1.0, chain_kinds: vec![ChainOp::Resize], chain_post: 0.0, chain_max_pixels: 224 * 224, p_messenger: 0.0, ..Default::default() };
+        for seed in 0..16 {
+            let o = augment(img.clone(), &cfg, &mut Rng::new(seed));
             assert_eq!((o.w, o.h), (224, 224));
         }
     }
