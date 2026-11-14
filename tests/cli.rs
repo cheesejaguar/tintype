@@ -501,6 +501,87 @@ fn report_accounts_for_review_and_transfer_only_when_asked() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An all-views score file of `n` items: reals around -4, AI around +6, a
+/// seventh of them hard, six logits each from integer arithmetic.
+fn write_view_scores(path: &Path, n: usize, salt: u32) {
+    let mut text = String::new();
+    for i in 0..n {
+        let label = i % 2;
+        let hard = i % 7 == 0;
+        let noise = |k: u32, scale: f64| {
+            let mut h = (i as u32).wrapping_mul(0x9E37_79B1) ^ k.wrapping_mul(0x85EB_CA77) ^ salt.wrapping_mul(0xC2B2_AE35);
+            h ^= h >> 15;
+            h = h.wrapping_mul(0x2C1B_3C6D);
+            h ^= h >> 12;
+            ((h % 2001) as f64 / 1000.0 - 1.0) * scale
+        };
+        let centre = if hard { 1.5 + noise(100, 2.5) } else if label == 1 { 6.0 + noise(100, 3.0) } else { -4.0 + noise(100, 3.0) };
+        let views: Vec<String> = (0..6).map(|k| format!("{:.5}", centre + noise(k, if hard { 4.0 } else { 2.0 }))).collect();
+        let (generator, dataset) = if label == 0 { (if i % 4 == 0 { "real:cam" } else { "real:phone" }, "demo") } else { ("gen-a", "demo") };
+        text.push_str(&format!("{salt}-{i}.jpg\t{label}\t{generator}\t{dataset}\t0.5\t{}\n", views.join("\t")));
+    }
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn refit_exit_checks_fits_and_never_writes_under_models() {
+    let dir = common::scratch("cli-refit");
+    // The tool reads the spec beside --weights and score files; it needs no weights and scores nothing.
+    let spec_text = std::fs::read_to_string(common::repo().join("models/tintype.json")).unwrap();
+    std::fs::write(dir.join("candidate.json"), &spec_text).unwrap();
+    let weights = dir.join("candidate.safetensors");
+    let (fit, report, decided) = (dir.join("fit.tsv"), dir.join("report.tsv"), dir.join("decided.tsv"));
+    write_view_scores(&fit, 3000, 1);
+    write_view_scores(&report, 2000, 2);
+    let w = weights.to_str().unwrap();
+
+    // Check only: the stored schedule against scoring every view, per profile, per source.
+    let o = tintype(&["refit-exit", "--weights", w, "--profile", "photo,strict", "--report", report.to_str().unwrap(), "--target-fpr", "0.015,0.005", "--apply-out", decided.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    for want in ["stored schedule, order [2, 0, 1, 3, 4, 5], margins after N views (raw logits) 1: 6, 2: 3, 3: 2, 4: 1.5, 5: 1", "## photo, threshold 1.692 (raw logit), stored schedule", "## strict, threshold 3.39", "2000 items (1000 AI, 1000 real);", "verdicts that differ from every view:", "| every view |", "| early exit |", "| real:cam | 500 |", "| real:phone | 500 |", "Mean over real sources with at least 100 items:", "the calibration target is 1.50%", "the calibration target is 0.50%", "photo second-opinion band (-7, 0.5) in calibrated logits", "2000 items as photo decides them under the stored schedule"] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // The applied file is a score file `report` reads: one row per item, the logits those looked at.
+    let rows = std::fs::read_to_string(&decided).unwrap();
+    assert_eq!(rows.lines().count(), 2000);
+    assert!(rows.lines().all(|l| (6..=11).contains(&l.split('\t').count())) && rows.lines().any(|l| l.split('\t').count() == 6));
+    // Nothing was written without --write.
+    assert_eq!(std::fs::read_to_string(dir.join("candidate.json")).unwrap(), spec_text);
+
+    // Fit on one file, report on the other, and store the result in the copy.
+    let o = tintype(&["refit-exit", "--weights", w, "--fit", fit.to_str().unwrap(), "--report", report.to_str().unwrap(), "--write"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    for want in ["fitted on 3000 items, pooled precision and recall within 0.001 of every view at photo: margins after N views 1: ", "## photo, threshold 1.692 (raw logit), fitted schedule", "wrote the fitted schedule to "] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    assert!(!out.contains("NOTE: a file is both fitted on and reported on"), "{out}");
+    let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("candidate.json")).unwrap()).unwrap();
+    let before: serde_json::Value = serde_json::from_str(&spec_text).unwrap();
+    assert_eq!(written["early_exit"]["order"], before["early_exit"]["order"]);
+    assert_ne!(written["early_exit"]["stages"], before["early_exit"]["stages"]);
+    // Only the schedule changed.
+    let mut same = written.clone();
+    same["early_exit"] = before["early_exit"].clone();
+    assert_eq!(same, before);
+    // Fitting and reporting on the same file says so.
+    let o = tintype(&["refit-exit", "--weights", w, "--fit", fit.to_str().unwrap(), "--report", fit.to_str().unwrap()]);
+    assert!(stdout(&o).contains("NOTE: a file is both fitted on and reported on"), "{}", stdout(&o));
+
+    // The released spec is refused before anything is read, and stays what it was.
+    let o = tintype(&["refit-exit", "--weights", "models/tintype.safetensors", "--fit", fit.to_str().unwrap(), "--report", report.to_str().unwrap(), "--write"]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("refusing to write") && o.stdout.is_empty(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(std::fs::read_to_string(common::repo().join("models/tintype.json")).unwrap(), spec_text);
+    let (lines, ok) = tintype::integrity::check_models(&common::repo());
+    assert!(ok, "{}", lines.join("\n"));
+    // A file scored with early exit does not hold every view.
+    let o = tintype(&["refit-exit", "--weights", w, "--report", decided.to_str().unwrap(), "--profile", "video"]);
+    assert!(!o.status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `calibrate` is one of the commands that only build on macOS. It reads
 /// score files and the spec beside `--weights`, and runs no network.
 #[cfg(target_os = "macos")]

@@ -14,6 +14,7 @@ pub mod training_init;
 pub mod report;
 pub mod review;
 pub mod calibration;
+pub mod exit_fit;
 pub mod video;
 pub mod cpu_vit;
 pub mod fetch;
