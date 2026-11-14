@@ -280,8 +280,11 @@ def cmd_features(args):
     written = skipped = errors = 0
     with out.open("w", encoding="utf-8", newline="") as stream, ThreadPoolExecutor(max_workers=args.threads) as pool:
         stream.write("\t".join(COLUMNS) + "\n")
-        for manifest in args.manifest:
-            store = mg.manifest_name(manifest)
+        names = [mg.manifest_name(m) for m in args.manifest]
+        for manifest, store in zip(args.manifest, names):
+            if names.count(store) > 1:
+                # Two manifests with one short name (the same set in two batches): keep the directory above too.
+                store = "/".join(Path(manifest).parts[-3:-1]) if Path(manifest).name == "manifest.tsv" else str(manifest)
             rows = [r for r in mg.read_manifest(manifest)]
             images = [r for r in rows if Path(r.path).suffix.lower() not in VIDEO_EXTS]
             skipped += len(rows) - len(images)
