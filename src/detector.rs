@@ -623,14 +623,27 @@ impl VideoFrames {
     }
 }
 
+/// Bytes of frames (counted as RGB) the early-exit pipeline keeps, across all
+/// clips in flight, so that the frames of later stages can be converted and
+/// cut up when a stage asks for them. Past this a clip's views are all cut
+/// out by its worker and its frames dropped.
+const KEPT_IMAGE_BYTES: usize = 256 << 20;
+
 /// One item of the early-exit pipeline between stages. A unit is one view of
 /// one of the item's images.
 struct Staged {
-    /// For each unit, the first unit of the same image with the same pixels
-    /// (the unit itself when there is none, or when scores are not reused).
+    /// The item's images, each until nothing is left to cut out of it.
+    images: Vec<Option<crate::video::Frame>>,
+    /// What each image's views come to, once the image has been looked at.
+    plans: Vec<Option<Vec<Pixels>>>,
+    /// For each unit of an image that has been looked at, the first unit of
+    /// that image with the same pixels (the unit itself when there is none,
+    /// or when scores are not reused).
     same: Vec<usize>,
-    /// The units' views in the engine's form, until they are scored. Only
-    /// units that are their own `same` ever have one.
+    /// Units whose view has been cut out.
+    cut: Vec<bool>,
+    /// The units' views in the engine's form, from when they are cut out
+    /// until they are scored. Only units that are their own `same` have one.
     fed: Vec<Option<Vec<u8>>>,
     /// Logits of the units that went through the network.
     logit: Vec<Option<f32>>,
@@ -640,6 +653,153 @@ struct Staged {
     stage: usize,
     /// Units that stage still has to put through the network.
     todo: Vec<usize>,
+    /// Bytes of its images counted against [`KEPT_IMAGE_BYTES`].
+    kept: usize,
+}
+
+impl Staged {
+    fn new(images: Vec<crate::video::Frame>, units: usize) -> Self {
+        let n = images.len();
+        Self {
+            images: images.into_iter().map(Some).collect(),
+            plans: vec![None; n],
+            same: vec![usize::MAX; units],
+            cut: vec![false; units],
+            fed: vec![None; units],
+            logit: vec![None; units],
+            seen: Vec::with_capacity(units),
+            stage: 0,
+            todo: Vec::new(),
+            kept: 0,
+        }
+    }
+
+    fn kept_bytes(&self) -> usize {
+        self.images.iter().flatten().map(|f| f.rgb_bytes()).sum()
+    }
+}
+
+/// What every item of one early-exit run shares, and the steps an item goes
+/// through. Nothing is prepared before it is needed: an image is converted
+/// and its views resolved when a stage first looks at it, and a view is cut
+/// out when a stage is about to score it.
+struct Stages<'a> {
+    exit: &'a EarlyExit,
+    checkpoints: Vec<usize>,
+    /// Views per image and units per item.
+    nv: usize,
+    units: usize,
+    thr: f32,
+    reuse: bool,
+    pre: Preprocessor,
+    /// Bytes of one view in the engine's form.
+    vl: usize,
+}
+
+impl Stages<'_> {
+    /// Units an item at stage `k` looks at, in looking order.
+    fn looked(&self, k: usize) -> &[usize] {
+        &self.exit.order[if k == 0 { 0 } else { self.checkpoints[k - 1] }..self.checkpoints[k]]
+    }
+
+    /// Whether every network run of this many items holds one view.
+    fn single_view_runs(&self, n_items: usize) -> bool {
+        n_items == 1 && (0..self.checkpoints.len()).all(|k| self.looked(k).len() == 1)
+    }
+
+    /// Resolve image `f`'s views, converting it first if it is still as decoded.
+    fn resolve(&self, it: &mut Staged, f: usize) {
+        if it.plans[f].is_some() {
+            return;
+        }
+        let plan = self.pre.plan(it.images[f].as_mut().expect("an image is kept until it has been looked at").rgb());
+        let first = if self.reuse { image_io::first_uses(&plan) } else { (0..self.nv).collect() };
+        for (v, first) in first.into_iter().enumerate() {
+            it.same[f * self.nv + v] = f * self.nv + first;
+        }
+        it.plans[f] = Some(plan);
+    }
+
+    /// Cut unit `u`'s view out, into the engine's form.
+    fn cut(&self, it: &mut Staged, u: usize) {
+        if it.cut[u] {
+            return;
+        }
+        let f = u / self.nv;
+        let pixels = it.plans[f].as_ref().expect("resolved before cutting")[u % self.nv];
+        let crop = pixels.render(it.images[f].as_mut().expect("an image is kept while views are left to cut").rgb());
+        let mut o = vec![0u8; self.vl];
+        self.pre.encode(&crop, &mut o);
+        it.fed[u] = Some(o);
+        it.cut[u] = true;
+    }
+
+    /// Drop image `f` once every distinct view of it has been cut out.
+    fn release(&self, it: &mut Staged, f: usize) {
+        let units = f * self.nv..(f + 1) * self.nv;
+        if it.plans[f].is_some() && units.into_iter().all(|u| it.same[u] != u || it.cut[u]) {
+            it.images[f] = None;
+        }
+    }
+
+    /// Get stage `k` ready: resolve the images it looks at, work out which
+    /// of its views have to go through the network (not those whose pixels
+    /// were scored already, and each distinct view once) and cut those out.
+    fn prepare(&self, it: &mut Staged, k: usize) {
+        let looked = self.looked(k);
+        for &u in looked {
+            self.resolve(it, u / self.nv);
+        }
+        let mut todo: Vec<usize> = Vec::with_capacity(looked.len());
+        for &u in looked {
+            let first = it.same[u];
+            if it.logit[first].is_none() && !todo.contains(&first) {
+                todo.push(first);
+            }
+        }
+        for &u in &todo {
+            self.cut(it, u);
+        }
+        for &u in &todo {
+            self.release(it, u / self.nv);
+        }
+        it.todo = todo;
+    }
+
+    /// Cut out every view of every image now and drop the images: what the
+    /// pipeline did for every item before it kept images.
+    fn prepare_everything(&self, it: &mut Staged) {
+        for f in 0..it.images.len() {
+            self.resolve(it, f);
+            for u in f * self.nv..(f + 1) * self.nv {
+                if it.same[u] == u {
+                    self.cut(it, u);
+                }
+            }
+            self.release(it, f);
+        }
+    }
+
+    /// After the `scored` views the item's stage was waiting for have their
+    /// logits: note the stage's views in looking order, each with its own
+    /// score or that of the view it repeats, then go on through any stages
+    /// that need nothing new from the network. True when the item is done.
+    fn advance(&self, it: &mut Staged, mut scored: usize) -> bool {
+        loop {
+            let looked = self.looked(it.stage);
+            crate::stats::REUSED_VIEWS.add(looked.len() - scored);
+            scored = 0;
+            it.seen.extend(looked.iter().map(|&u| it.logit[it.same[u]].expect("scored in this stage or an earlier one")));
+            if it.seen.len() == self.units || self.exit.decided(&it.seen, self.thr) {
+                return true;
+            }
+            it.stage += 1;
+            self.prepare(it, it.stage);
+            if !it.todo.is_empty() {
+                return false;
+            }
+        }
+    }
 }
 
 pub struct Detector {
@@ -957,8 +1117,8 @@ impl Detector {
         };
         // Clips that do not yield the usual number of frames go the plain way.
         let odd = std::sync::Mutex::new(Vec::new());
-        let (res, mut t) = self.score_staged(paths.len(), threads, &by_view, first, |i| {
-            let frames = crate::video::sample_frames_range(&paths[i], sampling, 0, first).ok()?;
+        let (res, mut t) = self.score_staged_frames(paths.len(), threads, &by_view, first, |i| {
+            let frames = crate::video::sample_frames_range_unconverted(&paths[i], sampling, 0, first).ok()?;
             if frames.len() != first {
                 odd.lock().unwrap().push(i);
                 return None;
@@ -1003,11 +1163,10 @@ impl Detector {
 
     /// The early-exit pipeline. `load(i)` yields the `images` images of item
     /// `i` (a photo, or the frames of a clip) on worker threads, once; `exit`
-    /// is counted in views over all of them, image after image. The views
-    /// wait in memory while the item moves from stage to stage, and every
-    /// batch is filled with the next views of whichever items are waiting,
-    /// whatever stage they are at. Returns, per item, the logits of the views
-    /// looked at, in looking order.
+    /// is counted in views over all of them, image after image. Every batch
+    /// is filled with the next views of whichever items are waiting, whatever
+    /// stage they are at. Returns, per item, the logits of the views looked
+    /// at, in looking order.
     ///
     /// Views of one image that come to the same pixels are prepared and
     /// scored once where that is exact (see [`ViewReuse`]): the score then
@@ -1017,62 +1176,74 @@ impl Detector {
     where
         F: Fn(usize) -> Option<Vec<Rgb>> + Sync,
     {
+        self.score_staged_frames(n_items, threads, exit, images, |i| load(i).map(|imgs| imgs.into_iter().map(crate::video::Frame::Rgb).collect()))
+    }
+
+    /// [`Detector::score_staged`] for images that may still be video frames
+    /// as decoded. An item's worker prepares only what its first stage
+    /// scores; the images wait in memory with the item, and a later stage's
+    /// frames are converted and its views cut out when the item gets there.
+    /// What is kept is bounded: the frames of clips up to
+    /// [`KEPT_IMAGE_BYTES`] over all clips in flight, and one photo at a
+    /// time; an item past that has all its views cut out up front, as every
+    /// item used to, and so do all items when several go through the CPU
+    /// engine, where the workers would otherwise idle. Which views are
+    /// scored, and their pixels, do not depend on when they are prepared.
+    pub fn score_staged_frames<F>(&self, n_items: usize, threads: usize, exit: &EarlyExit, images: usize, load: F) -> (Vec<Option<Vec<f32>>>, Timing)
+    where
+        F: Fn(usize) -> Option<Vec<crate::video::Frame>> + Sync,
+    {
+        use rayon::prelude::*;
         use std::collections::{HashMap, VecDeque};
         let nv = self.spec.views.len();
-        let units = images * nv;
-        let thr = self.threshold_logit();
         let pre = self.preprocessor();
         let vl = pre.fed_len();
-        let checkpoints = exit.checkpoints(units);
-        // Views an item at stage k looks at next: order[from(k)..checkpoints[k]].
-        let from = |k: usize| if k == 0 { 0 } else { checkpoints[k - 1] };
-        let reuse = self.reuses(n_items == 1 && (0..checkpoints.len()).all(|k| checkpoints[k] - from(k) == 1));
-        // Of those, the ones to put through the network: not the ones whose
-        // pixels were scored already, and each distinct view once.
-        let todo = |it: &Staged, k: usize| {
-            let mut t: Vec<usize> = Vec::new();
-            for &u in &exit.order[from(k)..checkpoints[k]] {
-                let first = it.same[u];
-                if it.logit[first].is_none() && !t.contains(&first) {
-                    t.push(first);
-                }
-            }
-            t
-        };
+        let mut stages = Stages { exit, checkpoints: exit.checkpoints(images * nv), nv, units: images * nv, thr: self.threshold_logit(), reuse: false, pre, vl };
+        stages.reuse = self.reuses(stages.single_view_runs(n_items));
+        let stages = &stages;
         // About four batches' worth of photos, fewer of anything larger.
         let in_flight_cap = (4 * self.batch.max(16) / images.max(1)).max(8);
         let start = std::time::Instant::now();
         let mut model_s = 0f64;
         let mut results: Vec<Option<Vec<f32>>> = vec![None; n_items];
         let next = AtomicUsize::new(0);
+        // Bytes of images kept by items in flight.
+        let kept = AtomicUsize::new(0);
+        // Preparing later stages when they are reached pays where the
+        // workers set the pace (the GPU engine) or where there is one item
+        // and nothing else to do meanwhile. With several items on the CPU
+        // engine the network sets the pace and the workers have time to
+        // spare: there, preparing everything up front costs nothing, while
+        // preparing between network runs would hold the network up.
+        let keep = n_items == 1 || !matches!(self.engine, Engine::Cpu { .. });
         std::thread::scope(|s| {
             let (tx, rx) = crossbeam_channel::bounded::<(usize, Staged)>(threads.max(1) * 2);
             for _ in 0..threads.max(1) {
                 let tx = tx.clone();
-                let (next, load, pre) = (&next, &load, &pre);
+                let (next, load, kept) = (&next, &load, &kept);
                 s.spawn(move || loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     if i >= n_items {
                         break;
                     }
                     let Some(imgs) = load(i).filter(|imgs| imgs.len() == images) else { continue };
-                    let mut same = Vec::with_capacity(units);
-                    let mut fed: Vec<Option<Vec<u8>>> = Vec::with_capacity(units);
-                    for (f, im) in imgs.iter().enumerate() {
-                        let plan = pre.plan(im);
-                        let first = if reuse { image_io::first_uses(&plan) } else { (0..nv).collect() };
-                        for (v, p) in plan.iter().enumerate() {
-                            same.push(f * nv + first[v]);
-                            // In the engine's own form, so a batch is put together by copying.
-                            fed.push((first[v] == v).then(|| {
-                                let mut o = vec![0u8; vl];
-                                pre.encode(&p.render(im), &mut o);
-                                o
-                            }));
-                        }
+                    let mut it = Staged::new(imgs, stages.units);
+                    // Keep the images for the later stages while there is room
+                    // (one item always may); otherwise prepare everything now.
+                    // A photo's later views cost little to cut out next to
+                    // what the photo costs to keep, so there is room for one
+                    // photo at a time and no more: many photos in flight
+                    // would hold more memory than their views for no gain.
+                    let room = if images > 1 { KEPT_IMAGE_BYTES } else { 0 };
+                    let bytes = it.kept_bytes();
+                    let before = kept.fetch_add(bytes, Ordering::Relaxed);
+                    if !keep || (before != 0 && before + bytes > room) {
+                        stages.prepare_everything(&mut it);
                     }
-                    let item = Staged { same, fed, logit: vec![None; units], seen: Vec::with_capacity(units), stage: 0, todo: Vec::new() };
-                    if tx.send((i, item)).is_err() {
+                    stages.prepare(&mut it, 0);
+                    it.kept = it.kept_bytes();
+                    kept.fetch_sub(bytes - it.kept, Ordering::Relaxed);
+                    if tx.send((i, it)).is_err() {
                         break;
                     }
                 });
@@ -1080,7 +1251,7 @@ impl Detector {
             drop(tx);
             let mut items: HashMap<usize, Staged> = HashMap::new();
             // Items waiting for stage k.
-            let mut waiting: Vec<VecDeque<usize>> = vec![VecDeque::new(); checkpoints.len()];
+            let mut waiting: Vec<VecDeque<usize>> = vec![VecDeque::new(); stages.checkpoints.len()];
             // Views the waiting items have to put through the network.
             let mut pending = 0;
             let mut buf = vec![0u8; self.batch * vl];
@@ -1088,8 +1259,7 @@ impl Detector {
             loop {
                 if pending < self.batch && open && items.len() < in_flight_cap {
                     match rx.recv() {
-                        Ok((i, mut it)) => {
-                            it.todo = todo(&it, 0);
+                        Ok((i, it)) => {
                             pending += it.todo.len();
                             waiting[0].push_back(i);
                             items.insert(i, it);
@@ -1102,7 +1272,7 @@ impl Detector {
                     break;
                 }
                 // One batch, filled from every stage: later stages first, to
-                // finish items and free their views.
+                // finish items and free what they hold.
                 let mut plan: Vec<usize> = Vec::new();
                 let mut n = 0;
                 for k in (0..waiting.len()).rev() {
@@ -1131,36 +1301,38 @@ impl Detector {
                 let logits = self.logits_n(&buf, n, vl);
                 model_s += t.elapsed().as_secs_f64();
                 pending -= n;
+                // Hand each item its logits, then move the items on. Getting
+                // an item's next stage ready can mean converting frames and
+                // resizing, so several items do it side by side.
                 let mut at = 0;
-                for i in plan {
-                    let it = items.get_mut(&i).unwrap();
-                    let mut scored = it.todo.len();
-                    for u in std::mem::take(&mut it.todo) {
-                        it.logit[u] = Some(logits[at]);
-                        at += 1;
-                    }
-                    // The stage's views in looking order, each with its own
-                    // score or that of the view it repeats; then on through
-                    // any stages that need nothing new from the network.
-                    let done = loop {
-                        let looked = &exit.order[from(it.stage)..checkpoints[it.stage]];
-                        crate::stats::REUSED_VIEWS.add(looked.len() - scored);
-                        scored = 0;
-                        it.seen.extend(looked.iter().map(|&u| it.logit[it.same[u]].expect("scored in this stage or an earlier one")));
-                        if it.seen.len() == units || exit.decided(&it.seen, thr) {
-                            break true;
+                let mut moved: Vec<(usize, Staged, usize, bool)> = plan
+                    .into_iter()
+                    .map(|i| {
+                        let mut it = items.remove(&i).unwrap();
+                        let scored = it.todo.len();
+                        for u in std::mem::take(&mut it.todo) {
+                            it.logit[u] = Some(logits[at]);
+                            at += 1;
                         }
-                        it.stage += 1;
-                        it.todo = todo(it, it.stage);
-                        if !it.todo.is_empty() {
-                            break false;
-                        }
-                    };
+                        (i, it, scored, false)
+                    })
+                    .collect();
+                let step = |m: &mut (usize, Staged, usize, bool)| m.3 = stages.advance(&mut m.1, m.2);
+                if moved.len() > 1 {
+                    moved.par_iter_mut().for_each(step);
+                } else {
+                    moved.iter_mut().for_each(step);
+                }
+                for (i, mut it, _, done) in moved {
+                    let now = if done { 0 } else { it.kept_bytes() };
+                    kept.fetch_sub(it.kept - now, Ordering::Relaxed);
+                    it.kept = now;
                     if done {
-                        results[i] = items.remove(&i).map(|it| it.seen);
+                        results[i] = Some(it.seen);
                     } else {
                         pending += it.todo.len();
                         waiting[it.stage].push_back(i);
+                        items.insert(i, it);
                     }
                 }
             }

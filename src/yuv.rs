@@ -7,6 +7,7 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 /// One decoded frame: full-resolution luma and interleaved half-resolution CbCr.
+#[derive(Clone)]
 pub struct Yuv {
     pub w: usize,
     pub h: usize,
@@ -130,9 +131,16 @@ pub fn uniform(r: &mut impl Source, n: usize, max_seconds: f64, path: &Path) -> 
 /// before `from` are read without being converted. A clip that ends before
 /// frame `from` gives an empty list when `from > 0`.
 pub fn uniform_range(r: &mut impl Source, n: usize, max_seconds: f64, from: usize, to: usize, path: &Path) -> Result<Vec<Rgb>> {
+    uniform_range_with(r, n, max_seconds, from, to, path, Yuv::to_rgb)
+}
+
+/// As [`uniform_range`], with `keep` saying what to keep of each frame that
+/// is picked: its RGB picture, or the frame as decoded, to be converted only
+/// if it is looked at.
+pub fn uniform_range_with<T>(r: &mut impl Source, n: usize, max_seconds: f64, from: usize, to: usize, path: &Path, keep: impl Fn(&Yuv) -> T) -> Result<Vec<T>> {
     let to = to.min(n);
     let span = crate::video::span(r.duration(), max_seconds);
-    let mut out: Vec<Rgb> = Vec::with_capacity(to.saturating_sub(from));
+    let mut out: Vec<T> = Vec::with_capacity(to.saturating_sub(from));
     // Index of the next of the `n` targets.
     let mut k = 0;
     let mut prev: Option<(f64, Yuv)> = None;
@@ -152,7 +160,7 @@ pub fn uniform_range(r: &mut impl Source, n: usize, max_seconds: f64, from: usiz
             if k >= from {
                 // The target lies between the previous frame and this one.
                 let use_prev = prev.as_ref().is_some_and(|(pp, _)| target - pp < pts - target);
-                out.push(if use_prev { prev.as_ref().unwrap().1.to_rgb() } else { f.to_rgb() });
+                out.push(keep(if use_prev { &prev.as_ref().unwrap().1 } else { &f }));
             }
             k += 1;
         }
@@ -161,7 +169,7 @@ pub fn uniform_range(r: &mut impl Source, n: usize, max_seconds: f64, from: usiz
     // A clip too short to reach any target still yields its last frame.
     if let Some((_, last)) = &prev {
         if k == 0 && from == 0 {
-            out.push(last.to_rgb());
+            out.push(keep(last));
         }
     }
     if out.is_empty() && from == 0 {

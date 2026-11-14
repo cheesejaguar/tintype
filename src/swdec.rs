@@ -895,6 +895,12 @@ pub fn frames_uniform_range(path: &Path, n: usize, max_seconds: f64, from: usize
     yuv::uniform_range(&mut r, n, max_seconds, from, to, path).map_err(|_| r.why_empty(path))
 }
 
+/// As [`frames_uniform_range`], with the frames left as decoded.
+pub fn frames_uniform_range_unconverted(path: &Path, n: usize, max_seconds: f64, from: usize, to: usize) -> Result<Vec<yuv::Yuv>> {
+    let mut r = open(path, None)?;
+    yuv::uniform_range_with(&mut r, n, max_seconds, from, to, path, yuv::Yuv::clone).map_err(|_| r.why_empty(path))
+}
+
 pub fn frames_first(path: &Path, n: usize) -> Result<Vec<Rgb>> {
     let mut r = open(path, None)?;
     yuv::first(&mut r, n, true, path).map_err(|_| r.why_empty(path))

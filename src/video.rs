@@ -149,6 +149,54 @@ pub fn sample_frames_range(path: &Path, s: Sampling, from: usize, to: usize) -> 
     software()
 }
 
+/// A picture on its way to being scored: decoded already, or a video frame
+/// still as the decoder gave it. Converting a frame to RGB costs about as
+/// much as cutting all its views out, so a frame that early exit may never
+/// look at is kept unconverted until it is.
+pub enum Frame {
+    Rgb(Rgb),
+    Yuv(crate::yuv::Yuv),
+}
+
+impl Frame {
+    /// The picture, converted the first time it is asked for (the conversion
+    /// [`sample_frames`] applies).
+    pub fn rgb(&mut self) -> &Rgb {
+        if let Frame::Yuv(f) = self {
+            *self = Frame::Rgb(f.to_rgb());
+        }
+        match self {
+            Frame::Rgb(im) => im,
+            Frame::Yuv(_) => unreachable!("converted above"),
+        }
+    }
+
+    /// Bytes the picture takes as RGB.
+    pub fn rgb_bytes(&self) -> usize {
+        match self {
+            Frame::Rgb(im) => im.data.len(),
+            Frame::Yuv(f) => f.w * f.h * 3,
+        }
+    }
+}
+
+impl From<Rgb> for Frame {
+    fn from(im: Rgb) -> Self {
+        Frame::Rgb(im)
+    }
+}
+
+/// As [`sample_frames_range`], with the frames left unconverted (see [`Frame`]).
+pub fn sample_frames_range_unconverted(path: &Path, s: Sampling, from: usize, to: usize) -> Result<Vec<Frame>> {
+    let wrap = |frames: Vec<crate::yuv::Yuv>| frames.into_iter().map(Frame::Yuv).collect();
+    let software = || crate::swdec::frames_uniform_range_unconverted(path, s.frames, s.max_seconds, from, to).map(wrap);
+    #[cfg(target_os = "macos")]
+    if !pure_rust() {
+        return decode_with_fallback(|| crate::avf::frames_uniform_range_unconverted(path, s.frames, s.max_seconds, from, to).map(wrap), software);
+    }
+    software()
+}
+
 /// Combine per-frame logits into one clip logit. The mean is the
 /// log-likelihood-ratio average, the same rule the strongest frame-level
 /// video detectors use.

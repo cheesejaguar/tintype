@@ -275,6 +275,11 @@ pub fn frames_uniform_range(path: &Path, n: usize, max_seconds: f64, from: usize
     with_deadline(path, move |p| yuv::uniform_range(&mut open(p, None)?, n, max_seconds, from, to, p))
 }
 
+/// As [`frames_uniform_range`], with the frames left as decoded.
+pub fn frames_uniform_range_unconverted(path: &Path, n: usize, max_seconds: f64, from: usize, to: usize) -> Result<Vec<Yuv>> {
+    with_deadline(path, move |p| yuv::uniform_range_with(&mut open(p, None)?, n, max_seconds, from, to, p, Yuv::clone))
+}
+
 /// The first `n` frames in presentation order, with the colour conversion
 /// of OpenCV's reader (see [`Yuv::to_rgb_opencv`]).
 pub fn frames_first(path: &Path, n: usize) -> Result<Vec<Rgb>> {

@@ -347,6 +347,13 @@ depends in its last bits on how many views run together).
 prepared, scored and reused, on standard error
 ([measurements](docs/runbooks/view-reuse.md)).
 
+Early exit also prepares only what it gets to: a view is cut out, and a
+video frame converted to RGB, when a stage is about to score it, so a clip
+decided after two frames has two frames converted, not eight. This applies
+to a single file on any engine and to many files on the GPU engines; many
+files on the CPU engine are prepared up front as before, because there the
+network sets the pace and the decoding threads have time to spare.
+
 ## 📦 Build from source
 
 ```bash
