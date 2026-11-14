@@ -1,0 +1,17 @@
+### fit default
+scored 3759 images (0 unreadable) in 20.7s: 181.8 img/s end-to-end, 334.4 img/s model-only, 1.55 views per image
+### fit sensitive
+scored 3759 images (0 unreadable) in 20.8s: 180.3 img/s end-to-end, 290.0 img/s model-only, 1.77 views per image
+### fit strict
+scored 3759 images (0 unreadable) in 22.3s: 168.2 img/s end-to-end, 337.2 img/s model-only, 1.56 views per image
+### fit commfor
+scored 3759 images (0 unreadable) in 30.4s: 123.6 img/s end-to-end, 196.5 img/s model-only, 1.00 views per image
+### calibrate default
+scored 12457 images (0 unreadable) in 90.2s: 138.1 img/s end-to-end, 219.0 img/s model-only, 1.66 views per image
+### calibrate sensitive
+scored 12457 images (0 unreadable) in 91.3s: 136.4 img/s end-to-end, 195.2 img/s model-only, 1.90 views per image
+### calibrate strict
+scored 12457 images (0 unreadable) in 93.4s: 133.3 img/s end-to-end, 224.5 img/s model-only, 1.66 views per image
+### calibrate commfor
+scored 12457 images (0 unreadable) in 151.6s: 82.2 img/s end-to-end, 128.9 img/s model-only, 1.00 views per image
+### done

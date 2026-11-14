@@ -53,6 +53,13 @@ Sets (of 30) where precision and recall both reach Community Forensics at its ow
 | Tintype default + Community Forensics, fitted for |tintype logit| <= 2 | 4/30 | 15/30 | 15/30 | 15/30 | 15/30 |
 | Tintype default + Community Forensics, fitted full fusion | 4/30 | 18/30 | 18/30 | 20/30 | 21/30 |
 
+Stored policies against the bands computed from the separate scores (verdicts at the own cutoff):
+
+| Stored policy | Computed band | Verdicts that differ | Stored: probabilities that differ from the first stage | Computed: photos inside the band |
+|---|---:|---:|---:|---:|
+| Shipped CF blend (stored scores) | Shipped CF blend: band (-7, 0.5), weight 0.5, threshold 0 | 0/23052 | 11064 | 11068 |
+| Shipped CF blend (stored scores) | Narrowed CF blend: band (-3, 0.5), weight 0.5, threshold 0 | 207/23052 | 11064 | 2417 |
+
 Gates on Tintype default with Community Forensics behind them, both at their own cutoffs. Tintype default misses 1267 of 12305 generated photos (Community Forensics flags 598 of them) and flags 130 of 10747 authentic photos (Community Forensics clears 103).
 
 | Gate | Routed | Misses inside | Misses outside | Outside, flagged by Community Forensics | False alarms outside | Outside, cleared by Community Forensics |
