@@ -76,10 +76,11 @@ generated items alike.
 
 Order of draws with everything on: chain (if it runs on the source image),
 messenger trips or JPEG, resampling kernel, view geometry, chain (if it
-runs on the finished view), JPEG, flip. The codecs the `image` crate could
-add (lossy WebP, JPEG 2000) are not available as configured, and lossy
-AVIF would pull an encoder into the runtime: those and every learned codec
-stay offline (below).
+runs on the finished view), JPEG, flip. Other codecs are not in the
+augmentation: the build's `image` features are jpeg, png, webp, gif, bmp
+and tiff, which gives no JPEG 2000, no AVIF (a lossy AVIF encoder would add
+rav1e to the runtime) and a WebP encoder that is lossless only. Those and
+every learned codec stay offline (section 5).
 
 ## 0. Before anything runs
 
