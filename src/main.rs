@@ -364,6 +364,23 @@ enum Cmd {
         /// Probability of the messenger-style downscale + JPEG augmentation.
         #[arg(long, default_value_t = 0.25)]
         p_messenger: f32,
+        /// Train a shallower student: this many transformer blocks instead of twelve,
+        /// started from the first blocks of `--init` (or those `--init-blocks` names).
+        #[arg(long)]
+        blocks: Option<usize>,
+        /// Which blocks of `--init` the student starts from, e.g. `0,1,2,3,5,7,9,11`.
+        #[arg(long)]
+        init_blocks: Option<String>,
+        /// A frozen teacher (weights with their spec beside them): part of the
+        /// training target is its softened probability on the same batch.
+        #[arg(long)]
+        distill: Option<PathBuf>,
+        /// With --distill: share of the target that is the teacher's (0 to 1).
+        #[arg(long, default_value_t = 0.5)]
+        distill_weight: f64,
+        /// With --distill: the teacher's logit is divided by this before the sigmoid.
+        #[arg(long, default_value_t = 1.0)]
+        distill_temperature: f64,
     },
     /// Download and prepare a dataset plan (`tintype data list` shows them).
     Data {
@@ -758,7 +775,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         #[cfg(target_os = "macos")]
-        Cmd::Train { init, init_prefix, manifest, out, steps, batch, lr, warmup, val_pct, val_max, eval_every, threads, seed, p_native, layer_decay, weight_decay, smoothing, sampler_alpha, p_messenger } => {
+        Cmd::Train { init, init_prefix, manifest, out, steps, batch, lr, warmup, val_pct, val_max, eval_every, threads, seed, p_native, layer_decay, weight_decay, smoothing, sampler_alpha, p_messenger, blocks, init_blocks, distill, distill_weight, distill_temperature } => {
             tintype::train_cmd::run(tintype::train_cmd::TrainArgs {
                 init,
                 init_prefix,
@@ -776,6 +793,7 @@ fn main() -> Result<()> {
                 aug: tintype::data::AugConfig { p_native, p_messenger, ..Default::default() },
                 opt: tintype::trainer::OptConfig { layer_decay, weight_decay, smoothing, ..Default::default() },
                 sampler_alpha,
+                student: tintype::train_cmd::Student { blocks, init_blocks, teacher: distill, teacher_weight: distill_weight, teacher_temperature: distill_temperature },
             })
         }
         #[cfg(not(target_os = "macos"))]
