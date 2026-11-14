@@ -201,14 +201,19 @@ Fixed before any candidate is scored. Every table is printed by
 # A candidate lives under runs/, never under models/.
 W=runs/<experiment>/<name>.safetensors      # with <name>.json beside it
 
-# Scores (Apple GPU). --all-views writes every view logit, which the
-# offline tools need.
+# 1. Score the calibration set (Apple GPU). --all-views writes every view
+#    logit, which calibration and the offline tools need.
 tintype score --weights $W --manifest data/frozen-eval/calibrate.tsv --out runs/<experiment>/calibrate.tsv --all-views
-tintype score --weights $W --manifest data/frozen-eval/test.tsv      --out runs/<experiment>/test.tsv
 
-# Cutoffs come from the calibration set's authentic items only.
+# 2. Fit the cutoff from the calibration set's authentic items only. This
+#    rewrites the spec beside $W.
 tintype calibrate --weights $W --scores runs/<experiment>/calibrate.tsv --profile photo --target-fpr 0.01
 tintype verify-models                          # the released files are untouched
+
+# 3. Only now score the test set: the probabilities in a score file come
+#    from the spec as it stood when the file was written, so a test file
+#    scored before step 2 would not carry the frozen cutoff at 0.5.
+tintype score --weights $W --manifest data/frozen-eval/test.tsv --out runs/<experiment>/test.tsv
 
 # The tables. A frozen cutoff is the probability after `@`.
 tintype report --operating-points \
