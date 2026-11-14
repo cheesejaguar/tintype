@@ -40,23 +40,50 @@ families that appear in **no** training manifest
 | Generated, held-out families | AI | Whole generator families that no training store has, across diffusion, autoregressive and hybrid decoders, with prompts or scenes recorded | New-family recall |
 | Generated and authentic, degraded pairs | both | Every item above, also through the processing chains of [processing-chains.md](processing-chains.md) (resize, JPEG, blur, noise, sharpening, repost simulation), each derivative carrying its parent's `parent_id` | "Independent degraded files" is what selects the next model |
 
-**Candidate sources.** These are the collections the research notes name
-as held-out candidates. None has been downloaded. For each one, before
-downloading: read its licence at the source, record the licence and where
-it is stated in [DATA.md](../DATA.md) or [NOTICE.md](../../NOTICE.md),
-confirm the collection is absent from every training manifest, and pin the
-revision the way the data plans do. A candidate whose licence does not
-allow this use is dropped and replaced, and the replacement is written
-into the pre-registration.
+**Candidate sources.** None has been downloaded. The table records what
+a read of each collection's own pages found on 2026-11-13 (licence, access,
+size, and which source pools it draws on). It is a survey, not a licence
+review: before downloading a collection, read its licence at the source
+again, record the licence and where it is stated in
+[DATA.md](../DATA.md) or [NOTICE.md](../../NOTICE.md), confirm it is absent
+from every training manifest, and pin the revision the way the data plans
+do. A collection whose terms do not allow this use is dropped, and the
+replacement is written into the pre-registration.
 
-| Role | Candidates (research notes 03, 04, 08, 09) | Licence |
-|---|---|---|
-| Camera originals | RAISE beyond the 1k subset the `benchmarks` plan uses, Dresden, VISION, Forchheim | to verify before download |
-| Phone photos | LAION-Mobile, or a recent-phone set | to verify before download |
-| Shared and reposted | TrueFake (three platforms), RRDataset (WhatsApp, Instagram, multi-hop, recapture), WildRF | to verify before download |
-| Autoregressive and tokenizer families | ARForensics (seven open AR generators) | to verify before download |
-| Recent commercial generators | the GPT Image 2 / Nano Banana 2 set of note 09, GenImage++ | to verify before download |
-| Human-hard | Chameleon | to verify before download |
+| Role | Collection | Access and terms as read | Size | Fit for this split |
+|---|---|---|---|---|
+| Authentic, phone, native and as shared | [Forchheim Image Database](https://faui1-files.cs.fau.de/public/mmsec/datasets/fodb/) | Open directory. Free for research with citation; no modification, commercial use or redistribution without an agreement | 23,106 JPEGs, about 21 GB: 143 scenes by 27 phone cameras, each camera-native and through Facebook, Instagram, Telegram, Twitter and WhatsApp | **Proposed.** Real platform round trips with parents known. Ask the authors whether "may not be modified" covers applying our processing chains to copies. Exclude its `inspection/` folder |
+| Authentic, phone, native | [VISION](https://lesc.dinfo.unifi.it/VISION/) | Open directory. CC BY-SA 4.0 | Over 35,000 images and videos from 35 devices; image count and size not confirmed | **Proposed** |
+| Authentic, camera originals | [RAISE](http://loki.disi.unitn.it/RAISE/), all 8,156 | Form on download. Non-commercial research and education, with citation | About 350 GB as RAW and TIFF | Possible. The 1,000 images of RAISE-1k (`benchmarks` plan) must be excluded by id, and RAW needs one stated development and encoding step |
+| Authentic, camera originals | Dresden Image Database | Host unreachable on 2026-11-13 | not confirmed | Not usable until it can be read |
+| Authentic, phone | [LAION-Mobile](https://huggingface.co/datasets/laionmobile/laion-mobile) | Open, metadata only (CC BY 4.0); images are fetched from their own hosts | 935 k URLs | **Rejected**: drawn from LAION, which the OpenFake training reals also are |
+| Generated, autoregressive and tokenizer families | [ARForensics](https://huggingface.co/datasets/Yanran21/ARForensics), generated halves only | Open. MIT | 304 k images, 59 GB; test split has 6 k per generator for LlamaGen, VAR, Infinity, Janus-Pro, RAR, Switti, Open-MAGVIT2 | **Proposed.** Its real images are ImageNet and are discarded. Pin a commit: the test set was revised once |
+| Generated, recent open-weight diffusion | [GenImage++](https://huggingface.co/datasets/Lunahera/genimagepp) | Open. CC BY-NC 4.0 | About 139 k images, 207 GB: FLUX.1-dev, SD3 Medium, SDXL, SD 1.5 at 1,024 px | **Proposed, sampled.** An independent source of families the model has seen, not a held-out family. Generated only |
+| Generated and authentic, shared and recaptured | [RRDataset](https://zenodo.org/records/14963880) | Open. CC BY 4.0 on Zenodo; its news photographs are third-party | 22 GB: 10 k real and 10 k AI, each original, transmitted over 2 to 6 platform cycles, and re-digitised | Possible, filtered: its COCO reals, StyleGAN and ProGAN images and its Chameleon portion must be removed, and whether it labels them per image is not confirmed |
+| Generated and authentic, shared | [TrueFake](https://github.com/MMLab-unitn/TrueFake-IJCNN25) | Repository CC BY 4.0; data on a drive link that was not opened | 600 k images | Mostly unusable: FFHQ reals and FFHQ-trained StyleGAN faces are training pools here. Only its FORLAB reals and diffusion images are outside them |
+| Social, as posted | [WildRF](https://github.com/barcavia/RealTime-DeepfakeDetection-in-the-RealWorld) | Research software licence, terms not read; no dataset licence stated | 5,300 images | Not proposed: labels rest on hashtags, and its relation to SocialRF (a development set here) is not confirmed |
+| Human-hard | [Chameleon](https://github.com/shilinyan99/AIDE) | By request to the authors, under an agreement; academic use only | 14,863 real, 11,170 AI | Possible if granted. Only the generated images were filtered for realism; part of it is inside RRDataset, so the two are not independent |
+| Recent commercial generators | several public GPT Image 2 and Nano Banana 2 sets | mixed | – | **Not held out.** The local training and evaluation manifests already hold `gpt-image-2`, `nano-banana-2.0`, `nano-banana-pro` and FLUX.2 images, so these families cannot serve as unseen ones |
+| Learned codecs | none public was found | CompressAI: BSD 3-Clause Clear. JPEG AI reference software: BSD. Neither grants patent rights, and no licence is stated for CompressAI's pretrained weights | – | Made here, offline, from the authentic sources above ([processing-chains.md](processing-chains.md)) |
+
+Which generator families are new was checked against the generator column
+of every local manifest (`data/store/*/manifest.tsv` and
+`data/fresh*/*/manifest.tsv`, 2026-11-13): none lists LlamaGen, VAR,
+Infinity, RAR, Switti or Open-MAGVIT2; `janus-7b` appears 95 times. The
+public NTIRE 2026 distortion code and its licence could not be found, so
+the processing chains are written here rather than borrowed.
+
+**Proposed composition**, to be confirmed in the pre-registration entry:
+authentic items from the Forchheim database (native files, and their five
+platform versions as the shared part) and VISION; generated items from
+the ARForensics test split and a sample of GenImage++; learned-codec and
+processing-chain copies of all of them made offline. Encoding is the
+confound to control: the authentic sets are camera JPEGs, while the
+generated sets' formats are not confirmed, so the report carries a
+same-encoding arm (every item re-encoded one way) beside the as-released
+one. This composition does not reach 3,000 independent authentic scenes
+(Forchheim has 143 scenes across 27 cameras), so the 0.1% operating point
+needs RAISE or a further authentic source to be resolved.
 
 **Held out whole.** Every source and family in the split is held out from
 fitting detectors: no item of them may enter a training manifest while the
@@ -65,6 +92,8 @@ split is in use. Inside the split, the families and sources named with
 the test set also contains families and sources that the calibration set
 has not seen. The pre-registration entry lists them by name. At least one
 tokenizer family and at least one authentic source are held out this way.
+For the Forchheim images the scene is the `scene_id` and the camera is the
+`source_id`, so a scene never crosses sets and a camera can be held out.
 
 **Size.** The stricter operating point decides it. A one-sided 95%
 Clopper–Pearson bound of 0.10% on the false-positive rate needs about
