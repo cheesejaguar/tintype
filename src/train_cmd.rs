@@ -6,7 +6,7 @@ use crate::detector::{ModelSpec, ViewSpec};
 use crate::image_io::{self, View};
 use crate::ingest::{read_manifest, Item};
 use crate::metrics::{self, sigmoid};
-use crate::trainer::{OptConfig, Trainer};
+use crate::trainer::{OptConfig, Teacher, Trainer};
 use crate::vit::VitConfig;
 use crate::weights::Weights;
 use anyhow::Result;
@@ -33,6 +33,24 @@ pub struct TrainArgs {
     pub aug: AugConfig,
     pub opt: OptConfig,
     pub sampler_alpha: f64,
+    /// What a shallower student is and learns from; the default trains the
+    /// twelve-block network on labels alone, as before.
+    pub student: Student,
+}
+
+/// `train --blocks`, `--init-blocks` and `--distill`.
+#[derive(Default)]
+pub struct Student {
+    /// Blocks of the trained network (default: twelve).
+    pub blocks: Option<usize>,
+    /// Which blocks of `--init` it starts from, e.g. `0,1,2,3,5,7,9,11`
+    /// (default: the first ones).
+    pub init_blocks: Option<String>,
+    /// A frozen teacher checkpoint (with its spec beside it).
+    pub teacher: Option<PathBuf>,
+    /// Share of the target that is the teacher's.
+    pub teacher_weight: f64,
+    pub teacher_temperature: f64,
 }
 
 struct ValSet {
@@ -125,9 +143,34 @@ pub fn run(a: TrainArgs) -> Result<()> {
     let val = build_val(&val_items, &views, a.val_max, a.seed);
     say(format!("val set: {} images preprocessed in {:.1}s", val.n, t0.elapsed().as_secs_f64()));
 
-    let w = Weights::load(&a.init, &a.init_prefix)?;
-    let cfg = VitConfig::small(size as usize);
-    let mut tr = Trainer::new(&w, cfg, a.batch, a.opt.clone())?;
+    let mut w = Weights::load(&a.init, &a.init_prefix)?;
+    // A shallower student starts from blocks of `--init`: the ones named, or the first.
+    let init_depth = crate::distill::depth_of(&w);
+    let depth = match &a.student.init_blocks {
+        Some(list) => {
+            let picks = crate::distill::parse_blocks(list, init_depth)?;
+            anyhow::ensure!(a.student.blocks.is_none_or(|b| b == picks.len()), "--init-blocks names {} blocks and --blocks says {}", picks.len(), a.student.blocks.unwrap_or(0));
+            w = crate::distill::take_blocks(&w, &picks)?;
+            picks.len()
+        }
+        None => a.student.blocks.unwrap_or(12),
+    };
+    anyhow::ensure!(depth <= init_depth, "--init has {init_depth} blocks, fewer than the {depth} to train");
+    let cfg = VitConfig::small_with_depth(size as usize, depth).ok_or_else(|| anyhow::anyhow!("--blocks takes a number from 1 to 12"))?;
+    let teacher_weights = match &a.student.teacher {
+        Some(path) => {
+            let spec = ModelSpec::load_for(path)?;
+            let teacher_cfg = VitConfig::by_name(&spec.arch, size as usize).filter(|c| c.dim == cfg.dim && c.reg_tokens == 0).ok_or_else(|| anyhow::anyhow!("the teacher must be a ViT-S/16 photo model"))?;
+            say(format!("teacher {} ({} blocks), weight {} at temperature {}", path.display(), teacher_cfg.depth, a.student.teacher_weight, a.student.teacher_temperature));
+            Some((Weights::load(path, &spec.prefix)?, teacher_cfg))
+        }
+        None => None,
+    };
+    if depth != 12 || a.student.init_blocks.is_some() {
+        say(format!("student: {depth} blocks, from blocks {} of {}", a.student.init_blocks.clone().unwrap_or_else(|| format!("0 to {}", depth - 1)), a.init.display()));
+    }
+    let teacher = teacher_weights.as_ref().map(|(weights, cfg)| Teacher { weights, cfg: *cfg, weight: a.student.teacher_weight, temperature: a.student.teacher_temperature });
+    let mut tr = Trainer::with_teacher(&w, cfg, a.batch, a.opt.clone(), teacher)?;
     say(format!("init eval  {}", eval(&tr, &val).1));
 
     let rx = spawn_loader(Arc::new(train_items), sampler, a.aug.clone(), a.batch, a.threads, a.seed);
@@ -139,7 +182,8 @@ pub fn run(a: TrainArgs) -> Result<()> {
         strict: None,
         early_exit: None,
         second_opinion: None,
-        arch: String::new(),
+        // Empty for twelve blocks, as before; a shallower network is named by its depth.
+        arch: VitConfig::small_name(depth),
         logit_scale: 1.0,
         logit_bias: 0.0,
         threshold: 0.5,

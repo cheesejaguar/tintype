@@ -57,6 +57,27 @@ dataset lists. Use `score`, `score-video`, and `calibrate` directly with your
 own files for a separate model. Set video calibration from a separately
 trained video checkpoint and a held-out video manifest.
 
+### A shallower student
+
+`train` can also produce a network with fewer transformer blocks, started
+from the blocks of a twelve-block checkpoint and, optionally, pulled towards
+a frozen teacher's output on every batch:
+
+```sh
+tintype train --init runs/photo/last.safetensors --init-blocks 0,1,2,3,5,7,9,11 \
+  --distill runs/photo/last.safetensors --distill-weight 0.5 --distill-temperature 2 \
+  --manifest my-photo-train.tsv --out runs/photo-student-8
+```
+
+`--blocks N` alone takes the first `N` blocks of `--init`; `--init-blocks`
+names them. With `--distill` the training target is `(1 - weight) * label +
+weight * sigmoid(teacher logit / temperature)`. The checkpoint's sidecar
+names the depth (`"arch": "vit_small_patch16_d8"`), so `score`, `calibrate`,
+`detect` and `serve` load it like any other. A student needs its own
+calibration and its own evaluation; what one would save in time, and the
+commands for the bundled training mix, are in the
+[CPU profile runbook](runbooks/cpu-profile-int8.md#step-5-fewer-blocks-and-exits-part-way).
+
 To serve separately trained checkpoints, mount them into the code-only
 container or pass both paths explicitly to the binary.
 

@@ -308,6 +308,8 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
         .unwrap();
     let err = String::from_utf8_lossy(&o.stderr).to_string();
     assert_eq!(err.lines().filter(|l| l.starts_with("latency_ms ")).count(), 3, "{err}");
+    // The warm-up images' times too: the counters include them.
+    assert_eq!(err.lines().filter(|l| l.starts_with("warmup_ms ")).count(), 5, "{err}");
     assert!(err.lines().any(|l| l.starts_with("stats: ")), "{err}");
     assert_eq!(stdout(&o).split(':').next(), out.split(':').next());
     let _ = std::fs::remove_dir_all(&dir);
@@ -340,6 +342,12 @@ fn work_counters_go_to_standard_error_only_when_asked_for() {
     assert_eq!(value("views_scored") + value("views_reused"), 6, "{line}");
     assert!(value("views_materialised") <= 6 && value("views_materialised") >= 1, "{line}");
     assert_eq!((value("frames_decoded"), value("frames_converted"), value("clips_reopened")), (0, 0, 0), "{line}");
+    // The forward pass is divided among its parts: they are all there and
+    // add up to no more than the pass (each is rounded to a millisecond).
+    let parts = ["patch_ms", "norm_ms", "qkv_ms", "attention_ms", "softmax_ms", "gather_ms", "proj_ms", "fc1_ms", "gelu_ms", "fc2_ms", "head_ms", "residual_ms"];
+    let sum: u64 = parts.iter().map(|p| value(p)).sum();
+    assert!(value("forward_ms") >= 1 && sum <= value("forward_ms") + parts.len() as u64, "{line}");
+    assert!(value("qkv_ms") + value("proj_ms") + value("fc1_ms") + value("fc2_ms") >= 1, "{line}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -387,4 +395,59 @@ fn a_photo_below_the_crop_size_is_scored_once_per_distinct_view_with_the_same_ou
 
 fn json_lines_of(out: &str) -> Vec<serde_json::Value> {
     out.lines().map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("not one JSON object per line ({e}): {l}"))).collect()
+}
+
+#[test]
+fn the_int8_simulation_is_opt_in_takes_what_cpu_takes_and_leaves_cpu_alone() {
+    let dir = common::scratch("cli-int8");
+    let png = dir.join("fixture.png");
+    common::write_fixture(&png);
+    let weights = common::photo_weights();
+    let clip = common::repo().join("tests/fixtures/video.mp4");
+    // The photo, and the clip too when no variant is named.
+    let run = |device: &str, variant: Option<&str>| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        c.args(["detect", "--device", device, "--all-views", "--json", "--weights", weights.to_str().unwrap(), png.to_str().unwrap()]);
+        if variant.is_none() {
+            c.arg(&clip);
+        }
+        c.current_dir(common::repo()).env_remove("TINTYPE_INT8");
+        if let Some(v) = variant {
+            c.env("TINTYPE_INT8", v);
+        }
+        c.output().expect("running the tintype binary")
+    };
+    let cpu = run("cpu", None);
+    assert!(cpu.status.success(), "{}", String::from_utf8_lossy(&cpu.stderr));
+    // The variable is read by the simulation only: `cpu` gives the same bytes whatever it says.
+    let plain = json_lines(&cpu);
+    assert_eq!(json_lines(&run("cpu", Some("all:tensor:4"))), plain[..1]);
+    assert_eq!(json_lines(&run("cpu", Some("no such variant"))), plain[..1]);
+    let logit = |row: &serde_json::Value| row["logit"].as_f64().unwrap();
+    let mut default = Vec::new();
+    for variant in [None, Some("weights"), Some("mlp:tensor"), Some("all:token:7")] {
+        let o = run("cpu-int8", variant);
+        assert!(o.status.success(), "{variant:?}: {}", String::from_utf8_lossy(&o.stderr));
+        let rows = json_lines(&o);
+        // The same photo and the same clip, scored: the same fields, views and frames, and logits that moved a little.
+        assert_eq!(rows.len(), if variant.is_none() { 2 } else { 1 }, "{variant:?}");
+        for (got, want) in rows.iter().zip(&plain) {
+            assert_eq!((&got["path"], &got["kind"], &got["profile"], got.get("views"), got.get("frames")), (&want["path"], &want["kind"], &want["profile"], want.get("views"), want.get("frames")), "{variant:?}");
+            assert_eq!(got.as_object().unwrap().keys().collect::<Vec<_>>(), want.as_object().unwrap().keys().collect::<Vec<_>>(), "{variant:?}");
+            let moved = (logit(got) - logit(want)).abs();
+            // Not the same number and not a different answer: on this machine the largest move is about one.
+            assert!(moved > 0.0 && moved < 6.0, "{variant:?}: logit {} against {}", logit(got), logit(want));
+        }
+        if variant.is_none() {
+            default = rows;
+        }
+    }
+    // With no variable the simulation is the `all` variant.
+    assert_eq!(json_lines(&run("cpu-int8", Some("all:token:8"))), default[..1]);
+    let bad = run("cpu-int8", Some("no such variant"));
+    assert!(!bad.status.success() && String::from_utf8_lossy(&bad.stderr).contains("unknown INT8 variant"), "{}", String::from_utf8_lossy(&bad.stderr));
+    // The device is never picked by itself and is named in the error for an unknown one.
+    let unknown = tintype(&["detect", "--device", "int8", png.to_str().unwrap()]);
+    assert!(!unknown.status.success() && String::from_utf8_lossy(&unknown.stderr).contains("cpu-int8"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -287,6 +287,27 @@ enum Cmd {
         #[arg(long)]
         all_views: bool,
     },
+    /// Diagnostic: how a linear read-out of the class token after fewer
+    /// blocks compares with the whole network (docs/runbooks/cpu-profile-int8.md).
+    #[command(hide = true)]
+    ProbeExits {
+        #[arg(long)]
+        weights: PathBuf,
+        /// Labelled images; the view early exit looks at first is used of each.
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long, default_value_t = 4000)]
+        n: usize,
+        /// Numbers of blocks to read out after.
+        #[arg(long, value_delimiter = ',', default_value = "4,6,8,10")]
+        blocks: Vec<usize>,
+        /// Ridge penalty of the read-out (on standardised features).
+        #[arg(long, default_value_t = 10.0)]
+        lambda: f64,
+        /// Largest share of stopped views that may end on the other side of the threshold from the whole network.
+        #[arg(long, default_value_t = 0.01)]
+        allowed: f64,
+    },
     /// Prepare an untrained ViT-S/16 checkpoint for detector training.
     InitTraining {
         /// Local timm-layout ViT-S/16 safetensors backbone.
@@ -343,6 +364,23 @@ enum Cmd {
         /// Probability of the messenger-style downscale + JPEG augmentation.
         #[arg(long, default_value_t = 0.25)]
         p_messenger: f32,
+        /// Train a shallower student: this many transformer blocks instead of twelve,
+        /// started from the first blocks of `--init` (or those `--init-blocks` names).
+        #[arg(long)]
+        blocks: Option<usize>,
+        /// Which blocks of `--init` the student starts from, e.g. `0,1,2,3,5,7,9,11`.
+        #[arg(long)]
+        init_blocks: Option<String>,
+        /// A frozen teacher (weights with their spec beside them): part of the
+        /// training target is its softened probability on the same batch.
+        #[arg(long)]
+        distill: Option<PathBuf>,
+        /// With --distill: share of the target that is the teacher's (0 to 1).
+        #[arg(long, default_value_t = 0.5)]
+        distill_weight: f64,
+        /// With --distill: the teacher's logit is divided by this before the sigmoid.
+        #[arg(long, default_value_t = 1.0)]
+        distill_temperature: f64,
     },
     /// Download and prepare a dataset plan (`tintype data list` shows them).
     Data {
@@ -519,7 +557,8 @@ fn parse_device(s: &str) -> Result<Device> {
         "gpu" => Device::Gpu,
         "gpu-f32" => Device::GpuF32,
         "cpu" => Device::Cpu,
-        other => anyhow::bail!("unknown device `{other}` (use auto, gpu, gpu-f32 or cpu)"),
+        "cpu-int8" => Device::CpuInt8,
+        other => anyhow::bail!("unknown device `{other}` (use auto, gpu, gpu-f32, cpu or cpu-int8)"),
     })
 }
 
@@ -559,6 +598,7 @@ fn main() -> Result<()> {
         #[cfg(feature = "provenance")]
         Cmd::Provenance(args) => provenance::run(args),
         Cmd::Serve(args) => tintype::server::run(args, scan::resolve_weights),
+        Cmd::ProbeExits { weights, manifest, n, blocks, lambda, allowed } => tintype::exit_probe::report(&weights, &manifest, n, &blocks, lambda, allowed),
         Cmd::InitTraining { backbone, sha256, out } => {
             tintype::training_init::initialize(&backbone, &sha256, &out)
         }
@@ -655,7 +695,7 @@ fn main() -> Result<()> {
             // On the CPU early exit runs the views one or two at a time; on the GPU all
             // six go in one batch and the stopping rule is applied afterwards.
             let device = parse_device(&device)?;
-            let stepwise = exit.is_some() && matches!(device, Device::Cpu);
+            let stepwise = exit.is_some() && device.is_cpu();
             let det = Detector::load(&weights, Some(spec), if stepwise { 2 } else { nv }, device)?;
             let pre = det.preprocessor();
             let mut buf = vec![0u8; nv * 3 * det.spec.img * det.spec.img];
@@ -680,12 +720,13 @@ fn main() -> Result<()> {
                 if !stepwise {
                     tintype::stats::SCORED_VIEWS.add(nv);
                 }
+                let elapsed = t.elapsed().as_secs_f64() * 1e3;
+                // With TINTYPE_STATS, each image's own time too, so that runs can be compared image by image
+                // (and the warm-up images', which the counters include, so that the two can be set side by side).
+                if per_image {
+                    eprintln!("{} {k} {elapsed:.3}", if k >= 5 { "latency_ms" } else { "warmup_ms" });
+                }
                 if k >= 5 {
-                    let elapsed = t.elapsed().as_secs_f64() * 1e3;
-                    // With TINTYPE_STATS, each image's own time too, so that runs can be compared image by image.
-                    if per_image {
-                        eprintln!("latency_ms {k} {elapsed:.3}");
-                    }
                     ms.push(elapsed);
                 }
             }
@@ -734,7 +775,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         #[cfg(target_os = "macos")]
-        Cmd::Train { init, init_prefix, manifest, out, steps, batch, lr, warmup, val_pct, val_max, eval_every, threads, seed, p_native, layer_decay, weight_decay, smoothing, sampler_alpha, p_messenger } => {
+        Cmd::Train { init, init_prefix, manifest, out, steps, batch, lr, warmup, val_pct, val_max, eval_every, threads, seed, p_native, layer_decay, weight_decay, smoothing, sampler_alpha, p_messenger, blocks, init_blocks, distill, distill_weight, distill_temperature } => {
             tintype::train_cmd::run(tintype::train_cmd::TrainArgs {
                 init,
                 init_prefix,
@@ -752,6 +793,7 @@ fn main() -> Result<()> {
                 aug: tintype::data::AugConfig { p_native, p_messenger, ..Default::default() },
                 opt: tintype::trainer::OptConfig { layer_decay, weight_decay, smoothing, ..Default::default() },
                 sampler_alpha,
+                student: tintype::train_cmd::Student { blocks, init_blocks, teacher: distill, teacher_weight: distill_weight, teacher_temperature: distill_temperature },
             })
         }
         #[cfg(not(target_os = "macos"))]

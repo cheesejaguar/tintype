@@ -25,3 +25,5 @@ pub mod swin;
 pub mod plans;
 pub mod eval;
 pub mod stats;
+pub mod exit_probe;
+pub mod distill;
