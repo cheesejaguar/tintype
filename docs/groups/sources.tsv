@@ -1,0 +1,14 @@
+# Starter map from generator keys to a source id (manifest column 7), for
+# scripts/group-manifest.py. A source id names the collection, camera or
+# platform an item came from, for both classes, so that the items of one
+# platform can be balanced, sliced and held out together.
+#
+# Tab-separated: generator glob, dataset glob, source id, basis, note.
+# Matching ignores case; the first row that matches wins. An item that
+# matches no row gets what `tintype split-groups` already assumes: the
+# `real:<name>` key of a real item, the dataset of a generated one.
+#
+# This is a proposal for the maintainer to correct, not a record of fact.
+real:openfake-reddit	*	reddit	dataset-doc	OpenFake supplement/reddit: both classes were posted to Reddit
+reddit-wild	*	reddit	dataset-doc	OpenFake supplement/reddit: both classes were posted to Reddit
+real:defactify	*	real:coco	dataset-doc	docs/DATA.md: the real images of Defactify are COCO
