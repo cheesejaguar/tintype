@@ -316,7 +316,9 @@ the NTIRE operation tables (section 1), the Frontier pairs
 (`scripts/stress-photo.py` with no options on
 `data/vstore/wasitai/paired-images.tsv`, then `tintype score` and
 `scripts/report-stress.py --pair-by-name`; see
-[EVIDENCE.md](../EVIDENCE.md#recompute-the-tables)), confirmation 7 and
+[EVIDENCE.md](../EVIDENCE.md#recompute-the-tables); with the arms' scores
+as columns of one archive, `--column chains --versus baseline` adds the
+paired bootstrap of the difference at 1% FPR), confirmation 7 and
 Arena ([EVIDENCE.md](../EVIDENCE.md), [BENCHMARK.md](../BENCHMARK.md)).
 `tintype evaluate confirm7` applies the default, strict, sensitive and fast
 profiles, which a training checkpoint's sidecar does not have; for an arm,
@@ -430,9 +432,10 @@ unchanged.
 
 ## Measured so far
 
-All exploratory: archived scores, or CPU re-scoring of development sets
-with the released weights. Cutoffs taken on a cohort and reported on it
-describe that cohort. Hardware: Apple M6, 12 cores, 32 GB, macOS 27.2,
+All exploratory: archived scores, CPU re-scoring of development sets
+with the released weights, and one development-set diagnostic of trained
+arms. Cutoffs taken on a cohort and reported on it describe that cohort.
+Nothing here is a frozen-split result, and none of it tests the gate. Hardware: Apple M6, 12 cores, 32 GB, macOS 27.2,
 shared with other jobs while these ran.
 
 ### Archived baselines, reproduced
@@ -573,8 +576,58 @@ steps 1–50 and 65.2 images/s with 0% for steps 51–100; arm B logged
 52.0 images/s with 11% and 66.1 images/s with 0%. Both runs wrote only
 under `runs/ws1-smoke/`. One hundred steps say nothing about accuracy.
 
+### Arms A and B, two seeds each, on the Frontier pairs (GPU)
+
+The section 3 commands for arm A and arm B at commit `10568b1`, each with
+`--seed 1` and `--seed 2`, on the 23 manifests whose files are present
+(`tiny-genimage` and `stylegan3` left out of all four, so arm A is not
+the phase-6 recipe). Each `step_008000` checkpoint and the starting
+checkpoint were then scored (`tintype score --all-views`, mean of six view
+logits, uncalibrated) on the 745 Frontier pairs and the twelve FFmpeg
+transforms above. Commands, limits, every table and every score:
+[processing-chain-arms](../results/processing-chain-arms/report.md).
+`tintype verify-models` printed four `ok` lines after each run. All four
+runs logged 0% data wait in every interval, at 75 to 82 images/s.
+
+Recall at 1% empirical FPR of 261 generated images, cutoff on each
+cohort's 484 authentic copies; the interval is a paired bootstrap over
+the test images for seed 1 (`report-stress.py --versus`):
+
+| Transform | Start | Baseline: seed 1, seed 2 | Chains: seed 1, seed 2 | Chains − baseline, mean | Chains − baseline, seed 1 (95%) |
+|---|---|---|---|---|---|
+| original | 186 | 191, 181 | 184, 188 | +0.0 pt | −2.7 pt (−13.0 to +5.0) |
+| resize-0.5-bicubic | 139 | 145, 130 | 135, 139 | −0.2 pt | −3.8 pt (−9.6 to +6.9) |
+| resize-0.25-bicubic | 150 | 153, 151 | 153, 157 | +1.1 pt | +0.0 pt (−14.2 to +9.2) |
+| jpeg-qv4 | 144 | 129, 116 | 118, 110 | −3.3 pt | −4.2 pt (−16.5 to +4.2) |
+| jpeg-qv12 | 132 | 113, 123 | 118, 113 | −1.0 pt | +1.9 pt (−14.2 to +6.1) |
+| blur-s1.0 | 169 | 154, 134 | 152, 159 | +4.4 pt | −0.8 pt (−10.3 to +14.2) |
+| blur-s3.0 | 144 | 112, 103 | 125, 136 | +8.8 pt | +5.0 pt (−13.4 to +22.2) |
+| noise-a10 | 117 | 98, 82 | 144, 151 | +22.0 pt | +17.6 pt (+3.4 to +33.3) |
+| noise-a40 | 3 | 1, 2 | 34, 28 | +11.3 pt | +12.6 pt (+1.9 to +25.7) |
+| sharpen-a1.0 | 199 | 192, 191 | 196, 196 | +1.7 pt | +1.5 pt (−5.7 to +16.9) |
+| repost-720-qv9x1 | 74 | 58, 57 | 60, 54 | −0.2 pt | +0.8 pt (−13.8 to +5.7) |
+| repost-960-qv7x4 | 86 | 91, 88 | 84, 86 | −1.7 pt | −2.7 pt (−10.3 to +7.7) |
+| repost-960-qv12x1 | 65 | 55, 57 | 56, 57 | +0.2 pt | +0.4 pt (−10.0 to +11.5) |
+
+What it shows, on this development set: arm B's setting buys additive
+noise (both strengths, both seeds, intervals above zero, AUROC at
+strength 10 from 0.889 and 0.863 to 0.953 and 0.950) and possibly strong
+blur, and nothing measurable on JPEG or reposts at their own cutoffs,
+although the chains contain both. Two runs of the same recipe differ by
+up to 7.7 points on a row, so no other row separates the arms. With the
+originals' cutoff the chains arm keeps more detections after JPEG and
+reposts and flags more authentic images there: the processed scores move
+up for both classes without ranking better. Clean recall on this cohort
+is level; the trainer's clean validation AUC is 0.0006 to 0.0013 lower
+for chains. At 0.1% FPR the rows swing between seeds (the baseline's
+clean figure is 110 and 136 of 261). Learned codecs are not in this
+suite. Expect arm B alone to fall short of the gate on JPEG and reposts,
+and find out why its repost and JPEG operations do not transfer to these
+renderings before spending the frozen split on it.
+
 ## Log
 
 | Date | Commit | What ran | Result |
 |---|---|---|---|
 | 2026-11-14 | `40816c8` and earlier, as stated with each result | Audit tooling on archives and on the CPU; loader timing; a zero-step initial evaluation of two candidate starting checkpoints; two 100-step smoke runs | Above. No arm trained. |
+| 2026-11-14 | `10568b1` | Arms A and B with seeds 1 and 2 on the 23 manifests present (Apple M6 GPU, about 55 minutes each); the four checkpoints and the starting one scored on the Frontier pairs under twelve transforms | [processing-chain-arms](../results/processing-chain-arms/report.md): noise +22.0 and +11.3 points at 1% FPR, strong blur +8.8 with intervals that include zero, JPEG and reposts within the seed spread, clean level. Development data; not the frozen split; arm C not run. |
