@@ -328,6 +328,32 @@ the selection rule are the runbook's and are not changed here.
   `calibrate`, as the incumbent every later candidate is compared with.
   Every look at `test` is logged in the runbook.
 
+**Added on 2026-11-14 after the originals were on disk, before anything
+was scored.** Nothing above changed.
+
+- **What arrived.** HDR+ 3,640 files (each checked against the MD5 the
+  bucket lists); FloreView 4,806 (the server publishes no checksums; the
+  frozen record below is the first); CSAFE 3,996 natural-scene photos from
+  an archive whose MD5 matched; ARForensics 10,500 from archives whose
+  SHA-256 matched (1,500 of 6,000 per generator); GenImage++ 3,000 (1,000
+  of 6,000 per archive, SHA-256 matched). The generated images are all PNG:
+  256 px (VAR, RAR, Open-MAGVIT2), 384 px (LlamaGen, Janus-Pro), 512 px
+  (Switti), 1,024 px (Infinity and the three GenImage++ sets).
+- **FloreView has 36 scenes**, each photographed by every phone, so its
+  4,806 photos are 36 groups that move between sets whole.
+- **The sets**: `fit` 1,659 authentic and 2,100 generated; `calibrate`
+  3,457 and 4,200; `test` 7,326 (3,996 of them CSAFE) and 7,200.
+- **Leakage check**: 0 of 25,942 files are byte-identical to one of the
+  314,282 files of the 16 training stores on disk.
+- **Processed copies: 200 parents per class in `calibrate` and in `test`.**
+  The twelve copies of a 12-megapixel photo take about 115 MB, so 400
+  authentic parents take about 46 GB. Each class's 200 are divided over
+  its sources (authentic) or families (generated) in proportion to their
+  sizes and taken evenly spaced over each group's sorted paths
+  (`scripts/build-frozen-eval.py stress-sample`). `fit` gets none.
+- **Cutoffs are fitted on all authentic rows of `calibrate`**, originals
+  and processed copies together, with `tintype calibrate`'s default rule.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames
