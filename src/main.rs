@@ -287,6 +287,27 @@ enum Cmd {
         #[arg(long)]
         all_views: bool,
     },
+    /// Diagnostic: how a linear read-out of the class token after fewer
+    /// blocks compares with the whole network (docs/runbooks/cpu-profile-int8.md).
+    #[command(hide = true)]
+    ProbeExits {
+        #[arg(long)]
+        weights: PathBuf,
+        /// Labelled images; the view early exit looks at first is used of each.
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long, default_value_t = 4000)]
+        n: usize,
+        /// Numbers of blocks to read out after.
+        #[arg(long, value_delimiter = ',', default_value = "4,6,8,10")]
+        blocks: Vec<usize>,
+        /// Ridge penalty of the read-out (on standardised features).
+        #[arg(long, default_value_t = 10.0)]
+        lambda: f64,
+        /// Largest share of stopped views that may end on the other side of the threshold from the whole network.
+        #[arg(long, default_value_t = 0.01)]
+        allowed: f64,
+    },
     /// Prepare an untrained ViT-S/16 checkpoint for detector training.
     InitTraining {
         /// Local timm-layout ViT-S/16 safetensors backbone.
@@ -560,6 +581,7 @@ fn main() -> Result<()> {
         #[cfg(feature = "provenance")]
         Cmd::Provenance(args) => provenance::run(args),
         Cmd::Serve(args) => tintype::server::run(args, scan::resolve_weights),
+        Cmd::ProbeExits { weights, manifest, n, blocks, lambda, allowed } => tintype::exit_probe::report(&weights, &manifest, n, &blocks, lambda, allowed),
         Cmd::InitTraining { backbone, sha256, out } => {
             tintype::training_init::initialize(&backbone, &sha256, &out)
         }

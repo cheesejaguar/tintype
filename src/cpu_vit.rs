@@ -434,13 +434,39 @@ impl CpuVit {
 
     /// Logits for `x`: views of interleaved 8-bit RGB, one after another.
     pub fn forward(&self, x: &[u8]) -> Vec<f32> {
+        self.run(x, false)
+    }
+
+    /// The class token of each view as the last block leaves it, before the
+    /// final normalisation and the head (`[views, dim]`): what a read-out
+    /// placed after this network's last block would see. For diagnostics.
+    pub fn class_tokens(&self, x: &[u8]) -> Vec<f32> {
+        self.run(x, true)
+    }
+
+    /// The final normalisation and the head on class tokens (`[views, dim]`):
+    /// the logits [`CpuVit::forward`] reads from those of
+    /// [`CpuVit::class_tokens`], or what this network's head makes of
+    /// another's. For diagnostics.
+    pub fn read_out(&self, class_tokens: &[f32]) -> Vec<f32> {
+        let b = class_tokens.len() / self.cfg.dim;
+        let mut normed = vec![0f32; class_tokens.len()];
+        self.norm.apply(class_tokens, &mut normed);
+        let mut out = vec![0f32; b * self.head.out];
+        self.head.apply(&normed, &mut out, b);
+        out
+    }
+
+    /// The pass itself: the logits, or with `tokens` the class tokens it
+    /// would have computed them from.
+    fn run(&self, x: &[u8], tokens: bool) -> Vec<f32> {
         let c = &self.cfg;
         let (p, side, d) = (c.patch, c.img / c.patch, c.dim);
         let (np, n) = (side * side, side * side + 1);
         let view = 3 * c.img * c.img;
         let b = x.len() / view;
         if ONE_VIEW_PER_THREAD && b > 1 {
-            return x.par_chunks(view).flat_map_iter(|v| on_one_thread(|| self.forward(v))).collect();
+            return x.par_chunks(view).flat_map_iter(|v| on_one_thread(|| self.run(v, tokens))).collect();
         }
         // Timed on this thread from here on: one pass, however many views it holds.
         let started = Instant::now();
@@ -612,6 +638,10 @@ impl CpuVit {
         self.round_input(Layer::Fc2, &mut hc, d * c.mlp_ratio, 1);
         FC2_TIME.time(|| blk.fc2.apply(&hc, &mut yc, b));
         cls.iter_mut().zip(&yc).for_each(|(a, v)| *a += v);
+        if tokens {
+            FORWARD_TIME.since(started);
+            return cls;
+        }
 
         let mut cn = vec![0f32; b * d];
         NORM_TIME.time(|| self.norm.apply(&cls, &mut cn));
@@ -620,6 +650,39 @@ impl CpuVit {
         FORWARD_TIME.since(started);
         out
     }
+}
+
+/// A small random network for tests: two blocks of width 24 on 32-pixel views.
+#[cfg(test)]
+pub(crate) fn small_network() -> (Weights, VitConfig) {
+    let cfg = VitConfig { img: 32, patch: 16, dim: 24, depth: 2, heads: 2, mlp_ratio: 4, reg_tokens: 0, layer_scale: false, pos_on_patches_only: false };
+    let mut rng = crate::rng::Rng::new(11);
+    let mut w = Weights::default();
+    let mut tensor = |name: &str, shape: &[usize], scale: f32| {
+        let data = (0..shape.iter().product::<usize>()).map(|_| (rng.below(2001) as f32 / 1000.0 - 1.0) * scale).collect();
+        w.insert(name, data, shape.to_vec());
+    };
+    let d = cfg.dim;
+    tensor("patch_embed.proj.weight", &[d, 3, 16, 16], 0.05);
+    tensor("patch_embed.proj.bias", &[d], 0.1);
+    tensor("cls_token", &[1, 1, d], 0.5);
+    tensor("pos_embed", &[1, 5, d], 0.5);
+    for i in 0..cfg.depth {
+        let p = format!("blocks.{i}");
+        for (name, out, inp) in [("attn.qkv", 3 * d, d), ("attn.proj", d, d), ("mlp.fc1", 4 * d, d), ("mlp.fc2", d, 4 * d)] {
+            tensor(&format!("{p}.{name}.weight"), &[out, inp], 0.3);
+            tensor(&format!("{p}.{name}.bias"), &[out], 0.1);
+        }
+        for n in ["norm1", "norm2"] {
+            tensor(&format!("{p}.{n}.weight"), &[d], 1.0);
+            tensor(&format!("{p}.{n}.bias"), &[d], 0.1);
+        }
+    }
+    tensor("norm.weight", &[d], 1.0);
+    tensor("norm.bias", &[d], 0.1);
+    tensor("head.weight", &[1, d], 0.5);
+    tensor("head.bias", &[1], 0.1);
+    (w, cfg)
 }
 
 #[cfg(test)]
@@ -730,36 +793,22 @@ mod tests {
         }
     }
 
-    /// A small random network: two blocks of width 24 on 32-pixel views.
-    fn small_network() -> (Weights, VitConfig) {
-        let cfg = VitConfig { img: 32, patch: 16, dim: 24, depth: 2, heads: 2, mlp_ratio: 4, reg_tokens: 0, layer_scale: false, pos_on_patches_only: false };
-        let mut rng = crate::rng::Rng::new(11);
-        let mut w = Weights::default();
-        let mut tensor = |name: &str, shape: &[usize], scale: f32| {
-            let data = (0..shape.iter().product::<usize>()).map(|_| (rng.below(2001) as f32 / 1000.0 - 1.0) * scale).collect();
-            w.insert(name, data, shape.to_vec());
-        };
-        let d = cfg.dim;
-        tensor("patch_embed.proj.weight", &[d, 3, 16, 16], 0.05);
-        tensor("patch_embed.proj.bias", &[d], 0.1);
-        tensor("cls_token", &[1, 1, d], 0.5);
-        tensor("pos_embed", &[1, 5, d], 0.5);
-        for i in 0..cfg.depth {
-            let p = format!("blocks.{i}");
-            for (name, out, inp) in [("attn.qkv", 3 * d, d), ("attn.proj", d, d), ("mlp.fc1", 4 * d, d), ("mlp.fc2", d, 4 * d)] {
-                tensor(&format!("{p}.{name}.weight"), &[out, inp], 0.3);
-                tensor(&format!("{p}.{name}.bias"), &[out], 0.1);
-            }
-            for n in ["norm1", "norm2"] {
-                tensor(&format!("{p}.{n}.weight"), &[d], 1.0);
-                tensor(&format!("{p}.{n}.bias"), &[d], 0.1);
-            }
+    #[test]
+    fn class_tokens_are_what_the_logits_are_read_from() {
+        let (w, cfg) = small_network();
+        let mut rng = crate::rng::Rng::new(6);
+        let views: Vec<u8> = (0..2 * 3 * 32 * 32).map(|_| rng.below(256) as u8).collect();
+        let vit = CpuVit::new(&w, cfg).unwrap();
+        let (logits, tokens) = (vit.forward(&views), vit.class_tokens(&views));
+        assert_eq!(tokens.len(), 2 * cfg.dim);
+        // The final normalisation and the head on the class tokens give the logits.
+        for (a, b) in vit.read_out(&tokens).iter().zip(&logits) {
+            assert!((a - b).abs() < 1e-5, "{a} against {b}");
         }
-        tensor("norm.weight", &[d], 1.0);
-        tensor("norm.bias", &[d], 0.1);
-        tensor("head.weight", &[1, d], 0.5);
-        tensor("head.bias", &[1], 0.1);
-        (w, cfg)
+        // A network cut after its first block sees a different class token than the whole one.
+        let cut = CpuVit::new(&w, VitConfig { depth: 1, ..cfg }).unwrap();
+        assert_eq!(cut.class_tokens(&views).len(), tokens.len());
+        assert!(cut.class_tokens(&views).iter().zip(&tokens).any(|(a, b)| (a - b).abs() > 1e-3));
     }
 
     #[test]
