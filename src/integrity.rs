@@ -80,6 +80,10 @@ pub struct FrozenRow {
     /// As the manifest that listed it resolves it, relative to the directory
     /// the set was frozen from (normally the one holding `data/`).
     pub path: String,
+    /// The manifest's grouping columns ([`crate::ingest::GROUP_COLUMNS`]),
+    /// padded to all five; empty when the manifest row had none. A record
+    /// with any is written as format 2.
+    pub groups: Vec<String>,
 }
 
 /// A prepared evaluation set pinned to its bytes: every manifest it was made
@@ -92,6 +96,23 @@ pub struct Frozen {
 
 const HEADER: &str = "# tintype frozen evaluation set, format 1";
 const COLUMNS: &str = "# sha256\tsize\tlabel\tgenerator\tdataset\tpath";
+/// Format 2 adds the five grouping columns to every row. It is written only
+/// for sets whose manifests carry grouping columns, so records of
+/// four-column manifests stay format 1, byte for byte.
+const HEADER_2: &str = "# tintype frozen evaluation set, format 2";
+const COLUMNS_2: &str = "# sha256\tsize\tlabel\tgenerator\tdataset\tpath\tparent_id\tscene_id\tsource_id\tgenerator_family\ttransform";
+const GROUPS: usize = crate::ingest::GROUP_COLUMNS.len();
+
+/// The grouping columns of a manifest row as a frozen record stores them:
+/// none, or all five (`-` and absent columns as empty).
+fn frozen_groups(it: &crate::ingest::Item) -> Vec<String> {
+    let g: Vec<String> = (0..GROUPS).map(|k| it.group(k).unwrap_or("").to_string()).collect();
+    if g.iter().all(String::is_empty) {
+        Vec::new()
+    } else {
+        g
+    }
+}
 
 /// A path as stored in a frozen manifest: relative to `root`, with forward slashes.
 fn portable(p: &Path, root: &Path) -> Result<String> {
@@ -121,7 +142,7 @@ impl Frozen {
             .par_iter()
             .map(|it| {
                 let size = it.path.metadata().with_context(|| format!("{} (listed in a manifest)", it.path.display()))?.len();
-                Ok(FrozenRow { sha256: sha256_file(&it.path)?, size, label: it.label, generator: it.generator.clone(), dataset: it.dataset.clone(), path: portable(&it.path, root)? })
+                Ok(FrozenRow { sha256: sha256_file(&it.path)?, size, label: it.label, generator: it.generator.clone(), dataset: it.dataset.clone(), path: portable(&it.path, root)?, groups: frozen_groups(it) })
             })
             .collect::<Result<_>>()?;
         Ok(out)
@@ -129,19 +150,27 @@ impl Frozen {
 
     /// Write as text, gzip-compressed when the name ends in `.gz`.
     pub fn write(&self, path: &Path) -> Result<()> {
-        let mut text = format!("{HEADER}\n");
+        let grouped = self.rows.iter().any(|r| !r.groups.is_empty());
+        let mut text = format!("{}\n", if grouped { HEADER_2 } else { HEADER });
         for (m, h) in &self.manifests {
             text.push_str(&format!("# manifest\t{m}\t{h}\n"));
         }
-        text.push_str(COLUMNS);
+        text.push_str(if grouped { COLUMNS_2 } else { COLUMNS });
         text.push('\n');
         for r in &self.rows {
-            for field in [&r.generator, &r.dataset, &r.path] {
+            for field in [&r.generator, &r.dataset, &r.path].into_iter().chain(&r.groups) {
                 if field.contains(['\t', '\n']) {
                     bail!("a tab or newline in {field:?} cannot be written to a frozen manifest");
                 }
             }
-            text.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{}\n", r.sha256, r.size, r.label, r.generator, r.dataset, r.path));
+            text.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{}", r.sha256, r.size, r.label, r.generator, r.dataset, r.path));
+            if grouped {
+                for k in 0..GROUPS {
+                    text.push('\t');
+                    text.push_str(r.groups.get(k).map_or("", String::as_str));
+                }
+            }
+            text.push('\n');
         }
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p)?;
@@ -159,10 +188,11 @@ impl Frozen {
     pub fn read(path: &Path) -> Result<Self> {
         let mut out = Frozen::default();
         let mut lines = reader(path)?.lines();
-        match lines.next() {
-            Some(Ok(l)) if l == HEADER => {}
+        let columns = match lines.next() {
+            Some(Ok(l)) if l == HEADER => 6,
+            Some(Ok(l)) if l == HEADER_2 => 6 + GROUPS,
             _ => bail!("{} is not a frozen evaluation set (no `{HEADER}` line)", path.display()),
-        }
+        };
         for (i, l) in lines.enumerate() {
             let l = l?;
             if let Some(rest) = l.strip_prefix("# manifest\t") {
@@ -174,10 +204,11 @@ impl Frozen {
                 continue;
             }
             let c: Vec<&str> = l.split('\t').collect();
-            let ok = c.len() == 6 && c[0].len() == 64 && c[0].bytes().all(|b| b.is_ascii_hexdigit());
+            let ok = c.len() == columns && c[0].len() == 64 && c[0].bytes().all(|b| b.is_ascii_hexdigit());
             if !ok {
-                bail!("{}:{}: expected sha256, size, label, generator, dataset and path", path.display(), i + 2);
+                bail!("{}:{}: expected sha256, size, label, generator, dataset and path{}", path.display(), i + 2, if columns > 6 { ", then the five grouping columns" } else { "" });
             }
+            let groups: Vec<String> = c[6..].iter().map(|v| v.to_string()).collect();
             out.rows.push(FrozenRow {
                 sha256: c[0].to_string(),
                 size: c[1].parse().with_context(|| format!("{}:{}: size", path.display(), i + 2))?,
@@ -185,6 +216,7 @@ impl Frozen {
                 generator: c[3].to_string(),
                 dataset: c[4].to_string(),
                 path: c[5].to_string(),
+                groups: if groups.iter().all(String::is_empty) { Vec::new() } else { groups },
             });
         }
         Ok(out)
@@ -242,6 +274,7 @@ impl Frozen {
                     Some(r) if (r.label, r.generator.as_str(), r.dataset.as_str()) != (it.label, it.generator.as_str(), it.dataset.as_str()) => {
                         problems.push(format!("relabelled {path}: {} {} {} -> {} {} {}", r.label, r.generator, r.dataset, it.label, it.generator, it.dataset))
                     }
+                    Some(r) if r.groups != frozen_groups(it) => problems.push(format!("regrouped {path}: {} -> {}", r.groups.join(","), frozen_groups(it).join(","))),
                     Some(_) => {}
                 }
             }
@@ -306,6 +339,42 @@ mod tests {
         assert!(p.iter().any(|l| l.starts_with("manifest")), "{p:?}");
         assert!(p.iter().any(|l| l.starts_with("relabelled set/a.png")), "{p:?}");
         assert!(p.iter().any(|l| l.starts_with("added") && l.contains("set/c.png")), "{p:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn grouped_manifests_freeze_as_format_2_and_plain_ones_stay_format_1() {
+        let d = scratch("format2");
+        std::fs::write(d.join("set/a.png"), b"first image").unwrap();
+        std::fs::write(d.join("set/b.jpg"), b"second image").unwrap();
+        let plain = "a.png\t1\tgen-x\tdemo\nb.jpg\t0\treal:demo\tdemo\n";
+        std::fs::write(d.join("set/manifest.tsv"), plain).unwrap();
+        let f1 = Frozen::build(&[d.join("set/manifest.tsv")], &d).unwrap();
+        f1.write(&d.join("one.tsv")).unwrap();
+        let text = std::fs::read_to_string(d.join("one.tsv")).unwrap();
+        // Exactly what format 1 has always been: six columns and the old header.
+        assert!(text.starts_with(&format!("{HEADER}\n# manifest\tset/manifest.tsv\t")), "{text}");
+        assert!(text.contains(&format!("\n{COLUMNS}\n")) && text.lines().filter(|l| !l.starts_with('#')).all(|l| l.split('\t').count() == 6), "{text}");
+
+        std::fs::write(d.join("set/manifest.tsv"), "a.png\t1\tgen-x\tdemo\tp1\ts1\tsrc\tdiffusion\tjpeg-q70\nb.jpg\t0\treal:demo\tdemo\tp2\n").unwrap();
+        let f2 = Frozen::build(&[d.join("set/manifest.tsv")], &d).unwrap();
+        assert_eq!(f2.rows[0].groups, ["p1", "s1", "src", "diffusion", "jpeg-q70"]);
+        assert_eq!(f2.rows[1].groups, ["p2", "", "", "", ""]);
+        for name in ["two.tsv", "two.tsv.gz"] {
+            f2.write(&d.join(name)).unwrap();
+            assert_eq!(Frozen::read(&d.join(name)).unwrap(), f2);
+        }
+        let text = std::fs::read_to_string(d.join("two.tsv")).unwrap();
+        assert!(text.starts_with(HEADER_2) && text.lines().filter(|l| !l.starts_with('#')).all(|l| l.split('\t').count() == 11), "{text}");
+        assert!(f2.verify(&d).is_empty());
+
+        // A changed grouping column is reported row by row.
+        std::fs::write(d.join("set/manifest.tsv"), "a.png\t1\tgen-x\tdemo\tp9\ts1\tsrc\tdiffusion\tjpeg-q70\nb.jpg\t0\treal:demo\tdemo\tp2\n").unwrap();
+        let p = f2.verify(&d);
+        assert!(p.iter().any(|l| l.starts_with("regrouped set/a.png")), "{p:?}");
+        // A format-1 row with too many columns is still refused.
+        std::fs::write(d.join("bad.tsv"), format!("{HEADER}\n{}\t1\t1\tg\td\ta.png\tp1\t\t\t\t\n", "0".repeat(64))).unwrap();
+        assert!(Frozen::read(&d.join("bad.tsv")).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 

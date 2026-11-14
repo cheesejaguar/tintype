@@ -3,10 +3,13 @@
 
 import argparse
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from benchmark_images import encode_jpeg
+# The helper module sits beside this script; find it under `python3 -I` too.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from benchmark_images import encode_jpeg  # noqa: E402
 
 
 def main():
@@ -22,11 +25,16 @@ def main():
     rows = []
     seen = set()
     for line in source.read_text(encoding="utf-8").splitlines():
-        path, label, generator, dataset = line.split("\t")
+        fields = line.split("\t")
+        if len(fields) < 4:
+            parser.error(f"expected path, label, generator and dataset in {source}: {line!r}")
+        # Columns 5 and up (parent_id, scene_id, source_id, generator_family,
+        # transform, ...) are carried through to every variant unchanged.
+        path, label, generator, dataset, *extra = fields
         if path in seen or label not in {"0", "1"}:
             parser.error(f"duplicate path or invalid label in {source}: {line!r}")
         seen.add(path)
-        rows.append((source.parent / path, label, generator, dataset))
+        rows.append((source.parent / path, label, generator, dataset, extra))
     if not rows:
         parser.error(f"empty manifest: {source}")
 
@@ -40,12 +48,12 @@ def main():
         (output / variant).mkdir()
 
     def encode(indexed_row):
-        index, (path, label, generator, dataset) = indexed_row
-        rendered = {"original": (os.path.relpath(path, output), label, generator, f"{dataset}-original")}
+        index, (path, label, generator, dataset, extra) = indexed_row
+        rendered = {"original": (os.path.relpath(path, output), label, generator, f"{dataset}-original", *extra)}
         for variant, (quality, filters) in variants.items():
             target = Path(variant) / f"{index:06d}.jpg"
             encode_jpeg(path, output / target, quality, filters)
-            rendered[variant] = (str(target), label, generator, f"{dataset}-{variant}")
+            rendered[variant] = (str(target), label, generator, f"{dataset}-{variant}", *extra)
         return rendered
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
