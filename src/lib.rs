@@ -24,4 +24,5 @@ pub mod yuv;
 pub mod swdec;
 pub mod swin;
 pub mod plans;
+pub mod pool;
 pub mod eval;

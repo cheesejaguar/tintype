@@ -545,6 +545,55 @@ enum Cmd {
         #[arg(long)]
         overwrite: bool,
     },
+    /// Offline experiment: replay other ways of pooling the view logits of
+    /// all-views score files (`score --all-views`, `*-views.tsv`,
+    /// `calib_images.tsv`). For each pool and view order, the threshold and
+    /// the early-exit margins are refitted on `--fit`, and the result is
+    /// reported on each `--test`. Reads only; changes no model.
+    ReplayPool {
+        /// All-views score files to fit thresholds, margins and weights on (`*` in a file name matches).
+        #[arg(long, required = true)]
+        fit: Vec<String>,
+        /// `name=scores.tsv`: all-views score files to report on, kept apart from `--fit` (repeatable; `*` matches).
+        #[arg(long)]
+        test: Vec<String>,
+        /// The spec the files were scored with (e.g. models/tintype.json): its threshold and early exit are the shipped pool the others are compared with. Only read.
+        #[arg(long)]
+        spec: Option<PathBuf>,
+        /// Pools to replay: mean, trimmed, median, max, topK, fitted (per-view weights fitted on `--fit`), weights:w0/w1/...
+        #[arg(long, value_delimiter = ',', default_value = "mean,trimmed,median,top2,top3,max,fitted")]
+        pool: Vec<String>,
+        /// Orders of looking at the views: shipped, greedy (chosen on `--fit`), or indices such as 0,2,1,3,4,5 (repeatable).
+        #[arg(long, default_value = "shipped")]
+        order: Vec<String>,
+        /// False-positive rate on real items the refitted threshold aims at (the default profile's 1.5%).
+        #[arg(long, default_value_t = 0.015)]
+        target_fpr: f64,
+        /// Threshold rule, as for `calibrate`: balanced (over real sources) or pooled.
+        #[arg(long, default_value = "balanced")]
+        rule: String,
+        /// Smallest real source that counts for the balanced rule.
+        #[arg(long, default_value_t = 100)]
+        min_source: usize,
+        /// How far pooled precision and recall on `--fit` may move from all views when margins are refitted.
+        #[arg(long, default_value_t = 0.001)]
+        tolerance: f64,
+        /// Step of the margin grid, in pooled logits.
+        #[arg(long, default_value_t = 0.25)]
+        margin_step: f32,
+        /// Widest margin on the grid.
+        #[arg(long, default_value_t = 12.0)]
+        margin_max: f32,
+        /// Fit the margins below and above the threshold separately.
+        #[arg(long)]
+        asymmetric_margins: bool,
+        /// Also break the early-exit results down by dataset or generator.
+        #[arg(long)]
+        slice_by: Option<String>,
+        /// Write one score file per test set and candidate here, for `report --operating-points`.
+        #[arg(long)]
+        write_scores: Option<PathBuf>,
+    },
     /// Check the released model files (weights and specs) against the
     /// SHA-256 values recorded in the source and in docs/DATA.md.
     VerifyModels {
@@ -1010,6 +1059,19 @@ fn main() -> Result<()> {
         }
         Cmd::Interpolate { a, a_prefix, b, b_prefix, alpha, out_dir, average, weights, out, spec, overwrite } => {
             tintype::interpolate::run(tintype::interpolate::Args { a, a_prefix, b, b_prefix, alphas: alpha, out_dir, average, weights, out, spec, overwrite })
+        }
+        Cmd::ReplayPool { fit, test, spec, pool, order, target_fpr, rule, min_source, tolerance, margin_step, margin_max, asymmetric_margins, slice_by, write_scores } => {
+            use tintype::pool::{Refit, Rule};
+            let rule = match rule.as_str() {
+                "pooled" => Rule::Pooled,
+                "balanced" => Rule::Balanced(min_source),
+                other => anyhow::bail!("unknown rule `{other}` (pooled, balanced)"),
+            };
+            anyhow::ensure!(margin_step > 0.0 && margin_max >= 0.0, "--margin-step must be positive and --margin-max not negative");
+            anyhow::ensure!(slice_by.as_deref().is_none_or(|s| s == "dataset" || s == "generator"), "--slice-by takes dataset or generator");
+            let grid: Vec<f32> = (0..=(margin_max / margin_step).round() as usize).map(|i| i as f32 * margin_step).collect();
+            let args = tintype::pool::Args { fit, test, spec, pools: pool, orders: order, target_fpr, rule, refit: Refit { tolerance, grid, symmetric: !asymmetric_margins }, slice_by, write_scores };
+            tintype::pool::run(args, &mut std::io::stdout().lock())
         }
         Cmd::VerifyModels { root } => {
             let (lines, ok) = tintype::integrity::check_models(&root);

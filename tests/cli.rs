@@ -362,3 +362,56 @@ fn interpolate_end_points_score_like_their_sources_and_nothing_is_written_to_mod
     assert!(tintype(&["verify-models"]).status.success());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn replay_pool_refits_each_pool_on_the_fit_file_and_reports_on_the_test_file() {
+    let dir = common::scratch("cli-replay-pool");
+    // Six view logits per image around a level: real near -4, AI near +4, every seventh image near the threshold.
+    let write = |name: &str, salt: u32, n: u32| {
+        let mut text = String::new();
+        for i in 0..n {
+            let label = i % 2;
+            let noise = |v: u32| ((i.wrapping_mul(2_654_435_761).wrapping_add(v.wrapping_mul(40_503)).wrapping_add(salt) >> 8) % 1000) as f32 / 1000.0 - 0.5;
+            let level = if i % 7 == 0 { 1.5 + 3.0 * noise(9) } else if label == 1 { 5.0 + 3.0 * noise(9) } else { -5.0 + 3.0 * noise(9) };
+            let logits: Vec<String> = (0..6).map(|v| format!("{:.5}", level + 3.0 * noise(v))).collect();
+            text.push_str(&format!("{name}/{i}.png\t{label}\t{}\tset-{}\t0.5\t{}\n", if label == 1 { "gen".to_string() } else { format!("real:cam{}", (i / 2) % 2) }, i % 3, logits.join("\t")));
+        }
+        let p = dir.join(format!("{name}.all-views.tsv"));
+        std::fs::write(&p, text).unwrap();
+        p
+    };
+    let (fit, test) = (write("fit", 1, 3000), write("test", 77, 2000));
+    let test_arg = format!("held-out={}", dir.join("test.*.tsv").display());
+    let spec = common::repo().join("models/tintype.json");
+    let o = tintype(&["replay-pool", "--fit", fit.to_str().unwrap(), "--test", &test_arg, "--spec", spec.to_str().unwrap(), "--pool", "mean,median,top2,max,fitted", "--order", "shipped", "--order", "greedy", "--slice-by", "dataset", "--write-scores", dir.join("scores").to_str().unwrap()]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let out = stdout(&o);
+    for want in [
+        "Fit items: 3000 (1500 AI, 1500 real) from 1 file(s). Target false-positive rate 1.50%, averaged over the 2 real sources with at least 100 items.",
+        "| shipped (mean, spec as is) | 2,0,1,3,4,5 | 1.692 | 0.664 | 6 / 3 / 2 / 1.5 / 1 |",
+        "| mean | 2,0,1,3,4,5 |",
+        "| top 2 |",
+        "| fitted weights ",
+        "(greedy)",
+        "`early_exit` for max, order 2,0,1,3,4,5",
+        "### Test: held-out (2000 items: 1000 AI, 1000 real)",
+        "| shipped (mean, spec as is), all views |",
+        "held-out by dataset: median | 2,0,1,3,4,5",
+        "| set-0 |",
+    ] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // The shipped row is the reference: it changes no verdict against itself.
+    assert!(out.lines().any(|l| l.starts_with("| shipped (mean, spec as is) | 2,0,1,3,4,5 |") && l.ends_with("| +0 −0 AI, +0 −0 real |")), "{out}");
+    // The files written are ordinary score files that `report` reads.
+    let system = format!("median={}", dir.join("scores/held-out.median.201345.tsv").display());
+    let o = tintype(&["report", "--system", &system, "--operating-points"]);
+    assert!(o.status.success() && stdout(&o).contains("2000 items scored by all 1 systems: 1000 AI, 1000 real"), "{}{}", stdout(&o), String::from_utf8_lossy(&o.stderr));
+
+    // A file written with early exit (fewer logits per image) cannot be replayed, and the error says what can.
+    std::fs::write(dir.join("short.tsv"), "a.png\t1\tgen\tset\t0.9\t4.0\t5.0\n").unwrap();
+    let o = tintype(&["replay-pool", "--fit", dir.join("short.tsv").to_str().unwrap(), "--spec", spec.to_str().unwrap()]);
+    assert!(!o.status.success() && String::from_utf8_lossy(&o.stderr).contains("has 2 view logits, not 6"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(tintype(&["verify-models"]).status.success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
