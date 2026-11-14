@@ -328,11 +328,11 @@ def report(name, records, args, recorded, raw_cutoff):
     rows, clustered = collection_table(records, cutoff)
     if rows:
         print("\n### Authentic collections\n")
-        print("| Transform | Collection | Type | Flagged | FPR | 95% upper bound | Source videos flagged | 95% upper bound (videos) |")
-        print("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |")
+        print("| Transform | Collection | Type | Flagged | FPR | 95% lower bound | 95% upper bound | Source videos flagged | 95% upper bound (videos) |")
+        print("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |")
         for transform, source, kind, flags, n, upper, video_flags, videos, video_upper in rows:
-            print(f"| {transform} | {source} | {kind} | {flags}/{n} | {percent(flags, n)} | {percent(upper, 1)} | {video_flags}/{videos} | {percent(video_upper, 1)} |")
-        print("\nOne-sided Clopper–Pearson bounds. " + ("Some clips share a source video: their flags are not independent, so read the bound by video, where a video counts as flagged when any of its clips is."
+            print(f"| {transform} | {source} | {kind} | {flags}/{n} | {percent(flags, n)} | {percent(va.clopper_pearson_lower(flags, n), 1)} | {percent(upper, 1)} | {video_flags}/{videos} | {percent(video_upper, 1)} |")
+        print("\nOne-sided Clopper–Pearson bounds, each at 95%. " + ("Some clips share a source video: their flags are not independent, so read the bound by video, where a video counts as flagged when any of its clips is."
               if clustered else "No two clips of a row share a source video on record, so the two bounds agree."))
 
     groups = defaultdict(list)
@@ -348,9 +348,12 @@ def report(name, records, args, recorded, raw_cutoff):
 
     print("\n### Recall at fixed empirical false-positive rates\n")
     print("The cutoff of each line is chosen on the clips of that line: exploratory.\n")
+    said = defaultdict(list)
     for transform, items in by_transform(records).items():
         for line in low_fpr_lines(items, args.fpr):
-            print(f"- {transform}: {line}")
+            said[line].append(transform)
+    for line, transforms in said.items():
+        print(f"- {', '.join(transforms)}: {line}")
 
     table = frames_table(records, cutoff)
     if any(table.values()):
@@ -373,7 +376,7 @@ def report(name, records, args, recorded, raw_cutoff):
         print("| Transform | Against | Class | Pairs | Flagged before | Flagged after | Newly flagged | No longer flagged | Sign test p | Mean logit shift (95% interval) |")
         print("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
         for transform, base, kind, s in rows:
-            print(f"| {transform} | {base} | {kind} | {s['pairs']} | {s['before']} ({percent(s['before'], s['pairs'])}) | {s['after']} ({percent(s['after'], s['pairs'])}) | {s['gained']} | {s['lost']} | {s['p']:.3f} | "
+            print(f"| {transform} | {base} | {kind} | {s['pairs']} | {s['before']} ({percent(s['before'], s['pairs'])}) | {s['after']} ({percent(s['after'], s['pairs'])}) | {s['gained']} | {s['lost']} | {'<0.001' if s['p'] < 0.001 else format(s['p'], '.3f')} | "
                   f"{s['shift']:+.2f} ({s['low']:+.2f} to {s['high']:+.2f}) |")
         print("\nPairs are a variant and its baseline made from the same original (`parent_id`). For authentic clips `flagged` is the false-positive count, for generated clips the detections. "
               "The logit is that of the clip score; the interval resamples source videos.")
@@ -470,7 +473,7 @@ def self_test():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--scores", action="append", default=[], metavar="[NAME=]FILE", help="score file (repeatable); NAME names a headerless score-video file")
+    parser.add_argument("--scores", action="append", default=[], metavar="[NAME=]FILE", help="score file (repeatable); NAME names the detector of a headerless score-video file, and files that share a name are joined")
     parser.add_argument("--manifest", type=Path, action="append", default=[], help="grouped manifest of the scored clips (repeatable)")
     parser.add_argument("--sidecar", type=Path, action="append", default=[], help="audit.tsv written by the preparation: collection types and source videos, or variant baselines (repeatable)")
     parser.add_argument("--spec", type=Path, help="model spec JSON of the scored video weights, for the raw frame cutoff")
@@ -502,15 +505,20 @@ def main():
         video = json.loads(args.spec.read_text())["video"]
         raw_cutoff = (va.logit(args.cutoff) - video["logit_bias"]) / video["logit_scale"]
 
-    systems = {}
+    scored = defaultdict(list)
     for spec in args.scores:
         name, _, path = spec.rpartition("=")
-        for system, scored in parse_scores(read_lines(path), name or Path(path).name.split(".")[0]).items():
-            if system in systems:
-                raise SystemExit(f"detector {system} appears in two score files; name them with NAME=FILE")
-            systems[system], unmatched = join(scored, manifest_rows, parents)
-            if unmatched and manifest_rows:
-                print(f"note: {unmatched} of {len(scored)} clips scored by {system} are not in the manifests; they are grouped by their score-file columns", file=sys.stderr)
+        # Several files under one name are one detector's scores in parts, e.g. one file per variant.
+        for system, rows in parse_scores(read_lines(path), name or Path(path).name.split(".")[0]).items():
+            scored[system].extend(rows)
+    systems = {}
+    for system, rows in scored.items():
+        repeated = [path for path, n in Counter(row[0] for row in rows).items() if n > 1]
+        if repeated:
+            raise SystemExit(f"{system} scores {repeated[0]} more than once; name the detectors apart with NAME=FILE")
+        systems[system], unmatched = join(rows, manifest_rows, parents)
+        if unmatched and manifest_rows:
+            print(f"note: {unmatched} of {len(rows)} clips scored by {system} are not in the manifests; they are grouped by their score-file columns", file=sys.stderr)
     wanted = args.system or list(systems)
     if set(wanted) - set(systems) or (args.compare and set(args.compare.split(",")) - set(systems)):
         raise SystemExit(f"unknown detector; the score files hold {', '.join(systems)}")
