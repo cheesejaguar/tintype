@@ -593,6 +593,9 @@ enum Cmd {
         /// Write one score file per test set and candidate here, for `report --operating-points`.
         #[arg(long)]
         write_scores: Option<PathBuf>,
+        /// Keep fit items that are also test items in the fit, and mark the output as in-sample (to read a cutoff on slices of the set it was fitted on).
+        #[arg(long)]
+        in_sample: bool,
     },
     /// Check the released model files (weights and specs) against the
     /// SHA-256 values recorded in the source and in docs/DATA.md.
@@ -1060,7 +1063,7 @@ fn main() -> Result<()> {
         Cmd::Interpolate { a, a_prefix, b, b_prefix, alpha, out_dir, average, weights, out, spec, overwrite } => {
             tintype::interpolate::run(tintype::interpolate::Args { a, a_prefix, b, b_prefix, alphas: alpha, out_dir, average, weights, out, spec, overwrite })
         }
-        Cmd::ReplayPool { fit, test, spec, pool, order, target_fpr, rule, min_source, tolerance, margin_step, margin_max, asymmetric_margins, slice_by, write_scores } => {
+        Cmd::ReplayPool { fit, test, spec, pool, order, target_fpr, rule, min_source, tolerance, margin_step, margin_max, asymmetric_margins, slice_by, write_scores, in_sample } => {
             use tintype::pool::{Refit, Rule};
             let rule = match rule.as_str() {
                 "pooled" => Rule::Pooled,
@@ -1070,7 +1073,7 @@ fn main() -> Result<()> {
             anyhow::ensure!(margin_step > 0.0 && margin_max >= 0.0, "--margin-step must be positive and --margin-max not negative");
             anyhow::ensure!(slice_by.as_deref().is_none_or(|s| s == "dataset" || s == "generator"), "--slice-by takes dataset or generator");
             let grid: Vec<f32> = (0..=(margin_max / margin_step).round() as usize).map(|i| i as f32 * margin_step).collect();
-            let args = tintype::pool::Args { fit, test, spec, pools: pool, orders: order, target_fpr, rule, refit: Refit { tolerance, grid, symmetric: !asymmetric_margins }, slice_by, write_scores };
+            let args = tintype::pool::Args { fit, test, spec, pools: pool, orders: order, target_fpr, rule, refit: Refit { tolerance, grid, symmetric: !asymmetric_margins }, slice_by, write_scores, in_sample };
             tintype::pool::run(args, &mut std::io::stdout().lock())
         }
         Cmd::VerifyModels { root } => {

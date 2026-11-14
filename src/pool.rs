@@ -678,6 +678,10 @@ pub struct Args {
     pub slice_by: Option<String>,
     /// Directory for one score file per test set and candidate.
     pub write_scores: Option<PathBuf>,
+    /// Keep fit items that are also test items in the fit. The results on
+    /// them are then in-sample, and the output says so: for reading a cutoff
+    /// on the slices of the very set it was fitted on.
+    pub in_sample: bool,
 }
 
 fn files_of(patterns: &[String]) -> Result<Vec<PathBuf>> {
@@ -719,10 +723,14 @@ pub fn run(args: Args, out: &mut impl Write) -> Result<()> {
     }
     // Fitting and reporting stay apart: a file that is in both is reported on, not fitted on.
     let before = fit.len();
-    {
+    let shared = {
         let tested: std::collections::HashSet<&str> = tests.iter().flat_map(|(_, items)| items.iter().map(|it| it.path.as_str())).collect();
-        fit.retain(|it| !tested.contains(it.path.as_str()));
-    }
+        let shared = fit.iter().filter(|it| tested.contains(it.path.as_str())).count();
+        if !args.in_sample {
+            fit.retain(|it| !tested.contains(it.path.as_str()));
+        }
+        shared
+    };
     let left_out = before - fit.len();
     let fit_logits: Vec<Vec<f32>> = fit.iter().map(|it| it.logits.clone()).collect();
     let fit_labels: Vec<u8> = fit.iter().map(|it| it.label).collect();
@@ -762,6 +770,9 @@ pub fn run(args: Args, out: &mut impl Write) -> Result<()> {
         Rule::Pooled => "pooled over real items".to_string(),
         Rule::Balanced(min) => format!("averaged over the {} real sources with at least {min} items", mean_fit.sources),
     })?;
+    if args.in_sample && shared > 0 {
+        writeln!(out, "IN-SAMPLE: {shared} fit items are also test items and were kept in the fit (--in-sample). Every figure on them comes from thresholds, margins and weights fitted on those same items.")?;
+    }
     if left_out > 0 {
         writeln!(out, "{left_out} items of the fit files are also test items (same path) and were left out of the fit. Paths are all this checks: copies and derivatives of a fit item under another path are not noticed.")?;
     }
@@ -1195,7 +1206,13 @@ mod tests {
             refit: Refit::default(),
             slice_by: Some("dataset".into()),
             write_scores: Some(dir.path().join("out")),
+            in_sample: false,
         };
+        // Asked to, the shared items stay in the fit and the output is marked.
+        let mut marked = Vec::new();
+        run(Args { fit: args.fit.clone(), test: args.test.clone(), spec: None, pools: vec!["mean".into()], orders: vec!["shipped".into()], target_fpr: 0.015, rule: Rule::Balanced(100), refit: Refit::default(), slice_by: None, write_scores: None, in_sample: true }, &mut marked).unwrap();
+        let marked = String::from_utf8(marked).unwrap();
+        assert!(marked.contains("Fit items: 3000 (1500 AI, 1500 real)") && marked.contains("IN-SAMPLE: 40 fit items are also test items and were kept in the fit"), "{marked}");
         let mut out = Vec::new();
         run(args, &mut out).unwrap();
         let out = String::from_utf8(out).unwrap();

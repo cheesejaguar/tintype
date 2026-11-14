@@ -354,6 +354,117 @@ was scored.** Nothing above changed.
 - **Cutoffs are fitted on all authentic rows of `calibrate`**, originals
   and processed copies together, with `tintype calibrate`'s default rule.
 
+## View pooling and weight interpolation on the frozen split: what was fixed before the look at `test`
+
+Written on 2026-11-14 for workstream 10
+([runbook](runbooks/interpolation-pooling.md)), after the incumbent's
+tables on the frozen split existed and before anything of this workstream
+was computed on `test`. The selection rules below were written before the
+`calibrate` results they select on were read. The gate is the runbook's, a
+proposed criterion: *interpolation recovers legacy-GAN recall, or pooling
+recovers clean recall, at a fixed false-positive rate; neither may weaken
+robust (distorted) performance, current generators or reposted images.*
+Nothing ships from either part whatever the outcome.
+
+Common to both parts:
+
+- **Operating points**: 1% and 0.1% false-positive rate. The result is at
+  cutoffs frozen on `calibrate` (all authentic rows, originals and
+  processed copies together, `calibrate`'s default rule: balanced over the
+  real sources with at least 100 items). Recall at empirical cutoffs found
+  on the reported rows themselves is given beside it and labelled.
+- **Slices**: *clean* (`transform` none); *degraded* (every other
+  `transform`); *reposts* (the three `repost-*` transforms); the seen
+  families `flux` and `sd3` as "current generators"; the held-out families
+  `infinity` and `rar`; the authentic sources.
+- **Intervals**: 95% bootstrap over parents
+  (`report --operating-points --cluster-by parent`); for authentic rows
+  the one-sided 95% Clopper–Pearson upper bound.
+- **"Not worse"** on a slice means: recall not below the lower end of the
+  reference's interval on that slice, and authentic rows flagged not above
+  the reference's upper bound. **"Better"** means recall above the
+  reference's at both operating points, and at one or both of them the
+  reference's recall below the lower end of the candidate's interval.
+- **Cost**: views per image with early exit, replayed. Latency is not
+  measured now (the machine is shared); it stays a step in the runbook.
+- The caveats of the frozen split apply: authentic originals are camera
+  JPEGs of 12 megapixels or more and generated originals are PNGs of 256
+  to 1,024 px; no real platform round trips and no learned-codec copies;
+  `test` has been looked at before (the incumbent, the processing-chain
+  arms), and each look of this workstream is logged in the runbook.
+
+**Part B: pooling of the released model's six view logits.** No scoring:
+the incumbent's all-views score files of `fit`, `calibrate` and `test`.
+
+- **Candidates**: trimmed mean, median, top 2, top 3, maximum, and
+  per-view weights fitted on `fit`; each looking at the views in the
+  shipped order (2,0,1,3,4,5) and in an order chosen greedily on `fit`;
+  each with one early-exit margin per stage and with margins fitted
+  separately above and below. The **reference** is the mean in the shipped
+  order with one margin per stage, refitted exactly as the candidates are.
+- **On `fit`**: the weights, the greedy order, a threshold for a 1% target
+  and the early-exit margins (tightest on a grid of 0 to 12 in steps of
+  0.25 that keep pooled precision and recall within 0.001 of all views).
+- **On `calibrate`, to choose at most one candidate**: with early exit,
+  recall at 1% and at 0.1% empirical false-positive rate on the clean rows
+  and on the degraded rows separately, and views per image over all rows.
+  A candidate is eligible when (a) its clean recall is above the
+  reference's at both rates, (b) its degraded recall is not below the
+  reference's at either rate, and (c) it needs no more than twice the
+  reference's views per image. Among the eligible, the one with the
+  highest clean recall at 1% is chosen (then at 0.1%, then fewer views).
+  If none is eligible, no candidate goes to `test`, the pooling half of
+  the gate has failed on `calibrate`, and `test` is read once for the
+  refitted mean alone, as the early-exit re-check of the refit itself.
+- **On `test`, once**: for the chosen candidate and the mean, threshold
+  and margins refitted on `calibrate` for 1% and for 0.1%.
+- **The gate passes for pooling** when, at both frozen cutoffs and with
+  early exit, the candidate is better than the mean on the clean rows, not
+  worse on the degraded rows, the reposts, the current generators and the
+  held-out families, flags no more authentic rows than the mean's upper
+  bound on clean and on degraded rows, and stays within twice the mean's
+  views per image. Otherwise it fails.
+
+**Part A: interpolation from the released weights towards an earlier
+checkpoint.** Candidates `(1 − alpha) · released + alpha · B` under
+`runs/`, written by `tintype interpolate`, run through Tintype's six
+views with the mean of all views (an interpolant has no fitted early
+exit).
+
+- **Anchors `B`**: Community Forensics 224 (the phase-1 initialiser, the
+  one the report names; tensor prefix `vit.`), and the phase-3 weights
+  (the checkpoint phase 6 continued from; SHA-256 `2d11bffd…`). The second
+  anchor is an addition to the runbook's grid, made here, before any score.
+- **`alpha`**: 0.10, 0.20, 0.30, 0.50 for each anchor: eight candidates.
+  `alpha` 0 is the incumbent.
+- **Legacy-GAN recall cannot be measured on the frozen split**: it holds
+  no GAN family. It is measured on the twelve GAN sets of Confirmation 7
+  (4,000 generated, 3,858 authentic; BigGAN, CycleGAN, GauGAN, StarGAN,
+  StyleGAN, StyleGAN2, ProGAN, R3GAN, StyleGAN-XL, StyleGAN3, StyleSwin,
+  WFIR), which are development data that has been read many times. So the
+  "recovers legacy-GAN recall" half of the gate can be shown on
+  development data only; the protective half is read on the frozen split.
+- **On `calibrate`, to choose at most one candidate**: each candidate is
+  scored on `calibrate` and on the GAN sets with all six views. Its
+  cutoffs for 1% and 0.1% are fitted on the authentic rows of `calibrate`.
+  A candidate is eligible when, at both cutoffs, (a) its recall on the GAN
+  sets is above `alpha` 0's at its own cutoffs, and (b) its recall on the
+  clean generated rows of `calibrate` and on the degraded generated rows
+  of `calibrate` are each no more than 0.5 percentage points below
+  `alpha` 0's. Among the eligible, the one with the highest GAN recall at
+  the 1% cutoff is chosen. If none is eligible, `test` is not read for
+  Part A and the gate has failed on `calibrate`.
+- **On `test`, once**, for the chosen candidate, at its cutoffs frozen on
+  `calibrate`, against `alpha` 0 from the incumbent's all-views scores
+  with cutoffs refitted the same way.
+- **The gate passes for interpolation** when the chosen candidate's GAN
+  recall is above `alpha` 0's at both cutoffs (development data), and on
+  `test` it is not worse than `alpha` 0 on the clean rows, the degraded
+  rows, the reposts, the current generators and the held-out families,
+  and flags no more authentic rows than `alpha` 0's upper bound on clean
+  and on degraded rows. Otherwise it fails; a pass would rest on
+  development data for its first half and is to be read so.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames
