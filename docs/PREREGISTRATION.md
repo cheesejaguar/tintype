@@ -453,6 +453,27 @@ bounds it left open filled in here.
 - **Looks at `test`**: one scoring pass per system and one evaluation with
   the commands of the runbook, logged there.
 
+**Added on 2026-11-14 at 21:55 UTC, after choosing on `calibrate` and
+before anything was scored or computed on `test`.** Nothing above changed.
+The choice was made at commit `6fc5ecb` with
+`scripts/compare-policies.py ... --report-on calibrate --cohort-by processing`
+(the command and its output are in the runbook).
+
+- **The fusion carried to `test`: weights fitted on `fit`, for
+  `abs(first logit) <= 3`.** On `calibrate`'s processed rows, at the cutoffs
+  frozen on `calibrate`, the baseline finds 1,109 of 2,400 at 0.1% and
+  1,905 at 1%. All eight members are at or above 1,109 at 0.1%; at 1% they
+  find 1,915 (50:50, margin 1), 1,905 (margin 2), 1,812 (margin 3), 1,792
+  (every photo), and fitted 1,915, 1,908, **1,948** and 1,929. The chosen
+  one gains 1.79 points at 1% on these rows, in-sample: below the 5 points
+  the gate asks for on `test`.
+- **The route bound of gate item 5**: the shipped band sends 6,752 of
+  12,457 `calibrate` photos (54.20%) to the second model. The chosen fusion
+  sends 2,406 (19.31%) there, the narrowed band 1,363 (10.94%).
+- For the record, among the single profiles on those rows: strict finds
+  1,712 at 0.1% and 1,930 at 1%, six views 1,633 and 1,859, sensitive 983
+  and 1,807.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames
