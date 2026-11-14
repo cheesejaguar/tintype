@@ -311,6 +311,21 @@ fn without_review(row: &serde_json::Value) -> serde_json::Value {
     r
 }
 
+/// Whether two JSON values are the same but for the last bits of their
+/// numbers. Two runs of the CPU engine over several files can put the views
+/// into batches differently, and with Accelerate a view's logit depends on
+/// what it is run with (by about 1e-6), so rows from separate runs are
+/// compared this way and not bit for bit.
+fn same_but_for_rounding(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x == y || matches!((x.as_f64(), y.as_f64()), (Some(x), Some(y)) if (x - y).abs() < 1e-4),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same_but_for_rounding(x, y)),
+        (Value::Object(x), Value::Object(y)) => x.len() == y.len() && x.iter().all(|(k, x)| y.get(k).is_some_and(|y| same_but_for_rounding(x, y))),
+        _ => a == b,
+    }
+}
+
 #[test]
 fn review_is_off_by_default_and_only_adds_fields_when_on() {
     let dir = common::scratch("cli-review");
@@ -338,7 +353,7 @@ fn review_is_off_by_default_and_only_adds_fields_when_on() {
         assert_eq!(rows.len(), 4);
         for (row, before) in rows.iter().zip(&plain_rows) {
             // Everything that was there is there unchanged, the verdict and the score included.
-            assert_eq!(&without_review(row), before, "margin {margin}");
+            assert!(same_but_for_rounding(&without_review(row), before), "margin {margin}: {row} against {before}");
             if row.get("error").is_some() {
                 // An unreadable file has no verdict to review.
                 assert!(row.get("review").is_none(), "{row}");
@@ -372,7 +387,7 @@ fn review_is_off_by_default_and_only_adds_fields_when_on() {
     // Disagreement alone: `view_disagreement` is the only reason it can give.
     let split = json_lines(&detect(&files, &["--json", "--frames", "4", "--all-views", "--review-disagreement", "0.01"]));
     for (row, before) in split.iter().zip(json_lines(&detect(&files, &["--json", "--frames", "4", "--all-views"]))) {
-        assert_eq!(without_review(row), before);
+        assert!(same_but_for_rounding(&without_review(row), &before), "{row} against {before}");
         if let Some(review) = row.get("review").and_then(|r| r.as_bool()) {
             assert_eq!(row.get("review_reason").and_then(|r| r.as_str()), review.then_some("view_disagreement"), "{row}");
         }
