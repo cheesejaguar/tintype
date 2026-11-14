@@ -57,7 +57,7 @@ def read_edits(path):
         f = line.split("\t")
         edit = None if f[3] in ("-", "") else (float(f[3]), float(f[4]))
         cuts = [] if len(f) < 9 or f[8] in ("-", "") else [float(c) for c in f[8].split(",")]
-        out[os.path.realpath(root / f[0])] = {"kind": f[1], "generated": f[2] == "1", "edit": edit, "cuts": cuts, "slice": Path(f[0]).stem}
+        out[os.path.realpath(root / f[0])] = {"kind": f[1], "generated": f[2] == "1", "edit": edit, "cuts": cuts, "slice": Path(f[0]).stem, "parent": Path(f[0]).parent.name}
     return out
 
 
@@ -132,6 +132,10 @@ def report(edits, systems, top_k, cutoff_on, rates=RATES):
     kinds = sorted({e["kind"] for e in edits.values() if not e["generated"]})
     lines.append(f"Splice store: {len(edits)} clips ({sum(e['generated'] for e in edits.values())} with a generated segment; authentic kinds: {', '.join(kinds)}).")
     lines.append("Cutoffs are set per system and rule on the authentic clips" + (f" of kind `{cutoff_on}`" if cutoff_on else " of every kind") + ". An edit no sampled frame falls inside counts as missed.")
+    pool = [e for e in edits.values() if not e["generated"] and (cutoff_on is None or e["kind"] == cutoff_on)]
+    parents = len({e.get("parent", i) for i, e in enumerate(pool)})
+    if parents < len(pool):
+        lines.append(f"Those {len(pool)} authentic clips come from {parents} parent timelines, and clips of one parent share most of their frames: the authentic rate is resolved no finer than 1/{parents}, whatever the clip count allows.")
     for name, results in systems:
         rules = rules_for(results, top_k)
         rows = {k: results.get(k, {"usable": False}) for k in edits}
@@ -223,6 +227,9 @@ def self_test():
     row = next(l for l in text.splitlines() if l.startswith("| generated-splice-2s (found)"))
     assert row.count("1/2 (50.0%) +1 unsampled") == 4, text
     assert "Edits with at least one sampled frame inside: generated-splice-2s: 1/2 (50.0%)." in text, text
+    assert "parent timelines" not in text
+    shared = {k: dict(e, parent="p0") for k, e in edits.items()}
+    assert "Those 2 authentic clips come from 1 parent timelines" in report(shared, [("test", results)], 3, None, rates=(0.01,))
     assert "| reencode | 1 | 0/1 (0.0%) | 0/1 (0.0%) | 0/1 (0.0%) | 0/1 (0.0%) |" in text, text
     # No authentic window is above the cutoff: no false flagged segments; one edit lies in a flagged window.
     assert "0.0/h overall" in text and "Edits inside a flagged window: generated-splice-2s 1/2 (50.0%)." in text, text
