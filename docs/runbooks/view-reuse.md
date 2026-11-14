@@ -11,6 +11,8 @@ merged separately.
 |---|---|---|
 | Work counters (`TINTYPE_STATS`), timing and parity scripts | built | `src/stats.rs`, `scripts/view-reuse-bench.py`, `scripts/view-reuse-parity.py` |
 | 1. Score identical views of an image once | built, on by default where exact | `image_io::Pixels`, `detector::ViewReuse` |
+| 2. Prepare frames and views only when early exit reaches them | built, on | `detector::Stages`, `video::Frame` |
+| 3. Keep the decoder open for a clip's second half | benchmarked, **not built** | `yuv::continuation_times` (test only) |
 
 ## The gate
 
@@ -322,3 +324,256 @@ which is what the default avoids:
 
 So the opt-in costs a few rows in the seventh decimal of the logit on this
 engine and buys the CPU throughput in the table above.
+
+## Change 2: prepare frames and views only when early exit reaches them
+
+### What changes
+
+Before, the worker that decoded an item prepared all of it at once: all six
+views of a photo, or all six views of all eight first-half frames of a clip,
+each frame converted from YCbCr to RGB first. Early exit then looked at one
+view of most photos and at two frames of most clips.
+
+Now the worker prepares what the first stage scores (one view of a photo;
+frames 0 and 7 of a clip, the first two looked at) and the item keeps its
+images. When a stage is reached, its frames are converted, their views
+resolved and the views cut out, on the scoring thread's side, several items
+side by side. A frame is dropped as soon as nothing is left to cut out of
+it. Frames arrive from the decoder unconverted (`video::Frame`,
+`sample_frames_range_unconverted`): the decoder still has to read through
+frame 7 before a clip can be decided, but the six frames in between are
+converted and cut up only if the clip goes on.
+
+Which views are scored, their pixels and the order of the checks do not
+depend on when a view is prepared, so scores are untouched on every engine
+(parity below; `tests/lazy_preparation.rs` checks the counts and that a
+clip scores the same from frames converted up front).
+
+Three limits keep this from costing memory or time:
+
+- Clips keep their frames up to 256 MB (counted as RGB) over all clips in
+  flight; a clip that arrives when that is full has everything prepared up
+  front, as before.
+- One photo at a time is kept. A photo's later views are cheap to cut out
+  next to what the photo costs to hold, and an earlier build of this change
+  that kept every photo in flight took 1592 MB against 1413 MB on the 308
+  photos (CPU, one process) at the same throughput (median 69.3 files/s
+  for both).
+- With several items on the CPU engine everything is prepared up front, as
+  before. There the network sets the pace (about 16 ms a view) and the
+  decoding threads idle, so preparing early costs nothing, while preparing
+  between network runs would add to them.
+
+So this applies to a single file on any engine and to many files on the GPU
+engines.
+
+### What it saves
+
+"Before" is change 1, "after" is this change; same machine, same procedure.
+
+| Measure | Engine | Cohort | Before → after | Work |
+|---|---|---|---|---|
+| File to verdict per process, p50 / p95 / mean (ms) | `cpu` | Clips (60) | 262.4 / 837.0 / 374.4 → 251.4 / 845.2 / 361.7 | frames converted 576 → 314, views cut out 3456 → 1884 |
+| | `gpu` | Clips (60) | 372.2 / 622.1 / 414.2 → 342.6 / 625.9 / 404.4 | frames converted 576 → 314, views cut out 3240 → 1778 |
+| | `cpu` | Ordinary photos (308) | 49.7 / 106.6 / 57.8 → 49.2 / 106.1 / 57.3 | views cut out 1820 → 548 |
+| | `cpu` | Small images (100) | 39.2 / 55.0 / 45.6 → 38.9 / 55.0 / 45.3 | views cut out 200 → 142 |
+| | `cpu` | Few window positions (100) | 39.4 / 87.6 / 49.7 → 39.1 / 87.8 / 49.5 | views cut out 431 → 167 |
+| In-process latency, p50 / p95 / mean (ms) | `cpu` | Ordinary photos (300) | 31.6 / 84.7 / 35.4 → 31.7 / 84.3 / 34.9 | views cut out 1802 → 544 |
+| | `cpu` | Small images (95) | 16.8 / 33.1 / 23.5 → 16.8 / 33.5 / 23.6 | views cut out 200 → 142 |
+| | `cpu` | Few window positions (95) | 16.9 / 70.4 / 28.1 → 16.7 / 70.4 / 28.1 | views cut out 431 → 167 |
+| Throughput (files/s), peak memory (MB) | `gpu` | Clips | 21.2 → 21.7, 1076 → 945 | frames converted 576 → 354, views cut out 3240 → 2018 |
+| | `gpu` | Ordinary photos | 337.6 → 331.0, 1589 → 1603 | views cut out 1820 → 1812 |
+| | `gpu` | Small images | 304.0 → 305.6, 461 → 461 | |
+| | `gpu` | Few window positions | 210.9 → 212.7, 522 → 523 | |
+| | `cpu` (prepared up front, as before) | Clips | 4.4 → 4.4 (13.50 s → 13.66 s), 1136 → 1050 | unchanged |
+| | `cpu` | Ordinary photos | 72.0 → 70.8, 1404 → 1415 | unchanged |
+| | `cpu` | Small images | 74.3 → 74.6, 618 → 610 | unchanged |
+| | `cpu` | Few window positions | 79.5 → 80.0, 599 → 597 | unchanged |
+
+Time spent converting and preparing, summed over the 60 clip processes on
+the CPU engine: converting 640 → 302 ms, preparing views 1236 → 495 ms. The
+time counted as decoding rises (2206 → 2476 ms) because the reads now
+follow each other without the conversions in between, so more of the wait
+for the decoder shows up in them; the decoded frames are the same 8472.
+
+**Against the gate.** Clips, one at a time: the median clip is 4% faster on
+the CPU engine and 8% on the GPU engine; p95 does not move, because the
+slowest clips are the ones that look at all 16 frames and need everything.
+Clips, many at once on the GPU: 2% more throughput and 12% less memory.
+Photos, one at a time: the mean is 1% lower (35.4 → 34.9 ms in process),
+which is the resize for the whole-image view that most photos no longer
+need; the median image does not show it. Photos, many at once, and
+everything on the CPU engine with several files: no change, by
+construction on the CPU; the differences in the table (-2% to +1%) are the
+noise between runs of the same work. This change is small: worth having for
+clips, a wash for photos.
+
+### Parity
+
+Both changes together (the final binary) against `b88c122`.
+
+One process per file, where the batches do not depend on timing:
+
+| Engine | Files | Profiles | Rows compared | Differing |
+|---|---|---|---|---|
+| `cpu` (Accelerate) | 550 photos (308 ordinary, 100 small, 100 few positions, 42 synthetic) | default, `--all-views`, `--fast`, `--strict`, `--sensitive` | 2750 | 0 |
+| `cpu` (Accelerate) | 60 clips | default, `--all-views` | 120 | 0 |
+| `gpu`, `gpu-f32` | 242 photos (small, few positions, synthetic) | default, `--all-views` | 968 | 0 |
+| `gpu` | 60 clips | default | 60 | 0 |
+| `cpu`, `gpu`, `gpu-f32` | the bundled demo image (`tintype demo --json`) | default | 3 | 0 |
+| `cpu`, pure-Rust kernels (both binaries built with `--features portable-cpu`; reuse on everywhere) | the 550 photos | all five | 2750 | 0 |
+| `cpu`, pure-Rust kernels | 60 clips | default | 60 | 0 |
+
+All files in one process:
+
+| Engine | Files | Profiles | Rows compared | Differing from base | Base differing from itself |
+|---|---|---|---|---|---|
+| `gpu`, `gpu-f32` | 550 photos | all five | 5500 | 0 | 0 |
+| `gpu`, `gpu-f32` | 60 clips | default, `--all-views` | 240 | 0 | 0 |
+| `cpu`, pure-Rust kernels (reuse on everywhere) | 550 photos | all five | 2750 | 0 | 0 |
+| `cpu`, pure-Rust kernels | 20 clips | default, `--all-views` | 40 | 0 | 0 |
+| `cpu` (Accelerate) | 60 clips | default, `--all-views` | 120 | 0 | 0 |
+| `cpu` (Accelerate) | 550 photos | `--all-views`, `--strict` | 1100 | 0 | 0 |
+| `cpu` (Accelerate) | 550 photos | default | 550 | 2 rows, largest logit difference 2.4e-7 | 1 row, 6.0e-8 |
+| `cpu` (Accelerate) | 550 photos | `--fast` | 550 | 2 rows, 4.8e-7 | 2 rows, 4.8e-7 |
+| `cpu` (Accelerate) | 550 photos | `--sensitive` | 550 | 2 rows, 2.4e-7 | 1 row, 6.7e-8 |
+
+No verdict and no number of views or frames looked at changed in any row of
+any table.
+
+The last three rows are the case the gate's second clause is about. On this
+path (several photos through the CPU engine with Accelerate) the new binary
+does exactly what the base does, with no reuse and everything prepared up
+front, and the base binary does not reproduce itself: which views share a
+network run depends on the order the decoding threads finish in. Read
+literally, the clause ("no more rows than base differs from itself, by no
+more") fails in two of those rows, 2 rows against 1; but each row compares
+one pair of runs with another, and the count varies from run to run. Ten
+repetitions of the default profile over the 550 photos:
+
+| Comparison | Rows differing, run by run | Largest logit difference |
+|---|---|---|
+| new against base | 2, 0, 2, 0, 0, 0, 2, 2, 2, 2 | 2.4e-7 |
+| base against base | 2, 0, 3, 0, 0, 2, 2, 2, 0, 0 | 2.4e-7 |
+
+The two are the same thing. The clause should have been written against
+repeated runs from the start; it is left as it was written and this is the
+result.
+
+## Change 3: keep the decoder open for a clip's second half (benchmarked, not built)
+
+### What happens now
+
+A clip is sampled at 16 positions. The first half is decoded, converted as
+needed and scored; a clip still undecided after its eight first-half frames
+(12 of the 60 here) is **opened again**, read from its first frame up to
+position 8 without converting anything, and then read on to position 15.
+Everything up to position 7 is decoded twice.
+
+Keeping the decoder open would let it read on from where it stopped. The
+brief asked for a benchmark first and for the change only if it shows a
+gain, with a cap on the decoders kept open.
+
+### The benchmark
+
+`reading_on_against_reopening_for_the_second_half` (in `src/avf.rs` for the
+system decoder and `src/swdec.rs` for the pure-Rust reader, ignored by
+default) times, per clip, with no conversion: opening and reading through
+position 7; reading on through position 15; and opening again and reading
+from the start through position 15.
+
+```bash
+TINTYPE_TEST_VIDEOS=clips.txt cargo test --release --locked --lib avf::tests::reading_on -- --ignored --nocapture
+TINTYPE_TEST_VIDEOS=clips.txt cargo test --release --locked --lib swdec::continuation -- --ignored --nocapture
+```
+
+Mean per clip, on the machine above (load average 5.0 at the start; three
+runs for the system decoder, which agreed to within 0.5 ms (the first is
+shown), one for the pure-Rust reader):
+
+| Decoder | Clips | First half | Second half, reading on | Second half, after reopening | Saved per clip that goes on | Share of that clip's decoding |
+|---|---|---|---|---|---|---|
+| System (AVFoundation) | all 60 | 35.3 ms, 113 frames | 31.2 ms, 128 frames | 66.1 ms, 242 frames | 34.9 ms | 34% |
+| System (AVFoundation) | the 12 that go on | 28.0 ms, 64 frames | 17.9 ms, 71 frames | 40.3 ms, 136 frames | 22.4 ms | 33% |
+| Pure Rust (`TINTYPE_DECODER=rust`, what Linux and Windows use) | the 12 that go on | 254.7 ms, 64 frames | 219.5 ms, 71 frames | 471.7 ms, 136 frames | 252.1 ms | 35% |
+
+So the decoder-level gain is real: a third of the decoding of a clip that
+goes on.
+
+### What it would be worth end to end
+
+File to verdict for the 12 clips that go on, one `detect` process each,
+final binary, each clip's best of 2 passes (load average 11.0 at the
+start), against the saving the benchmark gives per clip:
+
+| Decoder | Engine | Mean per clip | Saving per clip | Share |
+|---|---|---|---|---|
+| System | `gpu` | 595.5 ms | 22.4 ms | 3.8% |
+| System | `cpu` (Accelerate) | 826.1 ms | 22.4 ms | 2.7% |
+| Pure Rust | `cpu` (Accelerate) | 1420.3 ms | 252.1 ms | 17.8% |
+| Pure Rust | `cpu` (pure-Rust kernels: the Linux and Windows configuration, run here on the M6) | 1910.5 ms | 252.1 ms | 13.2% |
+
+These are the clips that gain; the other four in five are decided in the
+first half and gain nothing. Over the whole cohort with the system decoder
+that is 12 x 22.4 ms in 60 clips of 404.4 ms each on the GPU engine, about
+1%.
+
+### Why it is not built, and what it would take
+
+With the system decoder, which is what this machine uses, the gain is about
+1% of clip time: not worth what it costs. With the pure-Rust reader it is
+13 to 18% for one clip in five, which is worth having on Linux and Windows.
+It was left out of this pass to keep the two changes above reviewable and
+because the build is not small:
+
+- The decoder has to outlive the call that read the first half. The system
+  decoder is read on its own thread under a 30-second deadline (a stalled
+  read is abandoned and counted), so a kept decoder is a parked thread
+  holding a decoding session, and the deadline and the stall count have to
+  cover the second read too.
+- Clips reach their half-way check at different times and four in five are
+  decided there, so a decoder must be released the moment its clip is
+  decided: the scoring loop needs a hook for that, or the kept decoders
+  fill up with clips that will never use them.
+- The number kept open needs a cap (the brief asks for one); a clip over
+  the cap falls back to reopening, as now.
+- The frames picked must be the ones a single pass picks. Picking carries
+  state across the half (the previous frame, the first timestamp), so the
+  sampler has to become resumable, and parity has to be shown frame for
+  frame against `sample_frames`.
+
+That is the next step for this item. The benchmark and its two tests stay
+in the tree so that the result can be checked before and after.
+
+## Ready to run
+
+Nothing here needs a long GPU run. To repeat everything on a quiet machine,
+or on Linux or Windows, where reuse is on everywhere and the pure-Rust
+reader decodes the clips:
+
+```bash
+git checkout b88c122 && cargo build --release --locked --bin tintype && cp target/release/tintype /tmp/tintype-base
+git checkout <this branch> && cargo build --release --locked --bin tintype
+# then the commands under "How parity is checked" and "How time is measured",
+# with BASE=/tmp/tintype-base and NEW=target/release/tintype
+cargo test --release --locked --test view_reuse -- --ignored   # the GPU check, macOS only
+```
+
+Not measured here: any x86 machine (the pure-Rust kernels were checked on
+this machine's NEON build only; the test suite holds each platform to the
+property reuse relies on), and clips at more than one per process with the
+pure-Rust reader.
+
+## Seen on the way, not changed
+
+- A clip that yields fewer frames than it was sampled for is scored twice.
+  Both bundled fixture clips give 15 of 16 frames: the first half is scored
+  (48 views), the second half comes back one frame short (42 views), and
+  the clip is then scored again whole (90 views), so `views_scored` is 180
+  for a verdict that rests on 90. The first two passes could be kept.
+- With Accelerate, several files in one process do not give the same bytes
+  twice (0 to 3 rows of 550, in the seventh decimal of the logit). One file
+  per process does.
+- The same frame can be picked for more than one sampling position in a
+  short clip. Its views are then scored once per position; reuse here is
+  within one image, not across frames.

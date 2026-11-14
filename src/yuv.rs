@@ -7,6 +7,7 @@ use anyhow::{bail, Result};
 use std::path::Path;
 
 /// One decoded frame: full-resolution luma and interleaved half-resolution CbCr.
+#[derive(Clone)]
 pub struct Yuv {
     pub w: usize,
     pub h: usize,
@@ -130,9 +131,16 @@ pub fn uniform(r: &mut impl Source, n: usize, max_seconds: f64, path: &Path) -> 
 /// before `from` are read without being converted. A clip that ends before
 /// frame `from` gives an empty list when `from > 0`.
 pub fn uniform_range(r: &mut impl Source, n: usize, max_seconds: f64, from: usize, to: usize, path: &Path) -> Result<Vec<Rgb>> {
+    uniform_range_with(r, n, max_seconds, from, to, path, Yuv::to_rgb)
+}
+
+/// As [`uniform_range`], with `keep` saying what to keep of each frame that
+/// is picked: its RGB picture, or the frame as decoded, to be converted only
+/// if it is looked at.
+pub fn uniform_range_with<T>(r: &mut impl Source, n: usize, max_seconds: f64, from: usize, to: usize, path: &Path, keep: impl Fn(&Yuv) -> T) -> Result<Vec<T>> {
     let to = to.min(n);
     let span = crate::video::span(r.duration(), max_seconds);
-    let mut out: Vec<Rgb> = Vec::with_capacity(to.saturating_sub(from));
+    let mut out: Vec<T> = Vec::with_capacity(to.saturating_sub(from));
     // Index of the next of the `n` targets.
     let mut k = 0;
     let mut prev: Option<(f64, Yuv)> = None;
@@ -152,7 +160,7 @@ pub fn uniform_range(r: &mut impl Source, n: usize, max_seconds: f64, from: usiz
             if k >= from {
                 // The target lies between the previous frame and this one.
                 let use_prev = prev.as_ref().is_some_and(|(pp, _)| target - pp < pts - target);
-                out.push(if use_prev { prev.as_ref().unwrap().1.to_rgb() } else { f.to_rgb() });
+                out.push(keep(if use_prev { &prev.as_ref().unwrap().1 } else { &f }));
             }
             k += 1;
         }
@@ -161,7 +169,7 @@ pub fn uniform_range(r: &mut impl Source, n: usize, max_seconds: f64, from: usiz
     // A clip too short to reach any target still yields its last frame.
     if let Some((_, last)) = &prev {
         if k == 0 && from == 0 {
-            out.push(last.to_rgb());
+            out.push(keep(last));
         }
     }
     if out.is_empty() && from == 0 {
@@ -186,6 +194,67 @@ pub fn first(r: &mut impl Source, n: usize, opencv: bool, path: &Path) -> Result
         bail!("no frames decoded from {}", path.display());
     }
     Ok(out)
+}
+
+/// What keeping a decoder open would save on a clip that goes on to its
+/// second half: seconds to open the clip and read through the last frame of
+/// the first half of `n` (what every clip pays), to read on from there
+/// through the last frame of the second half (a decoder kept open), and to
+/// open the clip again and read from its start through that same frame
+/// (what happens now). Reading only; no frame is converted. For the
+/// benchmarks in [`crate::avf`] and [`crate::swdec`].
+#[cfg(test)]
+pub(crate) fn continuation_times<S: Source>(open: impl Fn() -> Result<S>, n: usize, max_seconds: f64) -> Result<([f64; 3], [usize; 3])> {
+    use std::time::Instant;
+    // Read until a frame at or after `until` seconds past the first one.
+    fn read_through(r: &mut impl Source, t0: &mut Option<f64>, until: f64) -> usize {
+        let mut frames = 0;
+        while let Some((pts, _)) = r.next() {
+            frames += 1;
+            if pts - *t0.get_or_insert(pts) >= until {
+                break;
+            }
+        }
+        frames
+    }
+    let t = Instant::now();
+    let mut r = open()?;
+    let span = crate::video::span(r.duration(), max_seconds);
+    let (half, end) = ((n / 2 - 1) as f64 * span / n as f64, (n - 1) as f64 * span / n as f64);
+    let mut t0 = None;
+    let first_frames = read_through(&mut r, &mut t0, half);
+    let first = t.elapsed().as_secs_f64();
+    let t = Instant::now();
+    let on_frames = read_through(&mut r, &mut t0, end);
+    let on = t.elapsed().as_secs_f64();
+    drop(r);
+    let t = Instant::now();
+    let again_frames = read_through(&mut open()?, &mut None, end);
+    let again = t.elapsed().as_secs_f64();
+    Ok(([first, on, again], [first_frames, on_frames, again_frames]))
+}
+
+/// Run [`continuation_times`] over the clips listed in the file
+/// `TINTYPE_TEST_VIDEOS` names (one path per line) and print the totals.
+#[cfg(test)]
+pub(crate) fn report_continuation(decoder: &str, times: impl Fn(&Path) -> Result<([f64; 3], [usize; 3])>) {
+    let list = std::env::var("TINTYPE_TEST_VIDEOS").expect("set TINTYPE_TEST_VIDEOS to a file listing clips");
+    let (mut t, mut f, mut clips) = ([0f64; 3], [0usize; 3], 0);
+    for path in std::fs::read_to_string(list).unwrap().lines().filter(|l| !l.is_empty()) {
+        let Ok((dt, df)) = times(Path::new(path)) else { continue };
+        clips += 1;
+        for k in 0..3 {
+            t[k] += dt[k];
+            f[k] += df[k];
+        }
+    }
+    assert!(clips > 0, "no clip could be read");
+    let ms = |s: f64| s * 1e3 / clips as f64;
+    eprintln!(
+        "{decoder}, {clips} clips, mean per clip: first half {:.1} ms ({} frames); second half reading on {:.1} ms ({} frames); second half after reopening {:.1} ms ({} frames); \
+         reading on saves {:.1} ms, {:.0}% of the decoding of a clip that goes on",
+        ms(t[0]), f[0] / clips, ms(t[1]), f[1] / clips, ms(t[2]), f[2] / clips, ms(t[2] - t[1]), 100.0 * (t[2] - t[1]) / (t[0] + t[2])
+    );
 }
 
 #[cfg(test)]

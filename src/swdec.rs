@@ -895,6 +895,12 @@ pub fn frames_uniform_range(path: &Path, n: usize, max_seconds: f64, from: usize
     yuv::uniform_range(&mut r, n, max_seconds, from, to, path).map_err(|_| r.why_empty(path))
 }
 
+/// As [`frames_uniform_range`], with the frames left as decoded.
+pub fn frames_uniform_range_unconverted(path: &Path, n: usize, max_seconds: f64, from: usize, to: usize) -> Result<Vec<yuv::Yuv>> {
+    let mut r = open(path, None)?;
+    yuv::uniform_range_with(&mut r, n, max_seconds, from, to, path, yuv::Yuv::clone).map_err(|_| r.why_empty(path))
+}
+
 pub fn frames_first(path: &Path, n: usize) -> Result<Vec<Rgb>> {
     let mut r = open(path, None)?;
     yuv::first(&mut r, n, true, path).map_err(|_| r.why_empty(path))
@@ -1012,5 +1018,16 @@ mod against_system_decoder {
         assert!(c.frames > 0, "{c:?}");
         assert_eq!((c.identical, c.produced.0), (c.frames, c.produced.1), "{c:?}");
         assert!(c.max_time_difference < 1e-3, "{c:?}");
+    }
+}
+
+#[cfg(test)]
+mod continuation {
+    /// Decoder-continuation benchmark for the pure-Rust reader. Needs real clips:
+    /// `TINTYPE_TEST_VIDEOS=clips.txt cargo test --release --lib swdec -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn reading_on_against_reopening_for_the_second_half() {
+        crate::yuv::report_continuation("pure-Rust reader", |path| crate::yuv::continuation_times(|| super::open(path, None), 16, 30.0));
     }
 }

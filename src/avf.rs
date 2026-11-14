@@ -275,6 +275,11 @@ pub fn frames_uniform_range(path: &Path, n: usize, max_seconds: f64, from: usize
     with_deadline(path, move |p| yuv::uniform_range(&mut open(p, None)?, n, max_seconds, from, to, p))
 }
 
+/// As [`frames_uniform_range`], with the frames left as decoded.
+pub fn frames_uniform_range_unconverted(path: &Path, n: usize, max_seconds: f64, from: usize, to: usize) -> Result<Vec<Yuv>> {
+    with_deadline(path, move |p| yuv::uniform_range_with(&mut open(p, None)?, n, max_seconds, from, to, p, Yuv::clone))
+}
+
 /// The first `n` frames in presentation order, with the colour conversion
 /// of OpenCV's reader (see [`Yuv::to_rgb_opencv`]).
 pub fn frames_first(path: &Path, n: usize) -> Result<Vec<Rgb>> {
@@ -434,4 +439,17 @@ pub fn compare_with_pure_rust(path: &Path, limit: usize) -> Result<Comparison> {
         }
         Ok(c)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Decoder-continuation benchmark for the system decoder. Needs real clips:
+    /// `TINTYPE_TEST_VIDEOS=clips.txt cargo test --release --lib avf -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn reading_on_against_reopening_for_the_second_half() {
+        yuv::report_continuation("system decoder", |path| with_deadline(path, |p| yuv::continuation_times(|| open(p, None), 16, 30.0)));
+    }
 }
