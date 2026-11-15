@@ -286,6 +286,11 @@ enum Cmd {
         /// Look at every view of every image (no early exit).
         #[arg(long)]
         all_views: bool,
+        /// Community Forensics weights: also time the photo second opinion
+        /// on the images inside the model's band (see `detect
+        /// --photo-second-opinion`), and print the share sent on.
+        #[arg(long, conflicts_with_all = ["reference", "fast"])]
+        photo_second_opinion: Option<PathBuf>,
     },
     /// Prepare an untrained ViT-S/16 checkpoint for detector training.
     InitTraining {
@@ -639,7 +644,7 @@ fn main() -> Result<()> {
             };
             tintype::eval::calibrate(&weights, &scores, target_fpr, &profile, rule)
         }
-        Cmd::Latency { weights, reference, manifest, n, device, fast, all_views } => {
+        Cmd::Latency { weights, reference, manifest, n, device, fast, all_views, photo_second_opinion } => {
             let items = ingest::read_manifest(&manifest)?;
             let mut spec = match reference.as_deref() {
                 Some("commfor") => ModelSpec::commfor(384),
@@ -659,23 +664,59 @@ fn main() -> Result<()> {
             let det = Detector::load(&weights, Some(spec), if stepwise { 2 } else { nv }, device)?;
             let pre = det.preprocessor();
             let mut buf = vec![0u8; nv * 3 * det.spec.img * det.spec.img];
+            // The second stage of the photo second opinion: both networks stay loaded, as
+            // in a server, and the second one is asked only about the images inside the band.
+            let mut second = match &photo_second_opinion {
+                Some(weights2) => {
+                    let band = det.spec.second_opinion.ok_or_else(|| anyhow::anyhow!("{} has no second-opinion band for photos", weights.display()))?;
+                    let det2 = Detector::load(weights2, Some(ModelSpec::commfor(384)), 1, device)?;
+                    let buf2 = vec![0u8; 3 * det2.spec.img * det2.spec.img];
+                    // One untimed run, so that the first image inside the band does not pay for the warm-up.
+                    std::hint::black_box(det2.logits(&buf2));
+                    Some((band, det2.preprocessor(), det2, buf2))
+                }
+                None => None,
+            };
             let mut ms = Vec::new();
+            let mut asked_ms = Vec::new();
             for (k, it) in items.iter().take(n + 5).enumerate() {
                 let t = std::time::Instant::now();
                 let Ok(img) = tintype::image_io::load(&it.path) else { continue };
                 pre.apply(&img, &mut buf);
-                match &exit {
-                    Some(e) if stepwise => std::hint::black_box(det.probability(&det.logits_adaptive(&buf, e))),
-                    Some(e) => std::hint::black_box(det.probability(&e.looked_at(&det.logits(&buf)[..nv], det.threshold_logit()))),
-                    None => std::hint::black_box(det.probability(&det.logits(&buf)[..nv])),
+                let seen = match &exit {
+                    Some(e) if stepwise => det.logits_adaptive(&buf, e),
+                    Some(e) => e.looked_at(&det.logits(&buf)[..nv], det.threshold_logit()),
+                    None => det.logits(&buf)[..nv].to_vec(),
                 };
+                let mut p = det.probability(&seen);
+                let mut asked = false;
+                if let Some((band, pre2, det2, buf2)) = &mut second {
+                    let first = det.calibrated_logit(&seen);
+                    if band.wanted(first) {
+                        pre2.apply(&img, buf2);
+                        p = band.probability(first, det2.logits(buf2)[0]);
+                        asked = true;
+                    }
+                }
+                std::hint::black_box(p);
                 if k >= 5 {
                     ms.push(t.elapsed().as_secs_f64() * 1e3);
+                    if asked {
+                        asked_ms.push(t.elapsed().as_secs_f64() * 1e3);
+                    }
                 }
             }
             anyhow::ensure!(!ms.is_empty(), "none of the first {} files of {} could be read", n + 5, manifest.display());
             ms.sort_by(|a, b| a.total_cmp(b));
             println!("single-image latency over {} images: median {:.1} ms, p90 {:.1} ms, p95 {:.1} ms, mean {:.1} ms", ms.len(), quantile(&ms, 0.5), quantile(&ms, 0.9), quantile(&ms, 0.95), ms.iter().sum::<f64>() / ms.len() as f64);
+            if second.is_some() {
+                asked_ms.sort_by(|a, b| a.total_cmp(b));
+                let share = 100.0 * asked_ms.len() as f64 / ms.len() as f64;
+                match asked_ms.is_empty() {
+                    true => println!("second opinion: 0 of {} images inside the band", ms.len()),
+                    false => println!("second opinion: {} of {} images inside the band ({share:.1}%); those took median {:.1} ms, p95 {:.1} ms", asked_ms.len(), ms.len(), quantile(&asked_ms, 0.5), quantile(&asked_ms, 0.95)),
+                }
+            }
             Ok(())
         }
         #[cfg(target_os = "macos")]

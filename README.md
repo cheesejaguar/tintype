@@ -444,7 +444,7 @@ shipped here. The Community Forensics weights are MIT.
 | `evaluate` | Score a whole suite with Tintype and the reference detectors, print tables |
 | `score`, `score-video` | Score one manifest (`--reference commfor|swinv2|waverep` runs a reference detector) |
 | `report` | Precision, recall, F1, FPR, AUROC, recall at 1% FPR, bootstrap intervals; `--at-rate-of` compares systems at one system's false-positive rate; `--operating-points` gives recall at 0.1% and 1% FPR, the rates at each frozen cutoff with a Clopper–Pearson bound, precision at a stated prevalence, and per-slice tables |
-| `latency` | Single-image latency, file to verdict: median, p90 and p95. Runs on every platform with `--device cpu` |
+| `latency` | Single-image latency, file to verdict: median, p90 and p95. Runs on every platform with `--device cpu`. `--photo-second-opinion <weights>` times the photo second opinion with it and prints the share of images sent on |
 | `profile` | Decoding, cropping and the network timed separately, the network at several batch sizes |
 | `ingest`, `index-folder`, `overlap`, `check-videos`, `parquet-info` | Dataset tooling |
 
