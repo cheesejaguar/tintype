@@ -275,6 +275,12 @@ pub fn frames_uniform_range(path: &Path, n: usize, max_seconds: f64, from: usize
     with_deadline(path, move |p| yuv::uniform_range(&mut open(p, None)?, n, max_seconds, from, to, p))
 }
 
+/// As [`frames_uniform`], with each frame's presentation time and position
+/// in the stream and a trace of every frame read (see [`yuv::uniform_timed`]).
+pub fn frames_uniform_timed(path: &Path, n: usize, max_seconds: f64, follow: usize, blur: usize) -> Result<(Vec<yuv::Timed>, yuv::Trace)> {
+    with_deadline(path, move |p| yuv::uniform_timed(&mut open(p, None)?, n, max_seconds, follow, blur, p))
+}
+
 /// The frames nearest to `targets` (seconds after the first frame,
 /// ascending), each with the time of the frame used; `None` for a target the
 /// clip ended before. See [`yuv::at_times`].

@@ -199,6 +199,20 @@ struct Block {
     fc2: Lin,
 }
 
+/// Logits together with token embeddings read out of the network part-way
+/// (what [`CpuVit::forward_tokens`] and the GPU engine's counterpart return).
+pub struct Tapped {
+    /// One logit per view (per class, for a head with several).
+    pub logits: Vec<f32>,
+    /// One entry per block asked for, in the order asked: `[views, 1 +
+    /// patches, dim]`, the class token first and then the patch tokens row
+    /// by row, as they stand after that many blocks and the network's final
+    /// layer norm (timm's `get_intermediate_layers(norm=True)`). Block 0 is
+    /// the patch embedding with its position added; the last block is what
+    /// the head reads its class token from.
+    pub tokens: Vec<Vec<f32>>,
+}
+
 pub struct CpuVit {
     cfg: VitConfig,
     patch: Lin,
@@ -238,14 +252,48 @@ impl CpuVit {
 
     /// Logits for `x`: views of interleaved 8-bit RGB, one after another.
     pub fn forward(&self, x: &[u8]) -> Vec<f32> {
+        let view = 3 * self.cfg.img * self.cfg.img;
+        if ONE_VIEW_PER_THREAD && x.len() / view > 1 {
+            return x.par_chunks(view).flat_map_iter(|v| on_one_thread(|| self.forward(v))).collect();
+        }
+        self.run(x, &[]).logits
+    }
+
+    /// As [`CpuVit::forward`], and also the token embeddings after each of
+    /// `blocks` (see [`Tapped`]). The logits are computed exactly as
+    /// `forward` computes them, so they are the same numbers bit for bit;
+    /// the tokens of the last block cost one more run of that block, because
+    /// `forward` only ever works out its class token.
+    pub fn forward_tokens(&self, x: &[u8], blocks: &[usize]) -> Result<Tapped> {
+        anyhow::ensure!(blocks.iter().all(|&k| k <= self.blocks.len()), "this network has {} blocks", self.blocks.len());
+        let view = 3 * self.cfg.img * self.cfg.img;
+        if ONE_VIEW_PER_THREAD && x.len() / view > 1 {
+            let per: Vec<Tapped> = x.par_chunks(view).map(|v| on_one_thread(|| self.run(v, blocks))).collect();
+            let mut out = Tapped { logits: Vec::new(), tokens: vec![Vec::new(); blocks.len()] };
+            for one in per {
+                out.logits.extend(one.logits);
+                for (all, t) in out.tokens.iter_mut().zip(one.tokens) {
+                    all.extend(t);
+                }
+            }
+            return Ok(out);
+        }
+        Ok(self.run(x, blocks))
+    }
+
+    /// Tokens of one view: the class token and the patch tokens.
+    pub fn tokens_per_view(&self) -> usize {
+        let side = self.cfg.img / self.cfg.patch;
+        side * side + 1
+    }
+
+    /// The forward pass; `taps` are the blocks whose tokens are also wanted.
+    fn run(&self, x: &[u8], taps: &[usize]) -> Tapped {
         let c = &self.cfg;
         let (p, side, d) = (c.patch, c.img / c.patch, c.dim);
         let (np, n) = (side * side, side * side + 1);
         let view = 3 * c.img * c.img;
         let b = x.len() / view;
-        if ONE_VIEW_PER_THREAD && b > 1 {
-            return x.par_chunks(view).flat_map_iter(|v| on_one_thread(|| self.forward(v))).collect();
-        }
         let pdim = 3 * p * p;
         let (k, o) = crate::image_io::norm_consts();
 
@@ -304,9 +352,20 @@ impl CpuVit {
             }
         };
         let last = self.blocks.len() - 1;
-        for blk in &self.blocks[..last] {
-            blk.norm1.apply(&t, &mut y);
-            blk.qkv.apply(&y, &mut qkv, rows);
+        // Tokens after `k` blocks, through the final layer norm, for each tap that asks for them.
+        let mut tapped: Vec<(usize, Vec<f32>)> = Vec::new();
+        let tap = |k: usize, t: &[f32], tapped: &mut Vec<(usize, Vec<f32>)>| {
+            if taps.contains(&k) {
+                let mut o = vec![0f32; t.len()];
+                self.norm.apply(t, &mut o);
+                tapped.push((k, o));
+            }
+        };
+        tap(0, &t, &mut tapped);
+        // One whole block, every token.
+        let full = |blk: &Block, t: &mut [f32], y: &mut [f32], qkv: &mut [f32], att: &mut [f32], hid: &mut [f32]| {
+            blk.norm1.apply(t, y);
+            blk.qkv.apply(y, qkv, rows);
             // One task per view.
             att.par_chunks_mut(n * d).zip(qkv.par_chunks(n * 3 * d)).for_each(|(out, src)| {
                 let (mut q, mut k, mut v) = (vec![0f32; n * hd], vec![0f32; n * hd], vec![0f32; n * hd]);
@@ -325,14 +384,18 @@ impl CpuVit {
                     }
                 }
             });
-            blk.proj.apply(&att, &mut y, rows);
+            blk.proj.apply(att, y, rows);
             t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b);
 
-            blk.norm2.apply(&t, &mut y);
-            blk.fc1.apply(&y, &mut hid, rows);
-            gelu_inplace(&mut hid);
-            blk.fc2.apply(&hid, &mut y, rows);
+            blk.norm2.apply(t, y);
+            blk.fc1.apply(y, hid, rows);
+            gelu_inplace(hid);
+            blk.fc2.apply(hid, y, rows);
             t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b);
+        };
+        for (i, blk) in self.blocks[..last].iter().enumerate() {
+            full(blk, &mut t, &mut y, &mut qkv, &mut att, &mut hid);
+            tap(i + 1, &t, &mut tapped);
         }
 
         // Last block: only its class-token output is read, so only the class
@@ -372,7 +435,15 @@ impl CpuVit {
         self.norm.apply(&cls, &mut cn);
         let mut out = vec![0f32; b * self.head.out];
         self.head.apply(&cn, &mut out, b);
-        out
+
+        // The last block's own tokens, when asked for: the block in full,
+        // after the logits, which never need it.
+        if taps.contains(&self.blocks.len()) {
+            full(blk, &mut t, &mut y, &mut qkv, &mut att, &mut hid);
+            tap(self.blocks.len(), &t, &mut tapped);
+        }
+        let tokens = taps.iter().map(|k| tapped.iter().find(|(at, _)| at == k).map(|(_, v)| v.clone()).unwrap_or_default()).collect();
+        Tapped { logits: out, tokens }
     }
 }
 
@@ -399,6 +470,85 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A small ViT with fixed pseudo-random weights (no checkpoint needed).
+    fn tiny() -> (CpuVit, VitConfig) {
+        let cfg = VitConfig { img: 32, patch: 8, dim: 24, depth: 3, heads: 2, mlp_ratio: 4, reg_tokens: 0, layer_scale: false, pos_on_patches_only: false };
+        let mut rng = crate::rng::Rng::new(5);
+        let mut w = Weights::default();
+        let mut put = |name: &str, shape: &[usize], scale: f32, offset: f32| {
+            let data = (0..shape.iter().product::<usize>()).map(|_| offset + scale * (rng.f32() - 0.5)).collect();
+            w.insert(name, data, shape.to_vec());
+        };
+        let d = cfg.dim;
+        put("patch_embed.proj.weight", &[d, 3, cfg.patch, cfg.patch], 0.2, 0.0);
+        put("patch_embed.proj.bias", &[d], 0.2, 0.0);
+        put("cls_token", &[1, 1, d], 0.5, 0.0);
+        put("pos_embed", &[1, 17, d], 0.5, 0.0);
+        for i in 0..cfg.depth {
+            for (name, out, inp) in [("attn.qkv", 3 * d, d), ("attn.proj", d, d), ("mlp.fc1", 4 * d, d), ("mlp.fc2", d, 4 * d)] {
+                put(&format!("blocks.{i}.{name}.weight"), &[out, inp], 0.6, 0.0);
+                put(&format!("blocks.{i}.{name}.bias"), &[out], 0.2, 0.0);
+            }
+            for norm in ["norm1", "norm2"] {
+                put(&format!("blocks.{i}.{norm}.weight"), &[d], 0.2, 1.0);
+                put(&format!("blocks.{i}.{norm}.bias"), &[d], 0.2, 0.0);
+            }
+        }
+        put("norm.weight", &[d], 0.2, 1.0);
+        put("norm.bias", &[d], 0.2, 0.0);
+        put("head.weight", &[1, d], 1.0, 0.0);
+        put("head.bias", &[1], 0.2, 0.0);
+        (CpuVit::new(&w, cfg).unwrap(), cfg)
+    }
+
+    fn views(n: usize, cfg: &VitConfig) -> Vec<u8> {
+        let mut rng = crate::rng::Rng::new(9);
+        (0..n * 3 * cfg.img * cfg.img).map(|_| rng.below(256) as u8).collect()
+    }
+
+    #[test]
+    fn reading_tokens_out_leaves_the_logits_exactly_as_they_were() {
+        let (vit, cfg) = tiny();
+        for n in [1, 3] {
+            let x = views(n, &cfg);
+            let plain = vit.forward(&x);
+            assert_eq!(plain.len(), n);
+            for blocks in [&[][..], &[3], &[0, 2, 3], &[1]] {
+                let tapped = vit.forward_tokens(&x, blocks).unwrap();
+                // The same bits, not merely close: scoring must not move.
+                assert_eq!(tapped.logits.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), plain.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), "{n} views, blocks {blocks:?}");
+                assert_eq!(tapped.tokens.len(), blocks.len());
+                assert!(tapped.tokens.iter().all(|t| t.len() == n * vit.tokens_per_view() * cfg.dim));
+            }
+        }
+        assert!(vit.forward_tokens(&views(1, &cfg), &[4]).is_err());
+    }
+
+    #[test]
+    fn last_block_tokens_carry_the_class_token_the_head_reads() {
+        let (vit, cfg) = tiny();
+        let x = views(2, &cfg);
+        let tapped = vit.forward_tokens(&x, &[3, 0]).unwrap();
+        let (n, d) = (vit.tokens_per_view(), cfg.dim);
+        for v in 0..2 {
+            // The head on the tapped class token is the logit (the block in full
+            // and the class-token shortcut round differently, hence the tolerance).
+            let cls = &tapped.tokens[0][v * n * d..][..d];
+            let mut z = vec![0f32; 1];
+            vit.head.apply(cls, &mut z, 1);
+            assert!((z[0] - tapped.logits[v]).abs() < 1e-4, "view {v}: {} vs {}", z[0], tapped.logits[v]);
+            // Tokens come back in the order asked for, and a view's tokens do not depend on its batch.
+            let alone = vit.forward_tokens(&x[v * 3 * cfg.img * cfg.img..][..3 * cfg.img * cfg.img], &[0, 3]).unwrap();
+            for (together, single) in [(&tapped.tokens[1], &alone.tokens[0]), (&tapped.tokens[0], &alone.tokens[1])] {
+                let worst = together[v * n * d..][..n * d].iter().zip(single).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+                assert!(worst < 1e-4, "view {v}: tokens differ by {worst} between batch sizes");
+            }
+        }
+        // The patch tokens of two different views differ, and block 0 differs from block 3.
+        assert!(tapped.tokens[0][d..2 * d] != tapped.tokens[0][n * d + d..][..d]);
+        assert!(tapped.tokens[0][..n * d] != tapped.tokens[1][..n * d]);
     }
 
     #[test]

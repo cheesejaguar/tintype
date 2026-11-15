@@ -1,6 +1,7 @@
 //! Image decoding and the geometric preprocessing used by every model here.
 use anyhow::{Context, Result};
 use fast_image_resize as fir;
+use crate::rng::Rng;
 use fir::images::Image as FirImage;
 use std::path::Path;
 
@@ -288,6 +289,216 @@ impl Rgb {
     }
 }
 
+/// Fixed-point scale of the blur kernels: taps sum to exactly `1 << TAP_BITS`,
+/// so a flat image stays flat.
+const TAP_BITS: u32 = 14;
+
+/// Gaussian kernel of standard deviation `sigma` pixels, cut at three sigma,
+/// as fixed-point taps.
+fn gaussian_taps(sigma: f32) -> Vec<i32> {
+    let sigma = sigma.max(1e-3) as f64;
+    let r = (3.0 * sigma).ceil().max(1.0) as i64;
+    let w: Vec<f64> = (-r..=r).map(|x| (-(x * x) as f64 / (2.0 * sigma * sigma)).exp()).collect();
+    let sum: f64 = w.iter().sum();
+    let mut taps: Vec<i32> = w.iter().map(|v| (v / sum * (1u32 << TAP_BITS) as f64).round() as i32).collect();
+    // Rounding leaves the sum a few units off; the centre tap absorbs it.
+    taps[r as usize] += (1 << TAP_BITS) - taps.iter().sum::<i32>();
+    taps
+}
+
+/// A zero-mean, unit-variance sample that is close to Gaussian: the sum of
+/// four uniform 16-bit values from one draw (Irwin–Hall). Its tails stop at
+/// 3.46 standard deviations, which is what sensor and processing noise look
+/// like after clipping anyway, and it costs one draw instead of a logarithm
+/// and a cosine per value — the noise step runs on whole images in the
+/// training loader.
+#[inline]
+fn near_gaussian(rng: &mut Rng) -> f32 {
+    let u = rng.u64();
+    let sum = (u & 0xFFFF) + ((u >> 16) & 0xFFFF) + ((u >> 32) & 0xFFFF) + (u >> 48);
+    // Mean 2 * 65535; variance 4 * (65536^2 - 1) / 12.
+    (sum as f32 - 131_070.0) * (1.0 / 37_837.23)
+}
+
+#[inline]
+fn to_u8(v: f32) -> u8 {
+    v.round().clamp(0.0, 255.0) as u8
+}
+
+/// The processing operations of the training chains ([`crate::data::augment`])
+/// and of nothing else: inference never calls them. Each keeps the image
+/// size, treats the three channels alike unless it says otherwise, and is a
+/// pure function of its arguments and the generator it is handed.
+impl Rgb {
+    /// Convolve rows, then columns, with the same fixed-point kernel; pixels
+    /// past the border repeat the border.
+    fn convolve_separable(&self, taps: &[i32]) -> Rgb {
+        let (w, h, r) = (self.w as usize, self.h as usize, taps.len() / 2);
+        if r == 0 || w == 0 || h == 0 {
+            return self.clone();
+        }
+        const HALF: i32 = 1 << (TAP_BITS - 1);
+        let store = |dst: &mut [u8], acc: &[i32]| dst.iter_mut().zip(acc).for_each(|(d, &a)| *d = (a >> TAP_BITS).clamp(0, 255) as u8);
+        let mut acc = vec![0i32; w * 3];
+        let mut rows = vec![0u8; self.data.len()];
+        let mut pad = vec![0u8; (w + 2 * r) * 3];
+        for y in 0..h {
+            let row = &self.data[y * w * 3..][..w * 3];
+            for i in 0..r {
+                pad[i * 3..i * 3 + 3].copy_from_slice(&row[..3]);
+                pad[(w + r + i) * 3..(w + r + i) * 3 + 3].copy_from_slice(&row[(w - 1) * 3..]);
+            }
+            pad[r * 3..(r + w) * 3].copy_from_slice(row);
+            acc.fill(HALF);
+            for (t, &k) in taps.iter().enumerate() {
+                acc.iter_mut().zip(&pad[t * 3..][..w * 3]).for_each(|(a, &p)| *a += p as i32 * k);
+            }
+            store(&mut rows[y * w * 3..][..w * 3], &acc);
+        }
+        let mut out = vec![0u8; self.data.len()];
+        for y in 0..h {
+            acc.fill(HALF);
+            for (t, &k) in taps.iter().enumerate() {
+                let sy = (y + t).saturating_sub(r).min(h - 1);
+                acc.iter_mut().zip(&rows[sy * w * 3..][..w * 3]).for_each(|(a, &p)| *a += p as i32 * k);
+            }
+            store(&mut out[y * w * 3..][..w * 3], &acc);
+        }
+        Rgb { w: self.w, h: self.h, data: out }
+    }
+
+    /// Gaussian blur with standard deviation `sigma` pixels.
+    pub fn gaussian_blur(&self, sigma: f32) -> Rgb {
+        self.convolve_separable(&gaussian_taps(sigma))
+    }
+
+    /// Unsharp mask, the sharpening that editors and upload pipelines apply
+    /// after a resize: `image + amount * (image - blur(image, sigma))`.
+    pub fn unsharp_mask(&self, sigma: f32, amount: f32) -> Rgb {
+        let mut out = self.gaussian_blur(sigma);
+        let k = (amount * 256.0).round() as i32;
+        for (b, &v) in out.data.iter_mut().zip(&self.data) {
+            let v = v as i32;
+            *b = (v + (((v - *b as i32) * k + 128) >> 8)).clamp(0, 255) as u8;
+        }
+        out
+    }
+
+    /// The mean of copies of the image shifted by each `(dx, dy)`; pixels
+    /// past the border repeat the border. Motion and lens blur are both
+    /// this, with the shifts along a line or inside a disc.
+    fn mean_of_shifts(&self, shifts: &[(i32, i32)]) -> Rgb {
+        let (w, h) = (self.w as usize, self.h as usize);
+        if shifts.is_empty() || w == 0 || h == 0 {
+            return self.clone();
+        }
+        let r = shifts.iter().map(|s| s.0.unsigned_abs() as usize).max().unwrap_or(0);
+        let n = shifts.len() as u32;
+        let mut out = vec![0u8; self.data.len()];
+        let mut acc = vec![0u32; w * 3];
+        let mut pad = vec![0u8; (w + 2 * r) * 3];
+        for y in 0..h {
+            acc.fill(n / 2);
+            for &(dx, dy) in shifts {
+                let sy = (y as i64 + dy as i64).clamp(0, h as i64 - 1) as usize;
+                let row = &self.data[sy * w * 3..][..w * 3];
+                for i in 0..r {
+                    pad[i * 3..i * 3 + 3].copy_from_slice(&row[..3]);
+                    pad[(w + r + i) * 3..(w + r + i) * 3 + 3].copy_from_slice(&row[(w - 1) * 3..]);
+                }
+                pad[r * 3..(r + w) * 3].copy_from_slice(row);
+                let start = (r as i64 + dx as i64) as usize * 3;
+                acc.iter_mut().zip(&pad[start..][..w * 3]).for_each(|(a, &p)| *a += p as u32);
+            }
+            out[y * w * 3..][..w * 3].iter_mut().zip(&acc).for_each(|(d, &a)| *d = (a / n) as u8);
+        }
+        Rgb { w: self.w, h: self.h, data: out }
+    }
+
+    /// Linear motion blur: the mean along a line `length` pixels long at
+    /// `angle` radians.
+    pub fn motion_blur(&self, length: f32, angle: f32) -> Rgb {
+        let n = length.round().max(1.0) as i32;
+        let (s, c) = angle.sin_cos();
+        let shifts: Vec<(i32, i32)> = (0..n).map(|i| i as f32 - (n - 1) as f32 / 2.0).map(|t| ((t * c).round() as i32, (t * s).round() as i32)).collect();
+        self.mean_of_shifts(&shifts)
+    }
+
+    /// Defocus blur: the mean over a disc of `radius` pixels. The cost grows
+    /// with the square of the radius.
+    pub fn lens_blur(&self, radius: f32) -> Rgb {
+        let r = radius.max(0.0).ceil() as i32;
+        let shifts: Vec<(i32, i32)> = (-r..=r).flat_map(|dy| (-r..=r).map(move |dx| (dx, dy))).filter(|&(dx, dy)| ((dx * dx + dy * dy) as f32) <= radius * radius + 0.5).collect();
+        self.mean_of_shifts(&shifts)
+    }
+
+    /// Additive noise of standard deviation `sigma` (in 8-bit steps), drawn
+    /// independently for every value.
+    pub fn add_gaussian_noise(&mut self, sigma: f32, rng: &mut Rng) {
+        for v in &mut self.data {
+            *v = to_u8(*v as f32 + sigma * near_gaussian(rng));
+        }
+    }
+
+    /// Signal-dependent (photon shot) noise: its standard deviation grows
+    /// with the square root of the value and is `sigma` at white.
+    pub fn add_shot_noise(&mut self, sigma: f32, rng: &mut Rng) {
+        let scale: [f32; 256] = std::array::from_fn(|v| sigma * (v as f32 / 255.0).sqrt());
+        for v in &mut self.data {
+            *v = to_u8(*v as f32 + scale[*v as usize] * near_gaussian(rng));
+        }
+    }
+
+    /// Salt-and-pepper noise: a fraction `p` of the values become 0 or 255.
+    pub fn add_impulse_noise(&mut self, p: f32, rng: &mut Rng) {
+        if p <= 0.0 || self.data.is_empty() {
+            return;
+        }
+        // Jump straight to the next hit instead of testing every value.
+        let step = (1.0 - p.min(0.999) as f64).ln();
+        let mut i = 0usize;
+        loop {
+            let u = (rng.f32() as f64).max(1e-12);
+            i = i.saturating_add((u.ln() / step) as usize);
+            if i >= self.data.len() {
+                return;
+            }
+            self.data[i] = if rng.chance(0.5) { 255 } else { 0 };
+            i += 1;
+        }
+    }
+
+    /// Tone curve: gamma, then contrast around mid-grey, then a brightness
+    /// offset in 8-bit steps. `(1, 1, 0)` leaves the image alone.
+    pub fn adjust_tone(&mut self, gamma: f32, contrast: f32, brightness: f32) {
+        let lut: [u8; 256] = std::array::from_fn(|v| to_u8(((v as f32 / 255.0).powf(gamma) * 255.0 - 127.5) * contrast + 127.5 + brightness));
+        for v in &mut self.data {
+            *v = lut[*v as usize];
+        }
+    }
+
+    /// Scale each pixel's distance from its own grey value: 0 is greyscale,
+    /// 1 leaves the image alone, above 1 saturates.
+    pub fn adjust_saturation(&mut self, factor: f32) {
+        let k = (factor * 256.0).round() as i32;
+        for px in self.data.chunks_exact_mut(3) {
+            let luma = (px[0] as i32 * 77 + px[1] as i32 * 150 + px[2] as i32 * 29) >> 8;
+            for v in px {
+                *v = (luma + (((*v as i32 - luma) * k + 128) >> 8)).clamp(0, 255) as u8;
+            }
+        }
+    }
+
+    /// Resize by `factor` with `down`, then back to the original size with
+    /// `up`: what is left of an image that was shrunk and enlarged again
+    /// (or enlarged and shrunk, for a factor above 1). Nearest-neighbour
+    /// enlargement gives pixelation.
+    pub fn rescale_roundtrip(&self, factor: f32, down: Filter, up: Filter) -> Rgb {
+        let side = |v: u32| ((v as f32 * factor).round() as u32).max(1);
+        self.resize(side(self.w), side(self.h), down).resize(self.w, self.h, up)
+    }
+}
+
 /// Top-left corners of the `k` most textured `crop`-sized windows, richest
 /// first. Texture is the mean absolute luma gradient on a 2x-subsampled grid;
 /// windows are taken from a half-crop grid and chosen greedily so that picks
@@ -565,6 +776,157 @@ mod tests {
         assert!((o[0] - (1.0 - MEAN[0]) / STD[0]).abs() < 1e-5);
         assert!((o[1] - (0.0 - MEAN[1]) / STD[1]).abs() < 1e-5);
         assert!((o[2] - (128.0 / 255.0 - MEAN[2]) / STD[2]).abs() < 1e-5);
+    }
+
+    fn textured(w: u32, h: u32, seed: u64) -> Rgb {
+        let mut rng = Rng::new(seed);
+        let mut im = gradient(w, h);
+        im.data.iter_mut().for_each(|v| *v = (*v / 2).wrapping_add(rng.below(128) as u8));
+        im
+    }
+
+    fn flat(w: u32, h: u32, v: u8) -> Rgb {
+        let mut im = Rgb::new(w, h);
+        im.data.fill(v);
+        im
+    }
+
+    fn mean_std(im: &Rgb) -> (f64, f64) {
+        let n = im.data.len() as f64;
+        let mean = im.data.iter().map(|&v| v as f64).sum::<f64>() / n;
+        (mean, (im.data.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / n).sqrt())
+    }
+
+    /// Sum of absolute differences between horizontal neighbours.
+    fn edge_energy(im: &Rgb) -> u64 {
+        im.data.chunks_exact(im.w as usize * 3).map(|row| row.windows(4).map(|p| (p[0] as i64 - p[3] as i64).unsigned_abs()).sum::<u64>()).sum()
+    }
+
+    #[test]
+    fn gaussian_kernels_sum_to_one_and_blur_keeps_flat_images_flat() {
+        for sigma in [0.1, 0.3, 0.8, 1.5, 3.0, 5.0] {
+            let taps = gaussian_taps(sigma);
+            assert_eq!(taps.iter().sum::<i32>(), 1 << TAP_BITS, "sigma {sigma}");
+            assert!(taps.len() % 2 == 1 && taps.iter().all(|&t| t >= 0));
+            assert!(flat(37, 23, 173).gaussian_blur(sigma).data.iter().all(|&v| v == 173), "sigma {sigma}");
+        }
+    }
+
+    #[test]
+    fn blur_smooths_and_sharpening_does_the_opposite() {
+        let im = textured(96, 64, 1);
+        let (mean, std) = mean_std(&im);
+        let blurred = im.gaussian_blur(1.5);
+        let (bmean, bstd) = mean_std(&blurred);
+        assert!((mean - bmean).abs() < 1.0, "{mean} {bmean}");
+        assert!(bstd < 0.8 * std, "{std} {bstd}");
+        assert!(edge_energy(&blurred) < edge_energy(&im) / 2);
+        // A wider kernel smooths more.
+        assert!(edge_energy(&im.gaussian_blur(3.0)) < edge_energy(&blurred));
+        // Sharpening a soft image restores edge contrast; amount 0 changes nothing.
+        assert!(edge_energy(&blurred.unsharp_mask(1.0, 1.5)) > edge_energy(&blurred));
+        assert_eq!(im.unsharp_mask(1.0, 0.0).data, im.data);
+    }
+
+    #[test]
+    fn motion_blur_smears_along_its_direction_only() {
+        // Vertical stripes: horizontal motion blurs them, vertical motion leaves them.
+        let mut im = Rgb::new(64, 32);
+        for (i, px) in im.data.chunks_exact_mut(3).enumerate() {
+            px.fill(if (i % 64) / 4 % 2 == 0 { 0 } else { 255 });
+        }
+        assert!(edge_energy(&im.motion_blur(9.0, 0.0)) < edge_energy(&im) / 2);
+        assert_eq!(im.motion_blur(9.0, std::f32::consts::FRAC_PI_2).data, im.data);
+        // One sample is the image itself, and so is a disc of radius 0.
+        assert_eq!(im.motion_blur(1.0, 0.7).data, im.data);
+        assert_eq!(im.lens_blur(0.0).data, im.data);
+        assert!(edge_energy(&im.lens_blur(3.0)) < edge_energy(&im) * 2 / 3);
+        assert!(flat(20, 20, 91).lens_blur(2.5).data.iter().all(|&v| v == 91));
+    }
+
+    #[test]
+    fn gaussian_noise_has_the_requested_spread_and_follows_the_seed() {
+        let mut im = flat(128, 128, 128);
+        im.add_gaussian_noise(8.0, &mut Rng::new(3));
+        let (mean, std) = mean_std(&im);
+        assert!((mean - 128.0).abs() < 0.2 && (std - 8.0).abs() < 0.3, "{mean} {std}");
+        let mut again = flat(128, 128, 128);
+        again.add_gaussian_noise(8.0, &mut Rng::new(3));
+        assert_eq!(im.data, again.data);
+        let mut other = flat(128, 128, 128);
+        other.add_gaussian_noise(8.0, &mut Rng::new(4));
+        assert_ne!(im.data, other.data);
+        // The near-Gaussian samples themselves: zero mean, unit variance, bounded.
+        let mut rng = Rng::new(9);
+        let z: Vec<f32> = (0..200_000).map(|_| near_gaussian(&mut rng)).collect();
+        let m = z.iter().sum::<f32>() / z.len() as f32;
+        let v = z.iter().map(|x| (x - m).powi(2)).sum::<f32>() / z.len() as f32;
+        assert!(m.abs() < 0.01 && (v - 1.0).abs() < 0.02 && z.iter().all(|x| x.abs() < 3.47), "{m} {v}");
+    }
+
+    #[test]
+    fn shot_noise_grows_with_brightness_and_impulse_noise_hits_the_requested_share() {
+        let (mut dark, mut bright, mut black) = (flat(96, 96, 16), flat(96, 96, 200), flat(96, 96, 0));
+        let mut rng = Rng::new(5);
+        dark.add_shot_noise(20.0, &mut rng);
+        bright.add_shot_noise(20.0, &mut rng);
+        black.add_shot_noise(20.0, &mut rng);
+        assert!(mean_std(&bright).1 > 2.0 * mean_std(&dark).1);
+        assert!(black.data.iter().all(|&v| v == 0));
+
+        let mut im = flat(200, 200, 128);
+        im.add_impulse_noise(0.02, &mut Rng::new(6));
+        let hit = im.data.iter().filter(|&&v| v != 128).count();
+        assert!(im.data.iter().all(|&v| v == 128 || v == 0 || v == 255));
+        assert!((1800..3000).contains(&hit), "{hit} of {}", im.data.len());
+        let mut none = flat(8, 8, 7);
+        none.add_impulse_noise(0.0, &mut Rng::new(6));
+        assert!(none.data.iter().all(|&v| v == 7));
+    }
+
+    #[test]
+    fn tone_and_saturation_have_an_identity_and_move_the_right_way() {
+        let im = textured(40, 30, 2);
+        let mut same = im.clone();
+        same.adjust_tone(1.0, 1.0, 0.0);
+        same.adjust_saturation(1.0);
+        assert_eq!(same.data, im.data);
+        let mut darker = im.clone();
+        darker.adjust_tone(1.6, 1.0, 0.0);
+        assert!(mean_std(&darker).0 < mean_std(&im).0);
+        let mut flatter = im.clone();
+        flatter.adjust_tone(1.0, 0.5, 0.0);
+        assert!(mean_std(&flatter).1 < mean_std(&im).1);
+        let mut grey = im.clone();
+        grey.adjust_saturation(0.0);
+        assert!(grey.data.chunks_exact(3).all(|p| p[0] == p[1] && p[1] == p[2]));
+    }
+
+    #[test]
+    fn processing_operations_keep_the_image_size() {
+        for (w, h) in [(1, 1), (3, 2), (17, 31), (224, 224), (301, 97)] {
+            let im = textured(w, h, 7);
+            let mut rng = Rng::new(1);
+            let mut noisy = im.clone();
+            noisy.add_gaussian_noise(6.0, &mut rng);
+            noisy.add_shot_noise(6.0, &mut rng);
+            noisy.add_impulse_noise(0.05, &mut rng);
+            noisy.adjust_tone(0.8, 1.2, 5.0);
+            noisy.adjust_saturation(1.3);
+            for out in [
+                im.gaussian_blur(0.2),
+                im.gaussian_blur(4.0),
+                im.unsharp_mask(1.2, 1.0),
+                im.motion_blur(7.0, 0.6),
+                im.lens_blur(2.5),
+                im.rescale_roundtrip(0.4, Filter::Bicubic, Filter::Bilinear),
+                im.rescale_roundtrip(1.7, Filter::Lanczos, Filter::Box),
+                im.rescale_roundtrip(0.3, Filter::Box, Filter::Nearest),
+                noisy,
+            ] {
+                assert_eq!((out.w, out.h, out.data.len()), (w, h, (w * h * 3) as usize));
+            }
+        }
     }
 
     #[test]

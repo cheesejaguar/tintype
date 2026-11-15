@@ -268,13 +268,18 @@ pub struct VideoSpec {
     /// absent means every frame of every clip is looked at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub early_exit: Option<EarlyExit>,
+    /// When a clip is marked as needing review (see [`crate::review`]):
+    /// the margin is on the clip's calibrated logit and the disagreement is
+    /// among its frame logits. Absent means no clip is marked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::review::Review>,
 }
 
 impl VideoSpec {
     /// One whole-frame view plus five native-resolution crops (centre and
     /// four quadrants) on each of 16 frames.
     pub fn standard(size: u32, fit_resize: u32) -> Self {
-        Self { frames: 16, views: thorough_views(size, fit_resize), logit_scale: 1.0, logit_bias: 0.0, second_opinion: None, early_exit: None }
+        Self { frames: 16, views: thorough_views(size, fit_resize), logit_scale: 1.0, logit_bias: 0.0, second_opinion: None, early_exit: None, review: None }
     }
 }
 
@@ -315,9 +320,22 @@ pub struct ModelSpec {
     /// (`--photo-second-opinion`), defined on the default profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub second_opinion: Option<PhotoSecondOpinion>,
+    /// When a photo is marked as needing review (see [`crate::review`]),
+    /// defined on the default profile like the second-opinion band: the
+    /// margin is in its calibrated logits. Absent means no photo is marked
+    /// unless `--review-margin` or `--review-disagreement` asks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::review::Review>,
     /// Network architecture; empty means the ViT-S/16 Tintype ships.
     #[serde(default)]
     pub arch: String,
+    /// Profiles (`photo`, `fast`, `video`) whose calibration in this spec was
+    /// never fitted to these weights. `tintype interpolate` writes it beside
+    /// the weights it makes, with the calibration reset to the identity;
+    /// `calibrate` removes a profile from the list when it fits it. Absent
+    /// for every finished model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncalibrated: Option<Vec<String>>,
 }
 fn one() -> f32 {
     1.0
@@ -343,7 +361,9 @@ impl ModelSpec {
             strict: None,
             early_exit: None,
             second_opinion: None,
-            arch: "swinv2_large_w16_256".into()
+            review: None,
+            arch: "swinv2_large_w16_256".into(),
+            uncalibrated: None,
         }
     }
 
@@ -363,14 +383,16 @@ impl ModelSpec {
             strict: None,
             early_exit: None,
             second_opinion: None,
-            arch: "vit_base_patch14_reg4_dinov2".into()
+            review: None,
+            arch: "vit_base_patch14_reg4_dinov2".into(),
+            uncalibrated: None,
         }
     }
 
     /// The Community Forensics baseline's own preprocessing.
     pub fn commfor(img: usize) -> Self {
         let resize = if img == 384 { 440 } else { 256 };
-        Self { img, views: vec![ViewSpec::FitPillow { resize, crop: img as u32 }], logit_scale: 1.0, logit_bias: 0.0, threshold: 0.5, prefix: "vit.".into(), video: None, fast: None, sensitive: None, strict: None, early_exit: None, second_opinion: None, arch: String::new() }
+        Self { img, views: vec![ViewSpec::FitPillow { resize, crop: img as u32 }], logit_scale: 1.0, logit_bias: 0.0, threshold: 0.5, prefix: "vit.".into(), video: None, fast: None, sensitive: None, strict: None, early_exit: None, second_opinion: None, review: None, arch: String::new(), uncalibrated: None }
     }
 
     pub fn sidecar(weights: &Path) -> PathBuf {
@@ -384,6 +406,15 @@ impl ModelSpec {
 
     pub fn save_for(&self, weights: &Path) -> Result<()> {
         Ok(std::fs::write(Self::sidecar(weights), serde_json::to_string_pretty(self)?)?)
+    }
+
+    /// One line for standard error when this spec's calibration was never
+    /// fitted to its weights (see [`ModelSpec::uncalibrated`]): such a
+    /// checkpoint still gives scores and verdicts, and nothing else in the
+    /// output says that they are not at any false-positive target.
+    pub fn uncalibrated_warning(&self, weights: &Path) -> Option<String> {
+        let profiles = self.uncalibrated.as_ref().filter(|p| !p.is_empty())?;
+        Some(format!("warning: {} is not calibrated ({}): its scores and verdicts are not at any false-positive target; fit it with `tintype calibrate --weights {}`", weights.display(), profiles.join(", "), weights.display()))
     }
 }
 
@@ -1202,6 +1233,54 @@ mod tests {
         let old = r#"{"img":224,"views":[{"native":{"crop":224}}]}"#;
         let m: ModelSpec = serde_json::from_str(old).unwrap();
         assert!(m.early_exit.is_none() && m.strict.is_none());
+    }
+
+    #[test]
+    fn the_shipped_specs_load_and_write_back_byte_for_byte() {
+        // Read only: a new optional field must not change what a released spec says or how it is written.
+        for name in ["tintype.json", "tintype-video.json"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("models").join(name);
+            let text = std::fs::read_to_string(&path).unwrap();
+            let spec: ModelSpec = serde_json::from_str(&text).unwrap();
+            assert!(spec.review.is_none() && spec.video.as_ref().is_some_and(|v| v.review.is_none()), "{name}");
+            assert_eq!(serde_json::to_string_pretty(&spec).unwrap(), text, "{name} does not round-trip");
+            assert!(!text.contains("review"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_review_band_is_stored_only_when_set() {
+        let old = r#"{"img":224,"views":[{"native":{"crop":224}}],"video":{"frames":16,"views":[{"native":{"crop":224}}]}}"#;
+        let mut m: ModelSpec = serde_json::from_str(old).unwrap();
+        assert!(m.review.is_none() && m.video.as_ref().unwrap().review.is_none());
+        assert!(!serde_json::to_string(&m).unwrap().contains("review"));
+        m.review = Some(crate::review::Review { margin: 1.5, view_disagreement: None });
+        m.video.as_mut().unwrap().review = Some(crate::review::Review { margin: 2.0, view_disagreement: Some(0.5) });
+        let text = serde_json::to_string(&m).unwrap();
+        assert!(text.contains(r#""review":{"margin":1.5}"#) && text.contains(r#""review":{"margin":2.0,"view_disagreement":0.5}"#), "{text}");
+        let again: ModelSpec = serde_json::from_str(&text).unwrap();
+        assert_eq!((again.review, again.video.unwrap().review), (m.review, m.video.unwrap().review));
+    }
+
+    #[test]
+    fn released_specs_round_trip_byte_for_byte_and_carry_no_unfitted_mark() {
+        // The new optional field must not appear in, or change, a finished model's spec.
+        for name in ["models/tintype.json", "models/tintype-video.json"] {
+            let text = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name)).unwrap();
+            let spec: ModelSpec = serde_json::from_str(&text).unwrap();
+            assert!(spec.uncalibrated.is_none() && spec.uncalibrated_warning(std::path::Path::new(name)).is_none(), "{name}");
+            assert_eq!(serde_json::to_string_pretty(&spec).unwrap(), text, "{name} does not round-trip");
+        }
+        // A marked spec keeps its mark through a save and a load, and says which profiles are unfitted.
+        let mut spec = ModelSpec::commfor(224);
+        spec.uncalibrated = Some(vec!["photo".into(), "video".into()]);
+        let again: ModelSpec = serde_json::from_str(&serde_json::to_string(&spec).unwrap()).unwrap();
+        assert_eq!(again.uncalibrated, spec.uncalibrated);
+        let warning = again.uncalibrated_warning(std::path::Path::new("runs/x.safetensors")).unwrap();
+        assert!(warning.contains("runs/x.safetensors is not calibrated (photo, video)"), "{warning}");
+        // An empty list is the same as none.
+        spec.uncalibrated = Some(vec![]);
+        assert!(spec.uncalibrated_warning(std::path::Path::new("x")).is_none());
     }
 
     #[test]

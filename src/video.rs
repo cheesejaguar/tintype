@@ -138,6 +138,20 @@ pub fn sample_frames(path: &Path, s: Sampling) -> Result<Vec<Rgb>> {
     software()
 }
 
+/// The frames [`sample_frames`] returns for spread sampling, each with its
+/// actual presentation time and its position in the stream, and a trace of
+/// every frame read on the way (see [`crate::yuv::uniform_timed`], which
+/// also explains `follow` and `blur`). Nothing in scoring uses this; it
+/// feeds the temporal-head experiments.
+pub fn sample_frames_timed(path: &Path, s: Sampling, follow: usize, blur: usize) -> Result<(Vec<crate::yuv::Timed>, crate::yuv::Trace)> {
+    let software = || crate::swdec::frames_uniform_timed(path, s.frames, s.max_seconds, follow, blur);
+    #[cfg(target_os = "macos")]
+    if !pure_rust() {
+        return decode_with_fallback(|| crate::avf::frames_uniform_timed(path, s.frames, s.max_seconds, follow, blur), software);
+    }
+    software()
+}
+
 /// Frames `from..to` of the ones [`sample_frames`] returns for `s` (spread
 /// sampling only), without decoding past the last one wanted.
 pub fn sample_frames_range(path: &Path, s: Sampling, from: usize, to: usize) -> Result<Vec<Rgb>> {

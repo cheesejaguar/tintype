@@ -1,0 +1,14 @@
+### test default
+scored 19326 images (0 unreadable) in 129.0s: 149.8 img/s end-to-end, 237.6 img/s model-only, 1.53 views per image
+### test sensitive
+scored 19326 images (0 unreadable) in 135.3s: 142.9 img/s end-to-end, 204.8 img/s model-only, 1.78 views per image
+### test strict
+scored 19326 images (0 unreadable) in 129.5s: 149.2 img/s end-to-end, 250.8 img/s model-only, 1.53 views per image
+### test commfor
+scored 19326 images (0 unreadable) in 226.4s: 85.4 img/s end-to-end, 132.7 img/s model-only, 1.00 views per image
+### test two-stage, shipped band
+scored 19326 images (0 unreadable, 10379 given a second opinion) in 269.9s: 71.6 img/s end-to-end, 118.1 img/s model-only, 1.53 views per image
+### test two-stage, narrowed band
+scored 19326 images (0 unreadable, 1775 given a second opinion) in 154.5s: 125.0 img/s end-to-end, 213.3 img/s model-only, 1.53 views per image
+### done
+exit 0
