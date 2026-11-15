@@ -28,6 +28,7 @@
     <nav aria-label="Main navigation">
       <a href="#quickstart">Quickstart</a>
       <a href="#benchmark">Benchmark</a>
+      <a href="#research">Research</a>
       <a href="#api">API</a>
       <a href="https://github.com/cheesejaguar/tintype">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
@@ -143,6 +144,98 @@
       </dl>
       <p class="measurement-note"><strong>73.1% vs. 23.7% recall at 1% false positives.</strong> Tintype and Community Forensics scored the same 2,038 images after both classes were re-encoded with the same JPEG settings. GPTTrace reached 76.7% on those JPEGs. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/EVIDENCE.md#ai-detector-arena-v01">See the external Arena comparison <span aria-hidden="true">↗</span></a></p>
       <p class="measurement-note">Matched-rate comparisons set the thresholds retrospectively on each batch. Default recall was 14.3% on the FaceForensics++ face-swap subset. On the distorted NTIRE 2026 public-test JPEGs, Tintype found 2.2% of generated images at 1% false positives. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/EVIDENCE.md#cvpr-2026-ntire-public-test">See the NTIRE comparison <span aria-hidden="true">↗</span></a> Use flags to prioritize review and corroborate them with other evidence. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/EVIDENCE.md">See the evidence and limitations <span aria-hidden="true">↗</span></a></p>
+      <p class="measurement-note">How often a flag is right depends on how common AI-generated files are in what you scan. If 1 in 100 is AI-generated, about 43% of default-profile flags are, at batch 7’s 89.7% recall and 1.2% false-positive rate.</p>
+    </section>
+
+    <section class="research section-rule" id="research" aria-labelledby="research-heading">
+      <div class="benchmark-grid">
+        <div class="section-intro">
+          <h2 id="research-heading">What we tested next.</h2>
+          <p>Ten changes, each with its pass rule committed before the look. Eight were judged once on a held-out split built after the release. Only the speed changes, which leave every score the same, were kept. The shipped models and default verdicts are unchanged.</p>
+          <a class="text-link" href="https://github.com/cheesejaguar/tintype/blob/main/reports/Tintype%20detection%20improvement%20research.md">Read the research report <span aria-hidden="true">↗</span></a><br>
+          <a class="text-link" href="https://github.com/cheesejaguar/tintype/blob/main/docs/PREREGISTRATION.md">See the pre-registered rules <span aria-hidden="true">↗</span></a>
+        </div>
+        <div class="split-result">
+          <h3>The released model on the held-out split</h3>
+          <p>19,326 test files Tintype never trained on, including two held-out generator families and a held-out phone, plus copies put through twelve FFmpeg operations. Default profile, shipped cutoff.</p>
+          <table class="benchmark-table" aria-label="Released model on the frozen held-out test set">
+            <thead>
+              <tr>
+                <th scope="col">Test files</th>
+                <th scope="col">Recall</th>
+                <th scope="col">Authentic flagged</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="tintype-row">
+                <th scope="row">Originals</th>
+                <td>94.8%</td>
+                <td>0.35%</td>
+              </tr>
+              <tr>
+                <th scope="row">Processed copies</th>
+                <td>79.3%</td>
+                <td>1.62%</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="measurement-note">Originals: 7,200 generated and 7,326 authentic. Processed copies: 2,400 of each. Recall fell to 68.5% under heavy JPEG and reposts. Two generator families were the weakest, Open-MAGVIT2 at 62.2% and VAR at 68.9%. Every authentic original is a large camera JPEG and every generated one a small PNG, so the originals row is the easy case. On NTIRE’s clean public-test authentic images the same cutoff flags 6.8%. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/frozen-eval.md#the-incumbent-on-the-split">See the split and full tables <span aria-hidden="true">↗</span></a></p>
+        </div>
+      </div>
+
+      <ol class="results-list" aria-label="Research results">
+        <li>
+          <h3><a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/view-reuse.md">Score identical views once</a></h3>
+          <p>All 19,326 test verdicts unchanged. Single-image CPU latency fell about 2% for each of the two changes. No gain on the GPU or in bulk throughput.</p>
+          <span class="verdict verdict-kept">Kept</span>
+        </li>
+        <li>
+          <h3><a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/calibration-abstention.md">Review band and recalibration</a></h3>
+          <p>A margin band cut automatic false alarms from 82 to 24 of 9,726 authentic files and sent 1.67% of a stream with 1% AI files to review, at a cost of 3 points of automatic recall. Refitted cutoffs overshot on noisy copies and an unseen phone.</p>
+          <span class="verdict">Opt-in</span>
+        </li>
+        <li>
+          <h3><a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/processing-chains.md">Train on processed copies</a></h3>
+          <p>Recall on processed copies rose 5.8 and 7.0 points at 1% false positives across two seeds. The bar was 10.</p>
+          <span class="verdict">Not adopted</span>
+        </li>
+        <li>
+          <h3><a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/source-family-matching.md">Rebalance generator families</a></h3>
+          <p>New-family recall rose 1.69 points at 1% false positives, and the gain repeated on a second seed. It flagged one more processed authentic photo than the rule allowed at 0.1%. Matching sources lost recall.</p>
+          <span class="verdict">Not adopted</span>
+        </li>
+        <li>
+          <h3><a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/policy-comparison.md">Combine with a second detector</a></h3>
+          <p>No Tintype profile, or mix with Community Forensics, added recall on processed photos at 1% false positives. The best gained 0.38 points of the 5 required.</p>
+          <span class="verdict">Not adopted</span>
+        </li>
+        <li>
+          <h3><a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/cpu-profile-int8.md">Eight-bit CPU inference</a></h3>
+          <p>Held at 1% false positives. At 0.1% it flagged 15 authentic files of 9,726, against 7 at full precision.</p>
+          <span class="verdict">Not adopted</span>
+        </li>
+        <li>
+          <h3><a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/partial-edits.md">Find pasted AI regions</a></h3>
+          <p>A dense window grid found about half of the AI regions covering 1–3% of a photo, against a fifth for the global score, and the grid flagged none of 1,300 controls. The global cutoff didn’t hold its false-positive rate on a third photo source, so the test failed.</p>
+          <span class="verdict">Not adopted</span>
+        </li>
+        <li>
+          <h3><a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/interpolation-pooling.md">Pool views differently, blend weights</a></h3>
+          <p>No pooling rule beat the mean on the calibration set. The one blended model sent to test was no worse on any slice. Its gain on GAN images went away at a matched false-positive rate.</p>
+          <span class="verdict">Not adopted</span>
+        </li>
+        <li>
+          <h3><a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/video-audit.md">Audit real video sources</a></h3>
+          <p>Tooling checked on development clips, where a fake corner watermark lowered scores on generated clips. The held-out authentic collections aren’t gathered yet.</p>
+          <span class="verdict">Not run yet</span>
+        </li>
+        <li>
+          <h3><a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/temporal-head.md">Read motion across frames</a></h3>
+          <p>A small temporal head is built and matches across engines. The clips its test needs don’t exist yet.</p>
+          <span class="verdict">Not run yet</span>
+        </li>
+      </ol>
+      <p class="measurement-note">The opt-in flags, <code>--review-margin</code> on <code>detect</code> and <code>batch</code> and <code>--coverage segments</code> for clips, are on main and not in release v0.1.2. Build from source to try them.</p>
     </section>
 
     <section class="quickstart section-rule" id="quickstart" aria-labelledby="quickstart-heading">
