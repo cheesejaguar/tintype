@@ -19,7 +19,7 @@ pub struct DemoOptions {
     /// Use the more sensitive photo profile.
     #[arg(long)]
     sensitive: bool,
-    /// Inference engine (auto, gpu, gpu-f32, or cpu; cpu-int8 simulates eight-bit linear layers).
+    /// Inference engine (auto, gpu, gpu-f32, or cpu; cpu-int8 runs the block linear layers in eight-bit integers).
     #[arg(long, default_value = "auto")]
     device: String,
 }
@@ -112,7 +112,7 @@ pub struct ScanOptions {
     /// Write one JSON object per file.
     #[arg(long)]
     json: bool,
-    /// Inference engine (auto, gpu, gpu-f32, or cpu; cpu-int8 simulates eight-bit linear layers).
+    /// Inference engine (auto, gpu, gpu-f32, or cpu; cpu-int8 runs the block linear layers in eight-bit integers).
     #[arg(long, default_value = "auto")]
     device: String,
     #[command(flatten)]
