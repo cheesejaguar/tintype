@@ -188,8 +188,8 @@ seed, 150 parents per slice. It shows what the pipeline measures.
   (4,102 items: 150 parents × 26 slices and 202 further `parent` rows),
   scored in three GPU runs of 1,950, 1,950 and 202 images (159,672 grid
   windows, 38.9 per image; 83 s, 80 s and 9 s).
-- Code: store and scores from the binary built at commit `3c27c3a`, report
-  at `56b0422` (the scoring code is the same in both). Weights:
+- Code: store and scores from the binary built at commit `4e86ca5`, report
+  at `88c9947` (the scoring code is the same in both). Weights:
   `models/tintype.safetensors` copied to `runs/ws9/`. Hardware: Mac18,5,
   Apple M6, 32 GB, macOS 27.2, GPU engine (half precision).
 
@@ -475,15 +475,15 @@ resolved no finer than 1 in 24, and neither 1% nor 0.1% is resolved. The
   (mean 56.5 s) at 360 px height, 2.636 h of authentic footage in all.
 - Store: 240 clips (24 parents × `reencode`, and for 1, 2 and 4 s a
   generated splice, an authentic splice and an authentic dissolve), built
-  with the command of section 8 at commit `e75ff6f`. Of the 456 hard cuts
+  with the command of section 8 at commit `15aed85`. Of the 456 hard cuts
   recorded for the re-encodes and the 1 s splices, 454 are within half a
   frame of a scene change FFmpeg's `scene` filter finds in the file.
 - Scores: the five `detect` commands of section 8, binary built at
-  `56b0422` (no source change since), weights copied to `runs/ws9/`, GPU
+  `88c9947` (no source change since), weights copied to `runs/ws9/`, GPU
   engine, Mac18,5 (Apple M6, 32 GB, macOS 27.2). Wall time for the 240
   clips on a machine shared with other jobs: default 8 s, `uniform` 21 s,
   `uniform --max-seconds 0` 25 s, `segments` 26 s, `shots` 44 s. All 240
-  clips were scored completely in every mode. Report at `74f68d4`.
+  clips were scored completely in every mode. Report at `fea8041`.
 
 Edits with at least one sampled frame inside them, of 24 per duration
 (sixteen frames per clip in every mode):
@@ -540,6 +540,24 @@ What this check says, and what it does not:
   inserts come from two sets the detector was developed against. Real
   edited footage, longer clips and enough independent authentic parents
   are what a result needs (see below).
+
+## Frozen split
+
+The pre-registration is in [PREREGISTRATION.md](../PREREGISTRATION.md)
+("Partial edits on the frozen split"), committed as `84b2040` before any
+`test`-side composite existed.
+
+### Log
+
+- 14 November 2026, `calibrate` side built and scored at `84b2040`
+  (tooling at `ab4808d`). 100 parents in four chunks of 25, 1,998
+  composites and controls (two generated pastes of 3% found no donor that
+  fits), and the pool of 1,000 untouched originals: 2,998 images. Cutoffs
+  frozen on the 1,100 untouched images:
+  [calibrate-cutoffs.tsv](../results/partial-edits-frozen/calibrate-cutoffs.tsv).
+  At the 1% cutoff, in-sample, `grid max` flags 304 of the 598
+  `calibrate`-side generated pastes and `grid top-3` 183, so **the local
+  rule of the gate is `grid max`**. Chosen before the `test` look.
 
 ## What is ready to run
 
