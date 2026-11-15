@@ -679,6 +679,7 @@ pub fn detect(
         &mut output,
         &mut counts,
     )?;
+    tintype::stats::report();
     counts.finish()
 }
 
@@ -717,6 +718,7 @@ pub fn batch(roots: Vec<PathBuf>, options: ScanOptions) -> Result<()> {
         }
     }
     scan.run_chunk(inputs, true, &mut output, &mut counts)?;
+    tintype::stats::report();
     ensure!(counts.total > 0, "no supported media found");
     counts.finish()
 }

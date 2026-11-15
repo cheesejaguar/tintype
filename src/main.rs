@@ -1463,15 +1463,27 @@ fn main() -> Result<()> {
             };
             let mut ms = Vec::new();
             let mut asked_ms = Vec::new();
+            let per_image = tintype::stats::wanted();
             for (k, it) in items.iter().take(n + 5).enumerate() {
                 let t = std::time::Instant::now();
                 let Ok(img) = tintype::image_io::load(&it.path) else { continue };
-                pre.apply(&img, &mut buf);
+                if !stepwise {
+                    pre.apply(&img, &mut buf);
+                }
                 let seen = match &exit {
-                    Some(e) if stepwise => det.logits_adaptive(&buf, e),
+                    Some(e) if stepwise => {
+                        // Views that repeat an earlier one are not cut out a second time.
+                        let plan = pre.plan(&img);
+                        let same = tintype::image_io::first_uses(&plan);
+                        let crops: Vec<Option<tintype::image_io::Rgb>> = plan.iter().enumerate().map(|(v, p)| (same[v] == v).then(|| p.render(&img))).collect();
+                        det.logits_adaptive_with(e, &same, |v, out| out.copy_from_slice(&crops[same[v]].as_ref().expect("first uses are cut out").data))
+                    }
                     Some(e) => e.looked_at(&det.logits(&buf)[..nv], det.threshold_logit()),
                     None => det.logits(&buf)[..nv].to_vec(),
                 };
+                if !stepwise {
+                    tintype::stats::SCORED_VIEWS.add(nv);
+                }
                 let mut p = det.probability(&seen);
                 let mut asked = false;
                 if let Some((band, pre2, det2, buf2)) = &mut second {
@@ -1484,14 +1496,20 @@ fn main() -> Result<()> {
                 }
                 std::hint::black_box(p);
                 if k >= 5 {
-                    ms.push(t.elapsed().as_secs_f64() * 1e3);
+                    let elapsed = t.elapsed().as_secs_f64() * 1e3;
+                    // With TINTYPE_STATS, each image's own time too, so that runs can be compared image by image.
+                    if per_image {
+                        eprintln!("latency_ms {k} {elapsed:.3}");
+                    }
+                    ms.push(elapsed);
                     if asked {
-                        asked_ms.push(t.elapsed().as_secs_f64() * 1e3);
+                        asked_ms.push(elapsed);
                     }
                 }
             }
             anyhow::ensure!(!ms.is_empty(), "none of the first {} files of {} could be read", n + 5, manifest.display());
             ms.sort_by(|a, b| a.total_cmp(b));
+            tintype::stats::report();
             println!("single-image latency over {} images: median {:.1} ms, p90 {:.1} ms, p95 {:.1} ms, mean {:.1} ms", ms.len(), quantile(&ms, 0.5), quantile(&ms, 0.9), quantile(&ms, 0.95), ms.iter().sum::<f64>() / ms.len() as f64);
             if second.is_some() {
                 asked_ms.sort_by(|a, b| a.total_cmp(b));

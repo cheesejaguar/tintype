@@ -34,3 +34,4 @@ pub mod plans;
 pub mod pool;
 pub mod eval;
 pub mod partial;
+pub mod stats;
