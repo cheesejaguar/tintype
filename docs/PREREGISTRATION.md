@@ -381,7 +381,7 @@ fixes what that gate left open.
   chain flags, built from that workstream's branch at `7156565`). It is
   not trained a third time: those two runs are the control, with their
   `calibrate` and `test` score files as that workstream wrote them. The
-  default sampler of this branch draws what that build's draws, so the
+  default sampler of this branch draws what that build's sampler draws, so the
   recipes are the same; the builds are not, and that is said wherever the
   comparison is reported. Seed 1 is the control the gate is read against;
   seed 2 shows how much one recipe moves between seeds.

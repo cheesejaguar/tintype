@@ -12,7 +12,7 @@ and the experiments they lead to, are in
 | Date | 2026-11-13 and 2026-11-14 |
 | Hardware | Apple M6, 12 cores, 32 GB, macOS 27.2; CPU only, no GPU job |
 | Software | Python 3.9.6 (standard library only); `tintype` built with `cargo build --release --locked` |
-| Commit | `5cca9e7` on `research/ws4-source-family-matching` (scripts and binary) |
+| Commit | `f753a48` on `research/ws4-source-family-matching` (scripts and binary; the same sources as `5cca9e7`, its hash before the branch was rebased) |
 | Run from | the directory that holds `data/` and `runs/` (here: a worktree whose `data/store`, `data/vstore` and `data/fresh8` link to the local dataset tree; `runs/v7/manifests.txt` and `runs/scores-v7/calib_images.tsv` are the phase-6 files of that tree) |
 
 Every file below starts with the command that wrote it. The feature files

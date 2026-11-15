@@ -5,10 +5,14 @@ Workstream 4 of the [detection improvement research](../../reports/Tintype%20det
 the two classes are made of, a labelling policy and a plan for controlled
 reconstructions, and explicit sampling weights with a replay pool. The
 tooling is built and tested; the audits that need only a CPU have been run
-and their numbers are below; the training comparisons are written out and
-**have not been run**.
+and their numbers are below. Of the training comparisons, the
+family-weighted arm and the source-matched arm have been trained once each
+and read on the frozen split
+([Frozen split](#frozen-split-arms-b-and-c-against-the-control)):
+**neither passes the gate**, the family-weighted arm by one image. The
+reconstruction arm and the refresh arms have not been run.
 
-Everything here is tooling, diagnostics and a plan. Nothing in it selects a
+Everything here is tooling, diagnostics, a plan and one gate run. Nothing in it selects a
 model, a threshold or a training mix to ship: that takes the frozen
 independent split of [frozen-eval.md](frozen-eval.md), a re-calibration,
 an early-exit re-check and a new entry in
@@ -33,7 +37,7 @@ candidate against a control trained here with the same budget
 | Macro recall | The unweighted mean of per-family recall over families with at least 100 unprocessed generated test items. A family's recall is over its unprocessed items; processed copies are measured once, in their own row. |
 | Older families | Every other family with at least 100 unprocessed generated test items. |
 | Reposted images | Generated items whose `transform` column is set (reposts, recompressed and resized copies), and the false-positive rate on authentic items whose `transform` is set. |
-| Improves | New-family macro recall is higher at 1% FPR, with the 95% interval of the difference (bootstrap over parents) above zero, and is not lower at 0.1% FPR. |
+| Improves | New-family macro recall is higher at 1% FPR, with the 95% interval of the difference (bootstrap over parents) above zero, and is not lower at 0.1% FPR. For an arm trained once, the difference must also be larger than the absolute difference between two seeds of the control (added in the pre-registration entry of 2026-11-14, before the first look). |
 | Without regressing | At both rates: older-family macro recall and recall on processed copies are not lower by more than one point, and the false-positive rate on processed authentic copies is not higher. |
 
 The one-point tolerance and the 100-item floor are this runbook's choices;
@@ -49,7 +53,8 @@ Every number in this file and in
 [docs/results/data-audit](../results/data-audit/README.md) was produced on
 2026-11-13 and 2026-11-14 on an Apple M6 (12 cores, 32 GB, macOS 27.2),
 CPU only, by the commands shown, with Python 3.9.6 and the scripts and
-binary of commit `5cca9e7` on branch `research/ws4-source-family-matching`.
+binary of commit `f753a48` on branch `research/ws4-source-family-matching`
+(the same sources as `5cca9e7`, its hash before the branch was rebased).
 They are diagnostics of the local training stores. Two of the sixteen
 phase-6 photo stores (`tiny-genimage`, `stylegan3`) and every evaluation
 photo set except the Frontier 2026-10 images were no longer on disk, so
@@ -590,7 +595,12 @@ is a manifest rewrite of one slice, and holding a slice out is one
 
 ## 6. Equal-budget training mixes
 
-**Not run.** These use the Apple GPU for about an hour each (phase 6 ran
+Arms B and C were run on 2026-11-14 exactly as written below, and the
+control (arm A) is two runs of the same recipe that workstream 1 had
+already trained; see
+[Frozen split](#frozen-split-arms-b-and-c-against-the-control). Arm D and
+the refresh arms are **not run**. Each run uses the Apple GPU for about an
+hour (phase 6 ran
 at about 80 images per second: 8,000 steps of 32). Every arm has the same
 budget, starting weights, seed and augmentation as phase 6, and every arm
 is compared with the control trained here, not with the shipped weights
@@ -613,11 +623,10 @@ data/store/{openfake,openfake2,openfake-reddit,frontier,frontier-heldout,nano-ba
 data/vstore/{vidguard,genbuster,genvideo100k,aigvd,k400,pexels,k400b,pexelsb,aigvd2}/manifest.tsv
 ```
 
-`runs/v7/manifests.txt` holds them as `--manifest <path>` pairs. Before
-starting: `tiny-genimage` and `stylegan3` are not on disk here. Either
-fetch them again (`tintype data phase6`; a download, so the maintainer's
-call) or drop both from the list **for every arm, the control included**,
-and say so in the log. Use one list for all arms.
+`runs/v7/manifests.txt` holds them as `--manifest <path>` pairs. When this
+was first written `tiny-genimage` and `stylegan3` were not on disk; both
+were fetched again before the runs of 2026-11-14 and match their
+manifests, so every run used all 25. Use one list for all arms.
 
 ```bash
 # 0. The shares each arm will train with, before any GPU time (CPU, seconds).
@@ -735,10 +744,99 @@ from 16 sources, 45,674 generated): 29,892 from the per-generator draw,
 With 100 per generator it is 80,379 rows; the roughly 1,040 hub generators
 of Community Forensics are what makes it large.
 
+## Frozen split: arms B and C against the control
+
+Run on 2026-11-14 at commit `f59da2e` on an Apple M6 (12 cores, 32 GB,
+macOS 27.2, GPU engine), after
+[the entry in PREREGISTRATION.md](../PREREGISTRATION.md#source-and-family-matching-on-the-frozen-split-what-was-fixed-before-the-first-look)
+was committed. Every table, the commands and the score files:
+[docs/results/source-family-arms-frozen](../results/source-family-arms-frozen/README.md).
+
+- **Arms**: B (family-weighted) and C (source-matched), the commands of
+  [section 6](#6-equal-budget-training-mixes) with `--seed 1`, 8,000
+  steps each (63.5 and 58.4 minutes; 0% data wait throughout).
+- **Control**: arm A was not trained again. Workstream 1 had trained the
+  same recipe twice (`--seed 1`, `--seed 2`) on the same manifests from
+  the same checkpoint, with its own build and no chain flags; those two
+  runs and their score files are the control. Seed 1 is what the gate is
+  read against, seed 2 shows how far one recipe moves between seeds.
+- **Cutoffs**: each model's own, fitted on `calibrate` with `tintype
+  calibrate --profile photo --target-fpr 0.01` and `0.001`. Nothing was
+  fitted on `fit` and nothing else was chosen on `calibrate`.
+- **Looks at `test`**: one per arm, logged below and in
+  [frozen-eval.md](frozen-eval.md#log).
+
+On `test`, at the cutoffs frozen on `calibrate` (differences in points
+with a 95% interval over parents):
+
+| | Control | Control, seed 2 | B, family-weighted | C, source-matched |
+|---|---|---|---|---|
+| New-family macro recall, 1% | 91.54% | 91.00% | 93.23% (+1.69 [+1.15, +2.16]) | 90.31% (−1.23 [−1.70, −0.76]) |
+| New-family macro recall, 0.1% | 87.16% | 86.35% | 88.76% (+1.60 [+1.03, +2.12]) | 86.44% (−0.72 [−1.15, −0.23]) |
+| Older-family macro recall, 1% | 99.71% | 99.83% | 99.92% | 99.42% |
+| Older-family macro recall, 0.1% | 98.71% | 99.08% | 98.75% | 98.92% |
+| Recall on processed copies, 1% | 82.08% | 81.46% | 84.54% (+2.46 [+1.40, +3.61]) | 80.33% (−1.75 [−2.83, −0.56]) |
+| Recall on processed copies, 0.1% | 72.33% | 71.50% | 74.46% (+2.12 [+1.06, +3.14]) | 71.88% (−0.46 [−1.35, +0.47]) |
+| Recall on unprocessed items, 1% | 95.61% | 95.38% | 96.56% | 94.93% |
+| Processed authentic copies flagged, 1% (of 2,400) | 73 | 78 | 71 | 53 |
+| Processed authentic copies flagged, 0.1% | 15 | 16 | 16 | 12 |
+| Unprocessed authentic photos flagged, 1% (of 7,326) | 55 | 81 | 48 | 42 |
+| Unprocessed authentic photos flagged, 0.1% | 9 | 12 | 9 | 6 |
+
+**The gate.**
+
+- **Arm B does not pass as written, by one image.** Its new-family macro
+  recall is 1.69 points higher at 1%, with the interval above zero and
+  three times the 0.54 points between the control's seeds, and 1.60
+  points higher at 0.1%. Older families and processed copies are not
+  lower. The false-positive rate on processed authentic copies is not
+  higher at 1% (71 against 73) and is higher at 0.1% by one copy (16
+  against 15), which is the count of the control's own second seed. The
+  gate says "not higher"; it is not met.
+- **Arm C fails.** New-family macro recall is lower at both rates and
+  recall on processed copies is 1.75 points lower at 1%. Its frozen
+  cutoffs sit at a lower false-positive rate than the control's, and at
+  the empirical cutoffs of `test` it ranks like the control (91.45%
+  against 91.49% recall at 1% empirical FPR): it moved the operating
+  point, not the ranking. The simulated repost copies are not found more
+  often (71.0% to 80.5% against the control's 74.0% to 83.0%).
+
+**Where arm B's difference is.** Of the six new families, four are found
+98.5% to 100% of the time by every model, the two held-out ones
+(`infinity`, `rar`) among them. The difference is `var` (84.0% against
+80.5% and 79.3% for the control's seeds, at 1%) and `open-magvit2` (76.7%
+against 71.2% and 69.2%). On processed copies the gain is on JPEG, repost
+and strong-resize rows (3.5 to 6.5 points) and not on heavy noise. No
+authentic source is flagged more than by the control beyond two photos of
+the held-out phone (36 against 34, where the control's seeds are 34 and
+62). At the empirical cutoffs of `test` arm B finds 93.22% and 86.66% at
+1% and 0.1%, against 91.49% and 85.10% (control) and 90.61% and 82.90%
+(its second seed).
+
+**Diagnostic, which chooses nothing**: on confirmation batch 7 arm B is
+level with the control at 1% empirical FPR (88.48% against 88.58% and
+88.83%) and above it at 0.1% (67.73% against 64.56% and 62.72%); arm C is
+at 87.87% and 63.60%.
+
+**What this does and does not show.** One run per arm, on a split whose
+clean rows are camera JPEGs against small PNGs, with no real platform
+round trip, and whose new families are six generators of one collection.
+It shows that drawing latent diffusion half as often and the VQ,
+autoregressive and hybrid generators about four times as often did not
+cost anything measurable here or on batch 7, and went with better recall
+on the two hard autoregressive families and on recompressed copies, by
+more than the control's seed-to-seed movement. It does not show that the
+gain is the weighting and not the seed of this one run: that takes a
+second seed of arm B, which is the next thing to run. Arm C's question,
+whether matching platform-processed mass across classes helps, is not
+answered by this split, which has no platform-processed images; what it
+shows is that the change does not help on simulated reposts.
+
+**Decision: neither arm is a ship candidate.**
+
 ## Evaluation
 
-Only on the frozen split of [frozen-eval.md](frozen-eval.md), which does
-not exist yet. Until it does, no arm can be judged; the archived suites
+Only on the frozen split of [frozen-eval.md](frozen-eval.md). The archived suites
 (confirmation 7, Arena, Frontier, NTIRE, DaVODi, confirmation 4) may be
 scored as regression diagnostics and reported beside the control, never
 used to choose.
@@ -758,6 +856,9 @@ python3 -I scripts/family-gate.py --groups data/frozen-eval/test.tsv \
   --system "current=runs/ws4-current/test.tsv@<cutoff 1%>,<cutoff 0.1%>" \
   --system "<arm>=runs/ws4-<arm>/test.tsv@<cutoff 1%>,<cutoff 0.1%>" \
   --label 1%,0.1% --new-family <family> --new-family <family>
+# With --raw the cutoffs are raw thresholds on the mean view logit of an --all-views score
+# file (-logit_bias / logit_scale of each calibrated spec), so one score file serves both
+# cutoffs. That is how the run of 2026-11-14 was read.
 
 # The standing tables of the frozen-evaluation runbook, per arm.
 tintype report --operating-points \
@@ -797,11 +898,12 @@ the phase-6 weights were trained on its other 97%. So:
 
 ## Ready to run
 
-On the Apple GPU, by the maintainer, in this order. Nothing here has been
-started.
+On the Apple GPU, in this order. Item 1 has been run once.
 
-1. Arms A, B and C of [section 6](#6-equal-budget-training-mixes) (about
-   an hour each at phase-6 speed), after deciding the two missing stores.
+1. Arms B and C of [section 6](#6-equal-budget-training-mixes): done with
+   `--seed 1` ([Frozen split](#frozen-split-arms-b-and-c-against-the-control)).
+   **Next: arm B with `--seed 2`**, read against the control's second
+   seed with the same gate, before anything else is built on it.
 2. Real-item scores of the training stores for the review sample, with
    the control or with a copy of the shipped weights
    (`cp models/tintype.safetensors models/tintype.json runs/incumbent/`):
@@ -818,7 +920,8 @@ started.
 3. Arm D, once the reconstruction stores exist (licence checks, then
    generation outside this repository).
 4. The refresh arms, once new-family stores exist.
-5. The evaluation, once the frozen split exists.
+5. For each new arm, the evaluation on the frozen split, with one logged
+   look at `test`.
 
 ## Policy points for the maintainer
 
@@ -839,8 +942,11 @@ started.
    relabel it. Dropping loses nothing a reviewer can be wrong about.
 5. **The gate's numbers**: the one-point tolerance, the 100-item family
    floor, and which families count as new.
-6. **The two missing stores**: fetch `tiny-genimage` and `stylegan3`
-   again, or run every arm without them.
+6. **Condition 3 of the gate at 0.1%.** "Not higher" on 2,400 processed
+   authentic copies turns on single images (15 against 16) and cannot be
+   told from seed movement; whether it should carry a tolerance, like the
+   one point of condition 2, is a decision to take before the next arm,
+   not after.
 7. **The refresh budget and replay share** (2,000 steps, 1e-5, 0.2), which
    are proposals.
 
@@ -848,4 +954,5 @@ started.
 
 | Date | Commit | What was run | By |
 |---|---|---|---|
-| 2026-11-13/14 | `5cca9e7` | The audits, probes, family summary, sampling shares and review-sample draw above, on the local stores (CPU). No training, no scoring. | workstream 4 |
+| 2026-11-13/14 | `f753a48` | The audits, probes, family summary, sampling shares and review-sample draw above, on the local stores (CPU). No training, no scoring. | workstream 4 |
+| 2026-11-14 | `f59da2e` | Arm B (family-weighted) and arm C (source-matched) trained, `--seed 1`, 8,000 steps each, Apple M6 GPU. Each calibrated on the frozen `calibrate` set (1% and 0.1%), then `test` scored once with every view (18:08 and 19:05 local time), then confirmation batch 7 as a diagnostic. Control: workstream 1's two current-mix runs, not retrained. Neither arm passes the gate | workstream 4 |

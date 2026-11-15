@@ -33,7 +33,9 @@ Inputs:
   --groups test.tsv
         the manifest of the scored set, with grouping columns: the family
         is column 8, a processed copy has column 9 set, and the parent
-        (column 5) is the unit that is resampled.
+        (column 5) is the unit that is resampled. `.gz` files are read as
+        they are, and an archived manifest and score file whose paths were
+        made relative together are matched by the path as written.
   --new-family NAME (repeatable)
         the families that count as new; every other family is older.
 
@@ -131,11 +133,14 @@ def run(args, out=sys.stdout):
     missing = 0
     for manifest in args.groups:
         for row in mg.read_manifest(manifest):
-            if any(row.file not in s[1] for s in systems):
+            # A score file names a file as the manifest resolves it, or, in an archive whose
+            # paths were made relative, as the manifest writes it.
+            key = row.file if all(row.file in s[1] for s in systems) else row.path
+            if any(key not in s[1] for s in systems):
                 missing += 1
                 continue
             family = row.family() if row.label == 1 else None
-            by_parent[row.group(0) or row.file].append((row.file, row.label, family, bool(row.group(4)), row.source()))
+            by_parent[row.group(0) or key].append((key, row.label, family, bool(row.group(4)), row.source()))
     units = [by_parent[k] for k in sorted(by_parent)]
     if not units:
         raise SystemExit("no row of --groups was scored by every system (the paths in the score files must be the manifest's)")
@@ -234,6 +239,15 @@ def self_test():
         run(parser().parse_args(argv + ["--raw"]), raw)
         same = lambda t: [l for l in t.splitlines() if l.startswith("| ") and "macro" in l or l.startswith("| ar ")]  # noqa: E731
         assert same(raw.getvalue()) == same(text), raw.getvalue()
+        # An archive: the same files gzipped, with the leading directory stripped from every path.
+        import gzip
+        for name in ("test", "old", "cand"):
+            with gzip.open(tmp / f"{name}.tsv.gz", "wt") as stream:
+                stream.write("".join(l[len("/set/"):] + "\n" for l in (tmp / f"{name}.tsv").read_text().splitlines()))
+        archived = io.StringIO()
+        argv[1], argv[3], argv[5] = str(tmp / "test.tsv.gz"), f"incumbent={tmp / 'old.tsv.gz'}@{logit(0.5)},{logit(0.95)}", f"candidate={tmp / 'cand.tsv.gz'}@{logit(0.5)},{logit(0.95)}"
+        run(parser().parse_args(argv + ["--raw"]), archived)
+        assert archived.getvalue() == raw.getvalue()
     print("family-gate self-test: ok")
 
 

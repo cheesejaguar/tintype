@@ -19,6 +19,7 @@ and the family defaults to the generator name.
 """
 
 import fnmatch
+import gzip
 import hashlib
 import os
 from pathlib import Path
@@ -72,7 +73,9 @@ def read_manifest(path):
     path = Path(path)
     root = path.parent
     rows = []
-    with path.open(encoding="utf-8", newline="") as stream:
+    # A `.gz` manifest (an archived copy) is read as it is.
+    opened = gzip.open(path, "rt", encoding="utf-8", newline="") if path.suffix == ".gz" else path.open(encoding="utf-8", newline="")
+    with opened as stream:
         for number, raw in enumerate(stream, 1):
             line = raw.rstrip("\n").rstrip("\r")
             if not line:
