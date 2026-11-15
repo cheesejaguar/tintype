@@ -238,6 +238,242 @@ The scoring run stopped once when the disk filled, before any score had been
 read, and was restarted with the reference score files kept; see
 [BENCHMARK.md](BENCHMARK.md#blind-batch-7-the-photo-second-opinion).
 
+## The frozen independent split: what was fixed before the first download
+
+Written on 2026-11-14, before any file of the split was downloaded and
+before any model was scored on it. It fills in what
+[the frozen evaluation runbook](runbooks/frozen-eval.md) left open: the
+sources, the sampling, the grouping and what is held out. The measures and
+the selection rule are the runbook's and are not changed here.
+
+- **Two proposed sources were dropped before anything was fetched.** The
+  survey in the runbook proposed the Forchheim Image Database and VISION as
+  authentic sources. Both are real-image sources of Community Forensics
+  (its dataset card lists `coco, forchheim, imagenet, imd2020, laion,
+  landscapesHQ, vision` and FFHQ), which is the checkpoint the phase-1
+  weights started from, and the `commfor-small2` training store holds VISION
+  photos. They are not independent of the model, so neither goes in. The
+  Forchheim licence also forbids modification, which the processed copies
+  would be. RAISE needs a registration form and was not requested.
+- **Authentic sources** (none is in a training manifest, a calibration set,
+  an archived suite or the Community Forensics source list):
+
+  | Source | What is taken | Terms as read at the source on 2026-11-14 |
+  |---|---|---|
+  | [HDR+ burst photography dataset](https://hdrplusdata.org/dataset.html), bucket `hdrplusdata`, folder `20171106/results_20171023` | Every `final.jpg`: 3,640 files, 16.4 GB as listed. One per burst, from Nexus 5, 6, 5X, 6P, Pixel and Pixel XL phones; the output of the HDR+ pipeline snapshot of 2017-10-23 at JPEG quality 95, not the file the phone saved | CC BY-SA 4.0 |
+  | [FloreView](https://lesc.dinfo.unifi.it/FloreView/) | Every `.jpg` and `.jpeg` under a device's `Nat/jpeg-h264` folder: 4,806 files listed, 46 phones of 11 brands. Flat-field images, the `Extra-Data` folders, HEIC files and videos are left out | CC BY-SA 4.0 |
+  | [CSAFE Multi-camera Smartphone Image Database](https://doi.org/10.25380/iastate.26932084.v1), `iPhone14.zip` (20.4 GB, MD5 `dfc01c89b14356141f53d253b72e946c` as listed) | Every JPEG under a `natural` folder: ten iPhone 14 Pro phones, four cameras each, roughly 100 photos per camera. The `blank` (flat-field) folders are left out | CC BY 4.0 |
+
+- **Generated sources.**
+
+  | Source | What is taken | Terms |
+  |---|---|---|
+  | [ARForensics](https://huggingface.co/datasets/Yanran21/ARForensics) at commit `828c2ee260361574f1c7f24ea50a1698128d6baf`, the four `ARForensics_updated_test_part00N.zip` (20.9 GB) | From each generator's `1_fake` folder, 1,500 files evenly spaced over the sorted file names: LlamaGen, VAR, Infinity, Janus-Pro, RAR, Switti, Open-MAGVIT2. The `0_real` folders are ImageNet and are not extracted | MIT |
+  | [GenImage++](https://huggingface.co/datasets/Lunahera/genimagepp) at commit `4160fbc103730771d3641139d3b995a3c2dbc719`, archives `flux_realistic`, `stable_diffusion_v_3_0_realistic` and `flux_krea_amateur` (27.6 GB) | 1,000 files from each, evenly spaced over the sorted file names | CC BY-NC 4.0 |
+
+  No local manifest lists LlamaGen, VAR, Infinity, RAR, Switti or
+  Open-MAGVIT2. `janus-7b` appears 95 times, so Janus-Pro is not a new
+  family and is marked as seen. FLUX.1-dev and SD3 are trained on; the
+  GenImage++ items are an independent source of seen families, and FLUX.1
+  Krea is a variant no manifest lists.
+- **Grouping columns.** `parent_id` is `<collection>/<path inside the
+  collection>`. `scene_id`: for FloreView the location and scene of the
+  file name (`floreview-L1S1`), shared by every phone that photographed it;
+  empty elsewhere (an HDR+ burst is one photo; no scene or prompt id is
+  published for the others). `source_id`: `hdrplus`, `floreview-<brand>`,
+  `csafe-iphone14pro`. `generator_family`: `llamagen`, `var`, `infinity`,
+  `janus-pro`, `rar`, `switti`, `open-magvit2`, `flux`, `sd3`.
+- **Held out to the test set whole**: the families `infinity` and `rar`,
+  and the source `csafe-iphone14pro`.
+- **Shares**: `--fractions 0.2,0.4,0.4 --seed 1 --together parent,scene`.
+  The runbook proposed 30 / 35 / 35. With 8,446 authentic parents to divide
+  (HDR+ and FloreView), 35% is 2,956, short of the 3,000 the 0.1% operating
+  point needs, and 40% is about 3,380. `fit` gets less; nothing planned
+  needs more of it.
+- **What the 0.1% point can and cannot show.** Calibration and test each
+  get over 3,000 authentic photos, but FloreView's are about 100 photos per
+  phone of shared scenes, and CSAFE's are ten units of one model
+  photographed in one town. The photos are distinct; the scenes and devices
+  are far fewer than 3,000. The 0.1% figures are reported with intervals
+  resampled over parents and are to be read with that in mind.
+- **Processed copies.** The twelve single operations of the Frontier
+  diagnostic (`resize-0.5-bicubic`, `resize-0.25-bicubic`, `jpeg-qv4`,
+  `jpeg-qv12`, `blur-s1.0`, `blur-s3.0`, `noise-a10`, `noise-a40`,
+  `sharpen-a1.0`, `repost-720-qv9x1`, `repost-960-qv7x4`,
+  `repost-960-qv12x1`), rendered by `scripts/stress-photo.py` (FFmpeg), on
+  a sample of the parents of `calibrate` and of `test`: the same number of
+  authentic and generated parents in each set, evenly spaced over the
+  sorted paths within each source and each family, and placed with
+  `--existing`. Lossless copies of a 12-megapixel photo are tens of
+  megabytes each, so the number per class and set, between 200 and 300, is
+  fixed after the originals are on disk and before anything is scored, and
+  is written below. It depends on disk space only.
+- **Known gaps, stated now.** (a) No real platform round trips: the one
+  open collection that has them was dropped above. Reposts are simulated.
+  (b) No learned-codec copies: no licence is stated for the CompressAI
+  weights, so item 4 of the processing-chains gate cannot be evaluated on
+  this split. (c) Encoding and size differ by class: the authentic photos
+  are 12-megapixel and larger camera JPEGs, the generated images are 256 to
+  1,024 px and their formats are recorded when they are unpacked. The
+  processed copies re-encode both classes the same way, which removes the
+  encoding difference on those rows but not the size difference; the
+  `resize` and `repost` rows bring sizes closer. Clean-row results are to be
+  read with this confound in mind.
+- **Leakage check**: `tintype overlap` of the new manifests against every
+  training store whose files are on disk. The archived evaluation sets are
+  manifests without files on this machine, so the byte check cannot cover
+  them; none of the sources above is one of their sources.
+- **First look**: the released photo model (`models/tintype.safetensors`,
+  copied under `runs/`), at its shipped cutoff and at a cutoff refitted on
+  `calibrate`, as the incumbent every later candidate is compared with.
+  Every look at `test` is logged in the runbook.
+
+**Added on 2026-11-14 after the originals were on disk, before anything
+was scored.** Nothing above changed.
+
+- **What arrived.** HDR+ 3,640 files (each checked against the MD5 the
+  bucket lists); FloreView 4,806 (the server publishes no checksums; the
+  frozen record below is the first); CSAFE 3,996 natural-scene photos from
+  an archive whose MD5 matched; ARForensics 10,500 from archives whose
+  SHA-256 matched (1,500 of 6,000 per generator); GenImage++ 3,000 (1,000
+  of 6,000 per archive, SHA-256 matched). The generated images are all PNG:
+  256 px (VAR, RAR, Open-MAGVIT2), 384 px (LlamaGen, Janus-Pro), 512 px
+  (Switti), 1,024 px (Infinity and the three GenImage++ sets).
+- **FloreView has 36 scenes**, each photographed by every phone, so its
+  4,806 photos are 36 groups that move between sets whole.
+- **The sets**: `fit` 1,659 authentic and 2,100 generated; `calibrate`
+  3,457 and 4,200; `test` 7,326 (3,996 of them CSAFE) and 7,200.
+- **Leakage check**: 0 of 25,942 files are byte-identical to one of the
+  314,282 files of the 16 training stores on disk.
+- **Processed copies: 200 parents per class in `calibrate` and in `test`.**
+  The twelve copies of a 12-megapixel photo take about 115 MB, so 400
+  authentic parents take about 46 GB. Each class's 200 are divided over
+  its sources (authentic) or families (generated) in proportion to their
+  sizes and taken evenly spaced over each group's sorted paths
+  (`scripts/build-frozen-eval.py stress-sample`). `fit` gets none.
+- **Cutoffs are fitted on all authentic rows of `calibrate`**, originals
+  and processed copies together, with `tintype calibrate`'s default rule.
+
+## Photo policy comparison on the frozen split: what was fixed before the test set was looked at
+
+Written on 2026-11-14 at 21:40 UTC, on top of commit `6a2c258`. The `fit`
+and `calibrate` sets were being scored while this was written; no number
+from them had been read, and nothing had been scored or computed on `test`
+for this comparison. `test` is not blind: it has been looked at for the
+released model and for the two processing-chain arms. The gate is the one
+of [the policy-comparison runbook](runbooks/policy-comparison.md), with the
+bounds it left open filled in here.
+
+- **What is scored** (Apple M6, GPU engine; the released weights as copies
+  under `runs/`, never `models/`): the released photo model with its
+  default, sensitive and strict profiles; its six-view scores, taken from
+  the incumbent's files of the frozen-evaluation run; Community Forensics
+  384 px alone; and, on `test` only, the real two-stage route at the shipped
+  band `(-7, 0.5, 0.5, 0)` and at the narrowed band `(-3, 0.5, 0.5, 0)` on a
+  copied spec. GPTTrace and the encoder probes (PE, DINOv3, MetaCLIP 2) are
+  not on disk and are not downloaded: they are not part of this run.
+- **Operating points**: 0.1% and 1% false-positive rate, both always.
+  Every policy's cutoff is the empirical one on **all authentic rows of
+  `calibrate`**, originals and processed copies together, flagged strictly
+  above (`floor(rate x rows)` authentic rows may be flagged), and is applied
+  to `test` unchanged. This is the pooled rule of
+  `scripts/compare-policies.py`, the same for every policy; it is not the
+  balanced-over-sources rule `tintype calibrate` used for the incumbent's
+  refitted cutoffs, so the baseline's numbers here need not equal those.
+  Recall at empirical cutoffs chosen on `test` itself is printed beside it
+  and labelled as a ranking measure.
+- **The degraded slice** is every row of `test` whose `transform` is not
+  none: the processed copies (2,400 authentic, 2,400 generated).
+- **Baseline**: the default profile of the released model at its two
+  cutoffs frozen as above.
+- **Candidates**, all fixed now:
+  1. retuned single profiles: sensitive, strict, and all six views;
+  2. Community Forensics alone;
+  3. the shipped band, at retuned cutoffs and at its shipped decision;
+  4. the narrowed band, likewise;
+  5. one fusion with Community Forensics as the second model, chosen on
+     `calibrate` from this family: a 50:50 blend of the two logits for
+     `abs(first logit) <= m` with `m` in 1, 2, 3; a 50:50 blend for every
+     photo; and the same four with weights fitted by plain logistic
+     regression on `fit` (inside the gate on both logits, outside it on
+     the first logit alone).
+  `fit` holds originals only, and there every authentic photo is a large
+  camera JPEG and every generated one a small PNG, so the fitted weights
+  are fitted under that confound.
+- **Choosing on `calibrate`**, with the cutoffs above (in-sample there):
+  the member of family 5 with the highest recall on `calibrate`'s
+  processed rows at the 1% cutoff, among the members whose recall on those
+  rows at the 0.1% cutoff is not below the baseline's. Ties: the smaller
+  routed share on `calibrate`, then a 50:50 blend before a fitted one, then
+  the smaller margin. If no member is at or above the baseline at 0.1%, the
+  member with the highest processed-row recall at 1% is carried to `test`
+  and reported as the family's best. The harness prints every member on
+  `test`; only the chosen one is a candidate, and none can be promoted from
+  what `test` shows.
+- **The gate**, per candidate, on `test` at the cutoffs frozen on
+  `calibrate`, against the baseline:
+  1. recall on the degraded slice at the 1% cutoff is higher by **at least
+     5.00 points**;
+  2. recall on the degraded slice at the 0.1% cutoff is not lower;
+  3. authentic photos hold: at each of the two cutoffs it flags no more of
+     `test`'s authentic rows than the baseline does at its cutoff for the
+     same target, and its worst authentic source and worst transform
+     (slices of 100 authentic rows or more) are not flagged at a higher
+     rate than the baseline's worst;
+  4. recall on unprocessed generated rows is within one point of the
+     baseline's at both cutoffs;
+  5. cost: the share of `test` photos sent to the second model is no higher
+     than the shipped band's share on `calibrate` (the number is added
+     below, before `test` is looked at), and p95 single-image latency and
+     peak memory are no higher than the shipped two-stage route's on the
+     same hardware. Latency and memory are **not measured in this run** (the
+     machine is shared), so that half of item 5 cannot be evaluated now; a
+     candidate that meets everything else is reported as such and no
+     further.
+  A candidate that gains at 1% and loses at 0.1% fails.
+- **The narrowed band as an opt-in speed candidate** is judged separately,
+  on `test` at the shipped decision (probability 0.5), against the shipped
+  band: (a) it sends fewer photos to the second model; (b) it reaches
+  Community Forensics at its own cutoff on at least as many slices as the
+  shipped band does, a slice being a generator family of 100 generated
+  rows or more (it flags at least as many) or an authentic source of 100
+  rows or more (it flags no more). The sets of this split hold one class
+  each, so the per-set precision-and-recall count of confirmation 7 is not
+  defined here and this count stands in for it; (c) its recall on the
+  degraded slice is not more than one point below the shipped band's, and
+  it flags no more authentic rows. Meeting all three does not ship it: that
+  still needs selection on development data and its own entry.
+- **Checks and analyses, not candidates**: the two real two-stage runs on
+  `test` against the same policy computed from the separate score files
+  (verdicts that differ are counted); the first-stage misses each gate
+  leaves outside; and the spread of the six view logits as a routing
+  feature. No learned gate is fitted.
+- **Intervals**: `tintype report --operating-points --cluster-by parent`
+  on the harness's score files, at the frozen cutoffs.
+- **Looks at `test`**: one scoring pass per system and one evaluation with
+  the commands of the runbook, logged there.
+
+**Added on 2026-11-14 at 21:46 UTC, after choosing on `calibrate` and
+before anything was scored or computed on `test`.** Nothing above changed.
+The choice was made at commit `6fc5ecb` with
+`scripts/compare-policies.py ... --report-on calibrate --cohort-by processing`
+(the command and its output are in the runbook).
+
+- **The fusion carried to `test`: weights fitted on `fit`, for
+  `abs(first logit) <= 3`.** On `calibrate`'s processed rows, at the cutoffs
+  frozen on `calibrate`, the baseline finds 1,109 of 2,400 at 0.1% and
+  1,905 at 1%. All eight members are at or above 1,109 at 0.1%; at 1% they
+  find 1,915 (50:50, margin 1), 1,905 (margin 2), 1,812 (margin 3), 1,792
+  (every photo), and fitted 1,915, 1,908, **1,948** and 1,929. The chosen
+  one gains 1.79 points at 1% on these rows, in-sample: below the 5 points
+  the gate asks for on `test`.
+- **The route bound of gate item 5**: the shipped band sends 6,752 of
+  12,457 `calibrate` photos (54.20%) to the second model. The chosen fusion
+  sends 2,406 (19.31%) there, the narrowed band 1,363 (10.94%).
+- For the record, among the single profiles on those rows: strict finds
+  1,712 at 0.1% and 1,930 at 1%, six views 1,633 and 1,859, sensitive 983
+  and 1,807.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames
