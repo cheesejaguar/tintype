@@ -50,6 +50,25 @@ tintype calibrate --weights runs/photo/last.safetensors \
   --scores runs/photo-calibration.tsv --profile photo --target-fpr 0.01
 ```
 
+Training draws both classes equally often and, within a class, a generator
+with weight `count^0.5`. To see what that means for your manifests, and to
+change it, without training:
+
+```sh
+tintype sampling-shares --manifest my-photo-train.tsv --manifest more.tsv
+tintype train ... --manifest-weight more=0.5 --family-weight gan=2 --print-sampling
+```
+
+`--manifest-weight` and `--family-weight` multiply the sampling mass of a
+manifest's or a generator family's items (the family is manifest column 8,
+or else `--family-map`, or else the generator name). `--replay-manifest`
+with `--replay-share` takes a fixed share of the draws from older data
+during a refresh. With none of these flags the sampler draws exactly what
+it drew before they existed. The
+[source and family runbook](runbooks/source-family-matching.md) has the
+tools that audit a training set's files, group manifests by family and
+source, and build a replay manifest.
+
 Training views pass through the augmentation of the released recipe:
 JPEG before and after the crop, a messenger-style round trip, random
 resampling kernels and scale. `--p-chain` adds processing chains on top:
