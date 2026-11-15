@@ -1,0 +1,16 @@
+# cutoffs frozen by tintype partial-report: authentic FPR in percent, rule, cutoff (logit)
+# authentic	1100
+0.1	global (deployed)	0.6737
+0.1	grid max	9.85998
+0.1	grid mean	1.4240527
+0.1	grid top-3	8.710433
+0.1	views max	7.13427
+0.1	views mean	1.0333517
+0.1	views top-2	5.721445
+1	global (deployed)	-1.03491
+1	grid max	8.29909
+1	grid mean	-0.17510732
+1	grid top-3	7.088403
+1	views max	5.63297
+1	views mean	0.16520159
+1	views top-2	4.1571403
