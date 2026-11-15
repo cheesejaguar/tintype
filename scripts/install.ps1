@@ -6,7 +6,7 @@
 #
 #   & ([scriptblock]::Create((irm https://cheesejaguar.github.io/tintype/install.ps1))) -NoModels
 #
-# TINTYPE_VERSION=v0.1.2 pins a release. TINTYPE_INSTALL_DIR sets the
+# TINTYPE_VERSION=v0.2.0 pins a release. TINTYPE_INSTALL_DIR sets the
 # installation directory (default %LOCALAPPDATA%\Programs\tintype).
 # TINTYPE_NO_MODELS=1 is the same as -NoModels. TINTYPE_NO_MODIFY_PATH=1
 # leaves the user PATH alone. TINTYPE_PLATFORM=windows-x86 installs the
@@ -29,7 +29,7 @@ function Install-Tintype {
 
     if ($Help) {
         Write-Output 'Usage: install.ps1 [-NoModels]'
-        Write-Output 'TINTYPE_VERSION=v0.1.2 pins a release.'
+        Write-Output 'TINTYPE_VERSION=v0.2.0 pins a release.'
         Write-Output 'TINTYPE_INSTALL_DIR sets the installation directory (default %LOCALAPPDATA%\Programs\tintype).'
         Write-Output 'TINTYPE_NO_MODIFY_PATH=1 leaves the user PATH unchanged.'
         Write-Output 'TINTYPE_PLATFORM=windows-x86 installs the 32-bit build on 64-bit Windows.'
@@ -68,7 +68,7 @@ function Install-Tintype {
         if (-not $version) { throw "Tintype: no stable release is available at $repo/releases" }
     }
     if ($version -notmatch '^v[0-9][a-zA-Z0-9._-]*$') {
-        throw 'Tintype: TINTYPE_VERSION must be a release tag such as v0.1.2'
+        throw 'Tintype: TINTYPE_VERSION must be a release tag such as v0.2.0'
     }
     $source = "$repo/releases/download/$version"
 
