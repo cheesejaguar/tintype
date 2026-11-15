@@ -1049,6 +1049,73 @@ arms by other workstreams. This is this workstream's first look at it.
   parents. No platform round trips and no learned-codec copies are in the
   split.
 
+## Fast options on the frozen split: INT8 kernels and distilled students (what was fixed before the look)
+
+Written on 2026-11-15, before any candidate below was scored on any set of
+the frozen split. The frozen split is rebuilt from its records
+(`verify-set` must pass on all three before anything is scored).
+
+**What is being decided.** Whether to ship faster, possibly less accurate,
+ways to run the detector as options beside the default. Nothing here
+changes the default model, engine, profiles or verdicts. The question is
+not whether a candidate matches the incumbent; the owner has said a faster
+option may lose accuracy. It is whether it is faster by a margin worth an
+option, and what it costs, measured honestly.
+
+**Candidates.**
+
+1. **INT8 kernels**: `--device cpu-int8` with the `all` variant on the
+   integer kernels (not the simulation of the entry above, whose results do
+   not carry over to the kernels), on an unchanged copy of the released
+   photo weights. It gets its own cutoffs, fitted on `calibrate` with the
+   kernels (`calibrate --profile photo --target-fpr 0.01`, `--profile
+   strict --target-fpr 0.001`), and its own early-exit margins, refitted on
+   `fit` from its own all-views scores (`refit-exit`).
+2. **Students**: ViT-S/16 with 8, 7 and 6 blocks (blocks 0,1,2,3,5,7,9,11;
+   0,1,2,4,6,8,11; 0,2,4,6,8,11 of the teacher), trained 8,000 steps from
+   the released weights on the 25 phase-6 manifests with the released model
+   as teacher (`--distill-weight 0.5 --distill-temperature 2`, `--steps 8000
+   --batch 32 --lr 2e-5 --warmup 300 --seed 1`), `last.safetensors` of each.
+   Each gets its own cutoffs fitted on `calibrate` as above, and its own
+   margins refitted on `fit`. One run per student; the training validation
+   split (not the frozen split) is the only thing looked at before this.
+
+The reference for every comparison is the released model with its cutoffs
+refitted on `calibrate` the same way (the incumbent rows of the entries
+above), on the same engine where the comparison is speed.
+
+**Speed gate (each candidate).** At least 1.3 times the CPU throughput or
+at least 25% lower single-image p95 latency, file to verdict, than the
+`cpu` engine with the released model, each with its own early exit and
+default profile. Measured on 300 `test` rows drawn with seed 8 (150
+authentic, 150 generated, as drawn), the systems taking turns, best of
+three passes each, with no training or download running; reported for
+Accelerate and for the pure-Rust kernels (`portable-cpu`) on this Mac, and
+on the GPU engine for students. INT8 on x86-64 is reported if measured, and
+not claimed otherwise.
+
+**Accuracy floor (each candidate), at its own cutoffs frozen on
+`calibrate`, on `test`, early exit as it will ship.** A floor, not an
+equivalence test:
+
+- at the 1% cutoff, authentic rows flagged over all of `test` (clean and
+  processed) no more than 1.5%;
+- at the 1% cutoff, recall on clean rows no more than 5 points below the
+  incumbent's, and on processed rows no more than 8 points below.
+
+Everything else is reported and not gated: recall at the 0.1% cutoff and
+its authentic rate, per family, per transform and per authentic source,
+recall at equal false-positive counts, and verdicts that differ.
+
+**Choice.** INT8 is decided on its own. Among students that pass both,
+the one with the highest clean recall at the 1% cutoff ships as an
+optional model; if none passes, none ships. One look at `test` per
+candidate, logged. An INT8 student is not a candidate in this entry.
+
+**Caveats that go with every number** are those of the entries above:
+camera JPEGs against small PNGs on clean rows, few scenes and devices, no
+platform round trips, `test` looked at before for the incumbent.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames
