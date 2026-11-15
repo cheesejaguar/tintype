@@ -405,6 +405,7 @@ tintype detect --json suspicious.png       # one JSON object per file
 tintype detect --sensitive inbox/*.webp    # looser threshold
 tintype detect --strict evidence.jpg       # tighter threshold
 tintype detect --fast --device cpu a.jpg   # two views, CPU engine
+tintype detect --review-margin 1 inbox/*   # also mark results close to the threshold as needing review
 
 tintype data baselines                     # fetches the reference detectors' weights, once
 tintype detect --photo-second-opinion baselines/commfor-384.safetensors *.jpg
@@ -422,13 +423,39 @@ shipped here. The Community Forensics weights are MIT.
   different score under `--strict` than under the default. Above 0.5 is
   flagged. `--json` also gives the evidence itself (`logit`, the same under
   every profile), the profile's threshold on it (`threshold_logit`) and the
-  `profile` name.
+  `profile` name. Read it as a detector score: the calibration puts 0.5 at
+  a false-positive target and fits the slope with both classes weighted
+  equally, so a score of 0.9 does not mean nine such files in ten are
+  AI-generated in your stream. What a flag is worth depends on how common
+  AI-generated files are among your inputs (next point).
 - **A flag is evidence, not a finding.** At the error rates measured on the
   newest blind batch (89.7% of AI photos found, 1.2% of real ones flagged),
   a stream in which one photo in a hundred is AI-generated would have about
   43% of its flagged photos be AI-generated – more than half the flags would
   be on real photos. That is arithmetic, not a measurement of any real
   stream; it is why a flag should lead to a second look, not an accusation.
+  The arithmetic is `precision = recall·π / (recall·π + FPR·(1 − π))` for
+  a share π of AI-generated inputs: 0.897·0.01 / (0.897·0.01 + 0.0121·0.99)
+  ≈ 0.43. For nine flags in ten to be right at that share and 90% recall,
+  the false-positive rate has to be about 0.10%, and showing a rate that
+  low takes about 3,000 independent authentic files with none flagged.
+  `tintype report --operating-points --prevalence 0.01` prints this
+  column for any score file.
+- **`needs review`** appears only when you ask for it. `--review-margin M`
+  marks a result whose calibrated logit (the logit of its score, 0 at the
+  threshold) lies within `M` of the threshold, and `--review-disagreement
+  S` marks one when at least a share `S` of the views scored (frames, for a
+  clip) fall on the other side of the threshold from the verdict. The
+  verdict, the score and the exit status stay exactly as they are; text
+  output gains `[needs review: margin]` and JSON gains `"review"` and, when
+  true, `"review_reason"` (`"margin"`, or `"view_disagreement"`; the margin
+  is reported when both apply). With early exit, disagreement is among the
+  views that were looked at, and a file decided on its first view cannot
+  disagree with itself. It reuses logits already computed, so it costs no
+  inference. No band ships: a margin is a policy to fit on your own
+  calibration data ([runbook](docs/runbooks/calibration-abstention.md)),
+  and an AI-generated file sent to review is a miss as far as automatic
+  detection goes. Without these flags the output has no review fields.
 - **Video verdicts say what they rest on.** Sixteen frames are spread over
   the first 30 seconds of a clip, and a clear clip is decided from the first
   few of them, so most verdicts rest on the first 13 seconds or less. Each
@@ -440,7 +467,16 @@ shipped here. The Community Forensics weights are MIT.
   tintype detect --max-seconds 0 --all-views --frames 64 long-clip.mp4
   ```
   Even so, a few generated seconds inside a long real video can fall between
-  the sampled frames.
+  the sampled frames. `--coverage segments` is an opt-in mode for looking
+  at where a clip scores: it divides the same number of frames between
+  early, middle and late windows of the whole clip, scores every one (no
+  early exit) and reports each window beside the clip's score; `--coverage
+  shots` also moves the window boundaries onto nearby cuts, and `--coverage
+  uniform` reports the default sampling frame by frame. The verdict is
+  still the clip's, from the mean over all scored frames; the per-window
+  scores are for evaluation and are not calibrated as decisions
+  ([JSON fields](docs/API.md#video-coverage-modes-cli),
+  [runbook](docs/runbooks/partial-edits.md)).
 - **`INCONCLUSIVE`** means decoding stopped before the verdict had the frames
   it needed (a damaged or cut-off file): the score of the frames that were
   read is shown, with no verdict (`"complete": false` in JSON).
@@ -461,13 +497,19 @@ shipped here. The Community Forensics weights are MIT.
 | `demo` | Score the bundled, labeled sample |
 | `verify-models`, `freeze-set`, `verify-set` | Verify released weights and reproduce the exact evaluation inputs |
 | `split-groups`, `verify-split` | Divide manifests into fit, calibrate and test sets that keep parents, scenes, sources and generator families together, and fail if any cross ([runbook](docs/runbooks/frozen-eval.md)) |
+| `interpolate`, `replay-pool` | Offline experiments: a weight-space sweep between two compatible checkpoints (or an average of sibling fine-tunes), written under `runs/` with an uncalibrated spec; and a replay of other ways of pooling saved view logits, with the threshold and early-exit margins refitted for each ([runbook](docs/runbooks/interpolation-pooling.md)) |
 | `data` | Download and prepare a dataset plan |
-| `train` | Fine-tune on image and video manifests |
-| `finalize`, `finalize-video`, `calibrate` | Freeze a checkpoint and fit its operating points |
+| `train` | Fine-tune on image and video manifests. `--manifest-weight`, `--family-weight`, `--weights-file` and `--family-map` weight manifests and generator families, `--replay-manifest` with `--replay-share` draws a fixed share from a replay pool, `--print-sampling` prints the resulting shares and stops; with none of them sampling is unchanged ([runbook](docs/runbooks/source-family-matching.md)). Optional processing chains (`--p-chain`, `--chain-*`, `--messenger-*`), applied to real and generated items alike and off by default ([runbook](docs/runbooks/processing-chains.md)) |
+| `sampling-shares` | How often a training recipe draws each manifest, generator family and generator, per class, without training. Runs on every platform |
+| `augment-bench`, `hash-split` | Time the training loader's decoding and augmentation on the CPU; write the two sides of the path-hash validation split as manifests |
+| `finalize`, `finalize-video`, `calibrate` | Freeze a checkpoint and fit its operating points. `calibrate --rule bound` fits the threshold to a Clopper–Pearson upper bound over independent authentic items instead of a quantile, and says how many items it needs ([runbook](docs/runbooks/calibration-abstention.md)) |
+| `refit-exit` | Re-check an early-exit schedule against a new threshold from all-views score files, and refit its margins; runs on every platform and scores nothing |
 | `evaluate` | Score a whole suite with Tintype and the reference detectors, print tables |
 | `score`, `score-video` | Score one manifest (`--reference commfor|swinv2|waverep` runs a reference detector) |
-| `report` | Precision, recall, F1, FPR, AUROC, recall at 1% FPR, bootstrap intervals; `--at-rate-of` compares systems at one system's false-positive rate; `--operating-points` gives recall at 0.1% and 1% FPR, the rates at each frozen cutoff with a Clopper–Pearson bound, precision at a stated prevalence, and per-slice tables |
-| `latency` | Single-image latency, file to verdict: median, p90 and p95. Runs on every platform with `--device cpu` |
+| `report` | Precision, recall, F1, FPR, AUROC, recall at 1% FPR, bootstrap intervals; `--at-rate-of` compares systems at one system's false-positive rate; `--operating-points` gives recall at 0.1% and 1% FPR, the rates at each frozen cutoff with a Clopper–Pearson bound, precision at a stated prevalence, and per-slice tables; with `--transfer-budget`, each authentic stratum's rate at the frozen cutoff judged against a budget; with `--review-margin`, coverage, review rates and recall with reviewed AI items counted as misses |
+| `latency` | Single-image latency, file to verdict: median, p90 and p95. Runs on every platform with `--device cpu`. `--photo-second-opinion <weights>` times the photo second opinion with it and prints the share of images sent on |
+| `dump-video-features`, `fit-temporal-head`, `eval-temporal-head` | Offline experiment tooling, not part of detection: per-frame patch tokens with actual timestamps, shallow clip heads fitted on them, and their comparison with the frame mean under shuffled-order, blur and cadence controls ([runbook](docs/runbooks/temporal-head.md)) |
+| `paste-edits`, `score-windows`, `partial-report` | Partial edits as a separate evaluation target: build pasted-region composites with controls from images on disk, score the model's views and a dense grid of native windows, and compare pooling rules at equal authentic FPR with window-level localisation against the masks ([runbook](docs/runbooks/partial-edits.md)). Nothing here changes a verdict |
 | `profile` | Decoding, cropping and the network timed separately, the network at several batch sizes |
 | `ingest`, `index-folder`, `overlap`, `check-videos`, `parquet-info` | Dataset tooling |
 
@@ -533,7 +575,11 @@ tintype evaluate confirm4 --baselines
   training cutoff. Evaluate on the generators used in your workflow.
 - Local edits (inpainting a region of a real photo) and face swaps are out of
   scope; the model is trained on fully generated images. On a face-swap
-  deepfake set the default profile finds 14%.
+  deepfake set the default profile finds 14% (measured on face crops, a
+  different task from a generated full frame). Partial edits are kept as a
+  separate evaluation target with its own tooling and output
+  ([runbook](docs/runbooks/partial-edits.md)); nothing there feeds the
+  verdict.
 - Media that has been through a messenger or social app is much harder. On
   WhatsApp and Instagram copies of 2026 images the default profile finds
   27–36% of the AI images (flagging under 1% of real ones); `--sensitive`

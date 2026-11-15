@@ -1,6 +1,7 @@
 //! Compare score files (as written by `tintype score` or the baseline
 //! harness) with one shared metric implementation.
 use crate::metrics::{self, Metrics};
+use crate::review::{self, Outcome, Reason, Review};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -181,16 +182,79 @@ pub struct OperatingPoints {
     pub min_slice: usize,
     /// Manifest rows by path, for the grouping columns score files lack.
     pub groups: BTreeMap<String, crate::ingest::Item>,
+    /// Review bands to account for at each system's frozen cutoff; `None`
+    /// prints nothing about review.
+    pub review: Option<ReviewAccounting>,
+    /// A false-positive budget: with it, every slice table is followed by
+    /// the authentic strata's rates at the frozen cutoff judged against it
+    /// (the transfer of a cutoff frozen on other items).
+    pub transfer_budget: Option<f64>,
 }
 
 impl Default for OperatingPoints {
     fn default() -> Self {
-        Self { fprs: vec![0.001, 0.01], prevalence: 0.01, slice_by: vec!["dataset".into()], cluster_by: None, min_slice: 100, groups: BTreeMap::new() }
+        Self { fprs: vec![0.001, 0.01], prevalence: 0.01, slice_by: vec!["dataset".into()], cluster_by: None, min_slice: 100, groups: BTreeMap::new(), review: None, transfer_budget: None }
     }
 }
 
+/// The review bands [`operating_points_markdown`] accounts for.
+#[derive(Clone, Debug, Default)]
+pub struct ReviewAccounting {
+    /// Margins to tabulate, one row each: the half-width of the band in
+    /// calibrated logits around the frozen cutoff (`logit(score) −
+    /// logit(cutoff)`), as `--review-margin` applies it.
+    pub margins: Vec<f32>,
+    /// `(share, threshold)`: also review when at least `share` of a row's
+    /// logits (the views or frames looked at) fall on the other side of
+    /// `threshold`, the profile's raw threshold on their mean (`detect
+    /// --json` prints it as `threshold_logit`). Rows with fewer than two
+    /// logits are never reviewed for this.
+    pub disagreement: Option<(f32, f32)>,
+    /// Review decisions recorded elsewhere, by path (`None`: not reviewed),
+    /// tabulated as a row of their own: see [`read_review_flags`].
+    pub flags: Option<BTreeMap<String, Option<Reason>>>,
+}
+
+/// Read per-item review decisions: either the JSON lines `detect --json` /
+/// `batch --json` print with a review band (`path`, `review`,
+/// `review_reason`), or tab-separated `path review [reason]` rows where
+/// `review` is `1`/`true` or `0`/`false`. A reviewed row without a known
+/// reason is counted as reviewed for the margin.
+pub fn read_review_flags(path: &Path) -> Result<BTreeMap<String, Option<Reason>>> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let reason = |reviewed: bool, why: Option<&str>| reviewed.then(|| if why == Some(Reason::ViewDisagreement.name()) { Reason::ViewDisagreement } else { Reason::Margin });
+    let mut out = BTreeMap::new();
+    for l in text.lines().filter(|l| !l.trim().is_empty()) {
+        if l.trim_start().starts_with('{') {
+            let v: serde_json::Value = serde_json::from_str(l).with_context(|| format!("{}: not a JSON object: {l}", path.display()))?;
+            // Rows without a verdict (unreadable files) carry no review field.
+            let (Some(p), Some(r)) = (v.get("path").or_else(|| v.get("name")).and_then(|p| p.as_str()), v.get("review").and_then(|r| r.as_bool())) else { continue };
+            out.insert(p.to_string(), reason(r, v.get("review_reason").and_then(|w| w.as_str())));
+        } else {
+            let f: Vec<&str> = l.split('\t').collect();
+            let r = match f.get(1).copied() {
+                Some("1" | "true") => true,
+                Some("0" | "false") => false,
+                _ => anyhow::bail!("{}: expected `path<TAB>0|1[<TAB>reason]`, got: {l}", path.display()),
+            };
+            out.insert(f[0].to_string(), reason(r, f.get(2).copied()));
+        }
+    }
+    Ok(out)
+}
+
+/// What each item's verdict and review decision are under a band of
+/// half-width `margin` (calibrated logits) around the cutoff `frozen`, with
+/// the optional disagreement rule: the arithmetic of [`Review::reason`] on
+/// the rows of a score file.
+pub fn review_outcomes(rows: &[&Scored], frozen: f32, margin: f32, disagreement: Option<(f32, f32)>) -> Vec<Outcome> {
+    let band = Review { margin, view_disagreement: disagreement.map(|d| d.0) };
+    let at = review::logit_of(frozen);
+    rows.iter().map(|r| Outcome { label: r.label, flagged: r.prob > frozen, review: band.reason(review::logit_of(r.prob) - at, &r.logits, disagreement.map_or(0.0, |d| d.1)) }).collect()
+}
+
 /// The value of slicing column `by` for a scored item.
-fn slice_value(by: &str, it: &crate::ingest::Item) -> Result<String> {
+pub fn slice_value(by: &str, it: &crate::ingest::Item) -> Result<String> {
     Ok(match by {
         "dataset" => it.dataset.clone(),
         "generator" => it.generator.clone(),
@@ -268,6 +332,46 @@ pub fn operating_points_markdown(systems: &[(String, BTreeMap<String, Scored>, f
             let (flag_cell, bound) = if n_real > 0 { (format!("{flagged} of {n_real}"), pct(metrics::clopper_pearson_upper(flagged, n_real, 0.95))) } else { ("–".into(), "–".into()) };
             println!("| {what} | {cutoff:.6} | {flag_cell} | {} | {bound} | {recall_cell} | {} |", pct(fpr), pct(metrics::precision_at_prevalence(recall, fpr, opts.prevalence)));
         }
+        if let Some(acc) = &opts.review {
+            let rows: Vec<&Scored> = common.iter().map(|k| &scores[*k]).collect();
+            let mut bands: Vec<(String, Vec<Outcome>)> = vec![("none".into(), review_outcomes(&rows, *frozen, 0.0, None))];
+            for &m in &acc.margins {
+                let what = match acc.disagreement {
+                    Some((share, _)) => format!("margin {m}, or disagreement of {share} or more"),
+                    None => format!("margin {m}"),
+                };
+                bands.push((what, review_outcomes(&rows, *frozen, m, acc.disagreement)));
+            }
+            if let Some(flags) = &acc.flags {
+                let missing = common.iter().filter(|k| !flags.contains_key(**k)).count();
+                anyhow::ensure!(missing == 0, "{missing} of {} scored items have no row in the review flags file (paths must match the score file's)", common.len());
+                bands.push(("recorded decisions".into(), common.iter().zip(&rows).map(|(k, r)| Outcome { label: r.label, flagged: r.prob > *frozen, review: flags[*k] }).collect()));
+            }
+            println!("\n{name}, review accounting at the frozen cutoff {frozen}. Verdicts are unchanged; an item sent to review gets no automatic verdict, so a reviewed AI item counts as a miss and a reviewed real item is not a false alarm.\n");
+            println!("| Review band | Coverage | Real items reviewed | AI items reviewed | Reviewed for the margin | Real items flagged without review | FPR | FPR upper bound | Recall, reviewed AI items as misses | Recall without the band | Precision at prevalence | Share of a stream reviewed at prevalence |");
+            println!("|---|---|---|---|---|---|---|---|---|---|---|---|");
+            for (what, outcomes) in &bands {
+                let a = review::account(outcomes);
+                // Recall with reviewed items as misses, as a statistic of 0/1 scores, for the same bootstrap as above.
+                let auto: Vec<f32> = outcomes.iter().map(|o| (o.flagged && o.review.is_none()) as u8 as f32).collect();
+                let (lo, hi) = metrics::bootstrap_ci_clustered(&auto, &labels, clusters.as_deref(), |s, l| metrics::rates_at(s, l, 0.5).1, 1000, 12);
+                let of = |k: usize, n: usize| if n > 0 { format!("{k} of {n} ({})", pct(k as f64 / n as f64)) } else { "–".into() };
+                let (flag_cell, bound) = if a.n_real > 0 { (format!("{} of {}", a.real_flagged_unreviewed, a.n_real), pct(metrics::clopper_pearson_upper(a.real_flagged_unreviewed, a.n_real, 0.95))) } else { ("–".into(), "–".into()) };
+                let recall_cell = if a.n_fake > 0 { format!("{} ({}–{})", pct(a.recall()), pct(lo), pct(hi)) } else { "–".into() };
+                println!(
+                    "| {what} | {} | {} | {} | {} of {} | {flag_cell} | {} | {bound} | {recall_cell} | {} | {} | {} |",
+                    pct(a.coverage()),
+                    of(a.real_reviewed, a.n_real),
+                    of(a.fake_reviewed, a.n_fake),
+                    a.by_margin,
+                    a.real_reviewed + a.fake_reviewed,
+                    pct(a.fpr()),
+                    pct(a.recall_without_band()),
+                    pct(metrics::precision_at_prevalence(a.recall(), a.fpr(), opts.prevalence)),
+                    pct(a.review_rate_at(opts.prevalence))
+                );
+            }
+        }
         for by in &opts.slice_by {
             let mut slices: BTreeMap<String, Vec<usize>> = BTreeMap::new();
             for (i, it) in items.iter().enumerate() {
@@ -294,6 +398,40 @@ pub fn operating_points_markdown(systems: &[(String, BTreeMap<String, Scored>, f
             }
             let show = |w: Option<(f64, &str)>| w.map_or_else(|| "none large enough".to_string(), |(r, v)| format!("{} ({v})", pct(r)));
             println!("\nWorst {by} slice with at least {} items of the class: recall {}; FPR {}.", opts.min_slice, show(worst_recall), show(worst_fpr));
+            if let Some(budget) = opts.transfer_budget {
+                let units = opts.cluster_by.map_or("items".to_string(), |k| format!("{} clusters", k.name()));
+                println!("\n{name} transfer by {by}: authentic {units} flagged at the frozen cutoff {frozen}, against a false-positive budget of {}. Bounds are one-sided 95% Clopper–Pearson; a stratum is within the budget when its upper bound is, exceeds it when its lower bound does, and is otherwise not resolved.\n", pct(budget));
+                println!("| {by} | Authentic {units} | Flagged | FPR | Lower bound | Upper bound | Against the budget |");
+                println!("|---|---|---|---|---|---|---|");
+                let (mut within, mut exceeds, mut open) = (0, 0, 0);
+                for (value, idx) in &slices {
+                    let real: Vec<usize> = idx.iter().copied().filter(|&i| labels[i] == 0).collect();
+                    if real.is_empty() {
+                        continue;
+                    }
+                    let flags: Vec<bool> = real.iter().map(|&i| probs[i] > *frozen).collect();
+                    let ids: Option<Vec<usize>> = clusters.as_ref().map(|c| real.iter().map(|&i| c[i]).collect());
+                    let (k, n) = crate::calibration::flagged_units(&flags, ids.as_deref());
+                    let s = crate::calibration::transfer(k, n, budget, 0.95);
+                    let verdict = match s.status {
+                        crate::calibration::Transfer::Within => {
+                            within += 1;
+                            "within".to_string()
+                        }
+                        crate::calibration::Transfer::Exceeds => {
+                            exceeds += 1;
+                            "exceeds".to_string()
+                        }
+                        crate::calibration::Transfer::Unresolved => {
+                            open += 1;
+                            let needed = crate::calibration::needed_with_no_flags(budget, 0.95);
+                            if n < needed { format!("not resolved ({needed} needed with none flagged)") } else { "not resolved".to_string() }
+                        }
+                    };
+                    println!("| {value} | {n} | {k} | {} | {} | {} | {verdict} |", pct(k as f64 / n as f64), pct(s.lower), pct(s.upper));
+                }
+                println!("\n{within} of {} authentic {by} strata are shown within the budget, {exceeds} exceed it, {open} are not resolved.", within + exceeds + open);
+            }
         }
     }
     Ok(())

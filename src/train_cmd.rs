@@ -1,11 +1,12 @@
 //! `tintype train`: fine-tune the detector on the Apple GPU.
 #![cfg(target_os = "macos")]
 
-use crate::data::{is_val, spawn_loader, AugConfig, Sampler};
+use crate::data::{spawn_loader, AugConfig};
 use crate::detector::{ModelSpec, ViewSpec};
 use crate::image_io::{self, View};
-use crate::ingest::{read_manifest, Item};
+use crate::ingest::Item;
 use crate::metrics::{self, sigmoid};
+use crate::sampling::{self, Recipe};
 use crate::trainer::{OptConfig, Teacher, Trainer};
 use crate::vit::VitConfig;
 use crate::weights::Weights;
@@ -13,6 +14,7 @@ use anyhow::Result;
 use rayon::prelude::*;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -33,6 +35,11 @@ pub struct TrainArgs {
     pub aug: AugConfig,
     pub opt: OptConfig,
     pub sampler_alpha: f64,
+    /// Explicit manifest and family weights and the replay pool; the default
+    /// is the plain `count^alpha` sampler.
+    pub sampling: sampling::Options,
+    /// Print the effective sampling shares of the recipe and stop.
+    pub print_sampling: bool,
     /// What a shallower student is and learns from; the default trains the
     /// twelve-block network on labels alone, as before.
     pub student: Student,
@@ -121,6 +128,14 @@ fn eval(tr: &Trainer, val: &ValSet) -> (Vec<Vec<f32>>, String) {
 }
 
 pub fn run(a: TrainArgs) -> Result<()> {
+    if a.print_sampling {
+        // A dry run: nothing is written and the GPU is not touched.
+        let (recipe, val_items) = Recipe::load(&a.manifests, &a.sampling, a.sampler_alpha)?.split_validation(a.val_pct);
+        let sampler = recipe.sampler()?;
+        println!("train {} images ({}), val pool {}\n", recipe.items.len(), sampler.summary(), val_items.len());
+        print!("{}", recipe.shares_report(&sampler, 15));
+        return Ok(());
+    }
     std::fs::create_dir_all(&a.out)?;
     let mut log = std::fs::OpenOptions::new().create(true).append(true).open(a.out.join("train.log"))?;
     let mut say = |s: String| {
@@ -128,12 +143,14 @@ pub fn run(a: TrainArgs) -> Result<()> {
         let _ = writeln!(log, "{s}");
     };
 
-    let mut items = Vec::new();
-    for m in &a.manifests {
-        items.extend(read_manifest(m)?);
+    // With no weights and no replay manifests this is the items of the manifests in the
+    // order given, the path-hash validation split, and `Sampler::new`, as it always was.
+    let (recipe, val_items) = Recipe::load(&a.manifests, &a.sampling, a.sampler_alpha)?.split_validation(a.val_pct);
+    let sampler = Arc::new(recipe.sampler()?);
+    if !recipe.is_plain() {
+        say(format!("sampling: {} manifest weights, {} family weights, {} replay manifests at share {}", a.sampling.manifest_weights.len(), a.sampling.family_weights.len(), a.sampling.replay_manifests.len(), a.sampling.replay_share));
     }
-    let (val_items, train_items): (Vec<Item>, Vec<Item>) = items.into_iter().partition(|it| is_val(it, a.val_pct));
-    let sampler = Arc::new(Sampler::new(&train_items, a.sampler_alpha));
+    let train_items = recipe.items;
     say(format!("train {} images ({}), val pool {}", train_items.len(), sampler.summary(), val_items.len()));
 
     let size = a.aug.size;
@@ -173,7 +190,11 @@ pub fn run(a: TrainArgs) -> Result<()> {
     let mut tr = Trainer::with_teacher(&w, cfg, a.batch, a.opt.clone(), teacher)?;
     say(format!("init eval  {}", eval(&tr, &val).1));
 
-    let rx = spawn_loader(Arc::new(train_items), sampler, a.aug.clone(), a.batch, a.threads, a.seed);
+    if let Some(chains) = a.aug.chain_summary() {
+        say(format!("augmentation beyond the phase-6 recipe: {chains}"));
+    }
+    let loader_step = Arc::new(AtomicU64::new(0));
+    let rx = spawn_loader(Arc::new(train_items), sampler, a.aug.clone(), a.batch, a.threads, a.seed, loader_step.clone());
     let spec = ModelSpec {
         img: size as usize,
         views: crate::detector::thorough_views(size, a.aug.fit_resize),
@@ -182,6 +203,7 @@ pub fn run(a: TrainArgs) -> Result<()> {
         strict: None,
         early_exit: None,
         second_opinion: None,
+        review: None,
         // Empty for twelve blocks, as before; a shallower network is named by its depth.
         arch: VitConfig::small_name(depth),
         logit_scale: 1.0,
@@ -189,6 +211,7 @@ pub fn run(a: TrainArgs) -> Result<()> {
         threshold: 0.5,
         prefix: String::new(),
         video: Some(crate::detector::VideoSpec::standard(size, a.aug.fit_resize)),
+        uncalibrated: None,
     };
     let save = |tr: &Trainer, name: &str| -> Result<()> {
         let p = a.out.join(format!("{name}.safetensors"));
@@ -205,6 +228,7 @@ pub fn run(a: TrainArgs) -> Result<()> {
             let p = (step - a.warmup) as f32 / (a.steps - a.warmup).max(1) as f32;
             a.lr * 0.5 * (1.0 + (std::f32::consts::PI * p).cos())
         };
+        loader_step.store(step, Ordering::Relaxed);
         let tw = Instant::now();
         let b = rx.recv()?;
         wait_s += tw.elapsed().as_secs_f64();
