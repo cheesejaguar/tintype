@@ -886,7 +886,14 @@ impl Detector {
             #[cfg(not(target_os = "macos"))]
             Device::Gpu | Device::GpuF32 => anyhow::bail!("the GPU engine is only available on macOS; use the CPU engine"),
             Device::Cpu => Engine::Cpu { vit: crate::cpu_vit::CpuVit::new(w, cfg)? },
-            Device::CpuInt8 => Engine::Cpu { vit: crate::cpu_vit::CpuVit::with_int8(w, cfg, Some(crate::cpu_vit::Int8::from_env()?))? },
+            Device::CpuInt8 => {
+                let vit = crate::cpu_vit::CpuVit::with_int8(w, cfg, Some(crate::cpu_vit::Int8::from_env()?))?;
+                if let Some(note) = vit.int8_speed_warning() {
+                    static ONCE: std::sync::Once = std::sync::Once::new();
+                    ONCE.call_once(|| eprintln!("{note}"));
+                }
+                Engine::Cpu { vit }
+            }
         };
         Ok(Self { engine, batch, spec, reuse: ViewReuse::from_env() })
     }

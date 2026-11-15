@@ -349,6 +349,19 @@ pub(super) fn has_kernel() -> bool {
     kernel() != Kernel::Scalar
 }
 
+/// Whether the kernel here makes the network faster than single precision:
+/// the byte dot products (SDOT, VPDPBUSD) do; AVX2's sixteen-bit kernel is
+/// exact but, file to verdict, slower than `cpu` on the processors measured
+/// (docs/runbooks/cpu-profile-int8.md).
+pub(super) fn has_fast_kernel() -> bool {
+    match kernel() {
+        #[cfg(target_arch = "x86_64")]
+        Kernel::Avx2 => false,
+        Kernel::Scalar => false,
+        _ => true,
+    }
+}
+
 /// `c[m, n] = a[m, k] * w[n, k]^T` on the calling thread.
 fn gemm_i8(a: &[i8], w: &Packed, c: &mut [i32], m: usize, n: usize, k: usize) {
     assert!(a.len() >= m * k && w.bytes.len() >= n * k && c.len() >= m * n);

@@ -1116,6 +1116,33 @@ candidate, logged. An INT8 student is not a candidate in this entry.
 camera JPEGs against small PNGs on clean rows, few scenes and devices, no
 platform round trips, `test` looked at before for the incumbent.
 
+**Outcome (added 2026-11-15, after the looks).**
+
+- **INT8 kernels pass the accuracy floor.** At 1%:
+
+  | | Authentic flagged | Clean recall | Processed recall |
+  |---|---|---|---|
+  | INT8 | 1.31% | 95.79% | 82.33% |
+  | Incumbent | 1.29% | 95.71% | 82.08% |
+
+- **INT8 passes the speed gate with the pure-Rust kernels and fails it with
+  Accelerate.**
+  - Pure-Rust: 1.93x throughput and 28% lower p95.
+  - Accelerate: 1.23x and 6% lower p95.
+- **INT8 ships as `--device cpu-int8`.** Its fitted cutoffs are within 0.02
+  raw logits of the `cpu` engine's, so it ships with the released model and
+  spec rather than its own cutoffs. That configuration was checked on `fit`
+  and `calibrate`, not on `test`. Nothing default changes.
+- **No student ships.**
+  - The 8-block student loses 17.2 points of clean recall and 31.0 of
+    processed recall.
+  - The 7- and 6-block students lose more.
+  - None is faster on the GPU.
+
+Tables, files and the hosted-runner timings are in
+[`results/fast-options-frozen/`](results/fast-options-frozen/) and
+[the runbook](runbooks/cpu-profile-int8.md#step-6-integer-kernels-and-students-on-the-frozen-split).
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames

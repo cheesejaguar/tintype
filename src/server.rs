@@ -137,7 +137,8 @@ pub fn run(
         "cpu" => Device::Cpu,
         "gpu" => Device::Gpu,
         "gpu-f32" => Device::GpuF32,
-        _ => bail!("--device must be auto, cpu, gpu, or gpu-f32"),
+        "cpu-int8" => Device::CpuInt8,
+        _ => bail!("--device must be auto, cpu, cpu-int8, gpu, or gpu-f32"),
     };
     let photo = resolve_weights(args.weights)?;
     let clip = args

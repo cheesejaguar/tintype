@@ -497,6 +497,19 @@ impl CpuVit {
         self.kernels
     }
 
+    /// One line for standard error when `--device cpu-int8` would be slower
+    /// than `--device cpu` here: no byte dot-product instruction (ARM64 dot
+    /// product, AVX-VNNI or AVX-512 VNNI), or the simulation was asked for.
+    pub fn int8_speed_warning(&self) -> Option<&'static str> {
+        if self.kernels && int8_gemm::has_fast_kernel() {
+            None
+        } else if self.kernels {
+            Some("note: this processor has no eight-bit dot-product instruction (AVX-VNNI or AVX-512 VNNI); `--device cpu-int8` runs, with the same scores as on other processors, but is slower here than `--device cpu`")
+        } else {
+            Some("note: `--device cpu-int8` is simulating eight-bit layers in single precision here (no integer kernel, a research variant, or TINTYPE_INT8_SIMULATE=1); it is slower than `--device cpu`")
+        }
+    }
+
     /// Round the input of `layer` in place where the simulation asks for it:
     /// `x` is rows of `width` values, `view_rows` of them to a view. Does
     /// nothing at all on the engine proper.

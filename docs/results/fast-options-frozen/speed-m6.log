@@ -1,0 +1,58 @@
+#### pass 1
+== accelerate cpu latency
+single-image latency over 295 images: median 42.0 ms, p90 85.5 ms, p95 104.0 ms, mean 49.4 ms
+== accelerate cpu throughput: 300 rows in 4.78 s
+== accelerate cpu-int8 latency
+single-image latency over 295 images: median 36.2 ms, p90 82.5 ms, p95 97.4 ms, mean 44.1 ms
+== accelerate cpu-int8 throughput: 300 rows in 3.77 s
+== portable cpu latency
+single-image latency over 295 images: median 64.4 ms, p90 126.8 ms, p95 148.0 ms, mean 72.7 ms
+== portable cpu throughput: 300 rows in 7.16 s
+== portable cpu-int8 latency
+single-image latency over 295 images: median 43.1 ms, p90 93.7 ms, p95 108.3 ms, mean 53.0 ms
+== portable cpu-int8 throughput: 300 rows in 3.72 s
+== gpu incumbent latency
+single-image latency over 295 images: median 13.1 ms, p90 65.7 ms, p95 80.7 ms, mean 31.6 ms
+== gpu incumbent throughput: 300 rows in 1.8 s
+== gpu student-8 latency
+single-image latency over 295 images: median 11.9 ms, p90 63.4 ms, p95 79.4 ms, mean 30.1 ms
+== gpu student-8 throughput: 300 rows in 1.64 s
+#### pass 2
+== accelerate cpu latency
+single-image latency over 295 images: median 39.7 ms, p90 84.5 ms, p95 102.8 ms, mean 47.7 ms
+== accelerate cpu throughput: 300 rows in 4.8 s
+== accelerate cpu-int8 latency
+single-image latency over 295 images: median 36.3 ms, p90 82.5 ms, p95 98.1 ms, mean 43.7 ms
+== accelerate cpu-int8 throughput: 300 rows in 4.07 s
+== portable cpu latency
+single-image latency over 295 images: median 64.1 ms, p90 126.2 ms, p95 147.8 ms, mean 72.0 ms
+== portable cpu throughput: 300 rows in 7.11 s
+== portable cpu-int8 latency
+single-image latency over 295 images: median 42.4 ms, p90 92.4 ms, p95 107.6 ms, mean 52.5 ms
+== portable cpu-int8 throughput: 300 rows in 3.72 s
+== gpu incumbent latency
+single-image latency over 295 images: median 13.1 ms, p90 64.7 ms, p95 80.8 ms, mean 31.5 ms
+== gpu incumbent throughput: 300 rows in 1.78 s
+== gpu student-8 latency
+single-image latency over 295 images: median 11.7 ms, p90 62.8 ms, p95 79.6 ms, mean 30.0 ms
+== gpu student-8 throughput: 300 rows in 1.59 s
+#### pass 3
+== accelerate cpu latency
+single-image latency over 295 images: median 39.8 ms, p90 85.1 ms, p95 102.9 ms, mean 47.7 ms
+== accelerate cpu throughput: 300 rows in 4.65 s
+== accelerate cpu-int8 latency
+single-image latency over 295 images: median 34.9 ms, p90 83.5 ms, p95 96.8 ms, mean 43.5 ms
+== accelerate cpu-int8 throughput: 300 rows in 3.79 s
+== portable cpu latency
+single-image latency over 295 images: median 66.4 ms, p90 128.9 ms, p95 153.7 ms, mean 73.3 ms
+== portable cpu throughput: 300 rows in 7.22 s
+== portable cpu-int8 latency
+single-image latency over 295 images: median 42.8 ms, p90 91.8 ms, p95 106.7 ms, mean 52.2 ms
+== portable cpu-int8 throughput: 300 rows in 3.69 s
+== gpu incumbent latency
+single-image latency over 295 images: median 13.1 ms, p90 64.9 ms, p95 80.3 ms, mean 31.2 ms
+== gpu incumbent throughput: 300 rows in 1.74 s
+== gpu student-8 latency
+single-image latency over 295 images: median 11.7 ms, p90 62.7 ms, p95 79.4 ms, mean 29.8 ms
+== gpu student-8 throughput: 300 rows in 1.59 s
+done
