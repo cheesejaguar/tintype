@@ -288,6 +288,63 @@ with few window positions: p95 82.1 to 70.4 ms, GPU throughput +10%.
 Ordinary photos and clips: no change beyond the noise. Nothing is slower.
 Parity is below.
 
+### On the frozen split
+
+Run on 2026-11-14 on the frozen independent split's `test` set
+([runbook](frozen-eval.md)), after
+[the entry in PREREGISTRATION.md](../PREREGISTRATION.md#view-reuse-and-lazy-preparation-on-the-frozen-split-what-was-fixed-before-timing)
+was committed (`2690cab`). Same machine (Apple M6, 12 cores, 32 GB, macOS
+27.2), this time with nothing else running; the load average was 1.1 before
+the first run. Model: an unchanged copy of the released photo model
+(`TINTYPE_MODEL_DIR=runs/ws6-frozen/model`). Binaries: the base branch
+(`research/step0-frozen-eval`), the counters commit `a93ccda` and this
+change `c767b98`; they were built before the branch was rebased, from
+commits whose `src/`, `tests/` and `Cargo.*` are identical to these.
+
+The cohort is nothing like the ones above. Of the 19,326 files, 7,326 are
+authentic camera JPEGs (5 to 16 megapixels in the latency sample, median
+12), 7,200 are generated PNGs of 256 to 1,024 pixels and 4,800 are
+processed copies. No authentic file has views that coincide; in the latency
+sample 43 of 98 generated originals have a shorter side of exactly 256
+pixels and 8 of 50 processed generated copies are below 224.
+
+Parity against the base binary, default profile unless said:
+
+| Engine | Scheme | Files | Rows | Differing |
+|---|---|---|---|---|
+| `gpu` | the whole `test` set in two processes (10,000 and 9,326 files; the argument list does not fit in one) | 19,326 | 19,326 | 0 |
+| `gpu-f32` | one process | 2,000 | 2,000 | 0 (base against itself: 0) |
+| `cpu` (Accelerate) | one process per file, default and `--all-views` | 300 | 600 | 0 |
+| `cpu` (Accelerate) | one process | 500 | 500 | 0 (base against itself: 0) |
+
+Speed. "Before" is the counters commit; the control is the base binary
+against the counters commit. Times in milliseconds.
+
+| Measure | Engine | Files | Control: base → counters | Before → after |
+|---|---|---|---|---|
+| Single-image latency, p50 / p95 / mean (`--latency`, each image's best of 2 passes; base: one run of `tintype latency`) | `cpu` | 300 | 37.8 / 99.3 / 44.7 → 37.8 / 98.9 / 44.7 | 37.8 / 98.9 / 44.7 → 37.0 / 98.8 / 43.8 |
+| | `gpu` | 300 | 11.9 / 72.9 / 26.5 → 12.0 / 73.1 / 26.4 | 12.0 / 73.1 / 26.4 → 12.0 / 73.2 / 26.4 |
+| Throughput, files/s, best of 4 passes (median) | `gpu` | 2,000 | 289.0 (287.8) → 289.1 (283.6) | 289.1 (283.6) → 287.7 (283.9) |
+| | `cpu` | 1,000 | 70.8 (68.4) → 67.7 (67.1) | 67.7 (67.1) → 68.9 (67.4) |
+| Peak memory, MB | `gpu` | 2,000 | 1906 → 1930 | 1930 → 1871 |
+| | `cpu` | 1,000 | 1747 → 1759 | 1759 → 1748 |
+| Whole `test` set, one pass, seconds (peak memory, MB) | `gpu` | 19,326 | base 69.78 (3708) | this change 71.08 (3873) |
+
+Work: in the latency sample on the CPU, 16 of 479 view runs are saved
+(479 → 463 scored); over the whole set on the GPU, 882 of 29,543 (3%). The
+median per-file latency ratio on the CPU is 0.999.
+
+**Verdict on this cohort.** Parity: passed, every row identical. Speed: by
+the rule written beforehand it passes, narrowly and on one engine only: CPU
+single-image latency falls by 0.8 ms at the median and 0.9 ms in the mean
+(2%), where the control did not move; that is the generated images whose
+views coincide. There is **no gain** on the GPU engine, in throughput on
+either engine, or at p95, and nothing is slower beyond what the control
+shows (throughput within 2% either way; the single whole-set pass is 1.9%
+slower and its peak memory 4.5% higher, with no repeat to say whether that
+is noise, while the four-pass runs show neither). On large camera photos
+this change has nothing to do; its gains are on small images.
+
 ### Parity
 
 In the test suite, `tests/view_reuse.rs` compares reuse off, default and
