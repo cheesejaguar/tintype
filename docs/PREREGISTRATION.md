@@ -238,6 +238,177 @@ The scoring run stopped once when the disk filled, before any score had been
 read, and was restarted with the reference score files kept; see
 [BENCHMARK.md](BENCHMARK.md#blind-batch-7-the-photo-second-opinion).
 
+## The frozen independent split: what was fixed before the first download
+
+Written on 2026-11-14, before any file of the split was downloaded and
+before any model was scored on it. It fills in what
+[the frozen evaluation runbook](runbooks/frozen-eval.md) left open: the
+sources, the sampling, the grouping and what is held out. The measures and
+the selection rule are the runbook's and are not changed here.
+
+- **Two proposed sources were dropped before anything was fetched.** The
+  survey in the runbook proposed the Forchheim Image Database and VISION as
+  authentic sources. Both are real-image sources of Community Forensics
+  (its dataset card lists `coco, forchheim, imagenet, imd2020, laion,
+  landscapesHQ, vision` and FFHQ), which is the checkpoint the phase-1
+  weights started from, and the `commfor-small2` training store holds VISION
+  photos. They are not independent of the model, so neither goes in. The
+  Forchheim licence also forbids modification, which the processed copies
+  would be. RAISE needs a registration form and was not requested.
+- **Authentic sources** (none is in a training manifest, a calibration set,
+  an archived suite or the Community Forensics source list):
+
+  | Source | What is taken | Terms as read at the source on 2026-11-14 |
+  |---|---|---|
+  | [HDR+ burst photography dataset](https://hdrplusdata.org/dataset.html), bucket `hdrplusdata`, folder `20171106/results_20171023` | Every `final.jpg`: 3,640 files, 16.4 GB as listed. One per burst, from Nexus 5, 6, 5X, 6P, Pixel and Pixel XL phones; the output of the HDR+ pipeline snapshot of 2017-10-23 at JPEG quality 95, not the file the phone saved | CC BY-SA 4.0 |
+  | [FloreView](https://lesc.dinfo.unifi.it/FloreView/) | Every `.jpg` and `.jpeg` under a device's `Nat/jpeg-h264` folder: 4,806 files listed, 46 phones of 11 brands. Flat-field images, the `Extra-Data` folders, HEIC files and videos are left out | CC BY-SA 4.0 |
+  | [CSAFE Multi-camera Smartphone Image Database](https://doi.org/10.25380/iastate.26932084.v1), `iPhone14.zip` (20.4 GB, MD5 `dfc01c89b14356141f53d253b72e946c` as listed) | Every JPEG under a `natural` folder: ten iPhone 14 Pro phones, four cameras each, roughly 100 photos per camera. The `blank` (flat-field) folders are left out | CC BY 4.0 |
+
+- **Generated sources.**
+
+  | Source | What is taken | Terms |
+  |---|---|---|
+  | [ARForensics](https://huggingface.co/datasets/Yanran21/ARForensics) at commit `828c2ee260361574f1c7f24ea50a1698128d6baf`, the four `ARForensics_updated_test_part00N.zip` (20.9 GB) | From each generator's `1_fake` folder, 1,500 files evenly spaced over the sorted file names: LlamaGen, VAR, Infinity, Janus-Pro, RAR, Switti, Open-MAGVIT2. The `0_real` folders are ImageNet and are not extracted | MIT |
+  | [GenImage++](https://huggingface.co/datasets/Lunahera/genimagepp) at commit `4160fbc103730771d3641139d3b995a3c2dbc719`, archives `flux_realistic`, `stable_diffusion_v_3_0_realistic` and `flux_krea_amateur` (27.6 GB) | 1,000 files from each, evenly spaced over the sorted file names | CC BY-NC 4.0 |
+
+  No local manifest lists LlamaGen, VAR, Infinity, RAR, Switti or
+  Open-MAGVIT2. `janus-7b` appears 95 times, so Janus-Pro is not a new
+  family and is marked as seen. FLUX.1-dev and SD3 are trained on; the
+  GenImage++ items are an independent source of seen families, and FLUX.1
+  Krea is a variant no manifest lists.
+- **Grouping columns.** `parent_id` is `<collection>/<path inside the
+  collection>`. `scene_id`: for FloreView the location and scene of the
+  file name (`floreview-L1S1`), shared by every phone that photographed it;
+  empty elsewhere (an HDR+ burst is one photo; no scene or prompt id is
+  published for the others). `source_id`: `hdrplus`, `floreview-<brand>`,
+  `csafe-iphone14pro`. `generator_family`: `llamagen`, `var`, `infinity`,
+  `janus-pro`, `rar`, `switti`, `open-magvit2`, `flux`, `sd3`.
+- **Held out to the test set whole**: the families `infinity` and `rar`,
+  and the source `csafe-iphone14pro`.
+- **Shares**: `--fractions 0.2,0.4,0.4 --seed 1 --together parent,scene`.
+  The runbook proposed 30 / 35 / 35. With 8,446 authentic parents to divide
+  (HDR+ and FloreView), 35% is 2,956, short of the 3,000 the 0.1% operating
+  point needs, and 40% is about 3,380. `fit` gets less; nothing planned
+  needs more of it.
+- **What the 0.1% point can and cannot show.** Calibration and test each
+  get over 3,000 authentic photos, but FloreView's are about 100 photos per
+  phone of shared scenes, and CSAFE's are ten units of one model
+  photographed in one town. The photos are distinct; the scenes and devices
+  are far fewer than 3,000. The 0.1% figures are reported with intervals
+  resampled over parents and are to be read with that in mind.
+- **Processed copies.** The twelve single operations of the Frontier
+  diagnostic (`resize-0.5-bicubic`, `resize-0.25-bicubic`, `jpeg-qv4`,
+  `jpeg-qv12`, `blur-s1.0`, `blur-s3.0`, `noise-a10`, `noise-a40`,
+  `sharpen-a1.0`, `repost-720-qv9x1`, `repost-960-qv7x4`,
+  `repost-960-qv12x1`), rendered by `scripts/stress-photo.py` (FFmpeg), on
+  a sample of the parents of `calibrate` and of `test`: the same number of
+  authentic and generated parents in each set, evenly spaced over the
+  sorted paths within each source and each family, and placed with
+  `--existing`. Lossless copies of a 12-megapixel photo are tens of
+  megabytes each, so the number per class and set, between 200 and 300, is
+  fixed after the originals are on disk and before anything is scored, and
+  is written below. It depends on disk space only.
+- **Known gaps, stated now.** (a) No real platform round trips: the one
+  open collection that has them was dropped above. Reposts are simulated.
+  (b) No learned-codec copies: no licence is stated for the CompressAI
+  weights, so item 4 of the processing-chains gate cannot be evaluated on
+  this split. (c) Encoding and size differ by class: the authentic photos
+  are 12-megapixel and larger camera JPEGs, the generated images are 256 to
+  1,024 px and their formats are recorded when they are unpacked. The
+  processed copies re-encode both classes the same way, which removes the
+  encoding difference on those rows but not the size difference; the
+  `resize` and `repost` rows bring sizes closer. Clean-row results are to be
+  read with this confound in mind.
+- **Leakage check**: `tintype overlap` of the new manifests against every
+  training store whose files are on disk. The archived evaluation sets are
+  manifests without files on this machine, so the byte check cannot cover
+  them; none of the sources above is one of their sources.
+- **First look**: the released photo model (`models/tintype.safetensors`,
+  copied under `runs/`), at its shipped cutoff and at a cutoff refitted on
+  `calibrate`, as the incumbent every later candidate is compared with.
+  Every look at `test` is logged in the runbook.
+
+**Added on 2026-11-14 after the originals were on disk, before anything
+was scored.** Nothing above changed.
+
+- **What arrived.** HDR+ 3,640 files (each checked against the MD5 the
+  bucket lists); FloreView 4,806 (the server publishes no checksums; the
+  frozen record below is the first); CSAFE 3,996 natural-scene photos from
+  an archive whose MD5 matched; ARForensics 10,500 from archives whose
+  SHA-256 matched (1,500 of 6,000 per generator); GenImage++ 3,000 (1,000
+  of 6,000 per archive, SHA-256 matched). The generated images are all PNG:
+  256 px (VAR, RAR, Open-MAGVIT2), 384 px (LlamaGen, Janus-Pro), 512 px
+  (Switti), 1,024 px (Infinity and the three GenImage++ sets).
+- **FloreView has 36 scenes**, each photographed by every phone, so its
+  4,806 photos are 36 groups that move between sets whole.
+- **The sets**: `fit` 1,659 authentic and 2,100 generated; `calibrate`
+  3,457 and 4,200; `test` 7,326 (3,996 of them CSAFE) and 7,200.
+- **Leakage check**: 0 of 25,942 files are byte-identical to one of the
+  314,282 files of the 16 training stores on disk.
+- **Processed copies: 200 parents per class in `calibrate` and in `test`.**
+  The twelve copies of a 12-megapixel photo take about 115 MB, so 400
+  authentic parents take about 46 GB. Each class's 200 are divided over
+  its sources (authentic) or families (generated) in proportion to their
+  sizes and taken evenly spaced over each group's sorted paths
+  (`scripts/build-frozen-eval.py stress-sample`). `fit` gets none.
+- **Cutoffs are fitted on all authentic rows of `calibrate`**, originals
+  and processed copies together, with `tintype calibrate`'s default rule.
+
+## View reuse and lazy preparation on the frozen split: what was fixed before timing
+
+Written on 2026-11-14, after the frozen split was built and the released
+model had been scored on it, and before either speed change was run on any
+of its files. These two changes ([runbook](runbooks/view-reuse.md)) alter how
+much work a verdict takes, not the verdict; nothing is fitted, calibrated or
+selected here, so `fit` and `calibrate` are not used and no operating point
+is chosen. The 1% and 0.1% operating points and the degraded slice do not
+enter: every score is required to be the same as before, at any cutoff.
+
+- **What is compared.** Four binaries: the base branch
+  (`research/step0-frozen-eval`), the counters commit (same scoring as the
+  base, with work counters), "score identical views of an image once", and
+  "prepare frames and views only when early exit reaches them" on top of
+  it. One model: an unchanged copy of the released photo model under
+  `runs/ws6-frozen/model/`.
+- **Cohort.** The frozen `test` set, 19,326 photos: 7,326 authentic camera
+  JPEGs, 7,200 generated PNGs of 256 to 1,024 pixels, and 2,400 processed
+  copies of each. Whole set for the GPU parity run. Fixed-seed subsets for
+  the rest, drawn before any run: 300 files for single-image latency (102
+  authentic originals, 98 generated originals, 50 processed copies of each;
+  in this sample 43 generated originals have a shorter side of exactly 256
+  pixels and 8 processed generated copies are below 224, the sizes where
+  views coincide; no authentic file is); 2,000, 1,000 and 500 files drawn
+  from the whole set at random for throughput and one-process parity; 300
+  (100 + 100 + 50 + 50) for one-process-per-file parity.
+- **Parity (gate, first half).** One process for the whole `test` set on the
+  `gpu` engine, default profile: every row of each change's JSON output the
+  same bytes as the base binary's. The same on `gpu-f32` over the
+  2,000-file subset, with the base binary run twice. One process per file on
+  the CPU engine (Accelerate) over the 300-file subset, default and
+  `--all-views`: the same bytes. One process on the CPU engine over the
+  500-file subset: there the base binary need not reproduce itself, so it
+  is run twice and a change may differ from it only as the base differs
+  from itself (a few rows in the seventh decimal of the logit); no verdict
+  and no number of views looked at may change in any comparison.
+- **Speed (gate, second half).** Single-image latency p50 and p95
+  (`tintype latency`, each image's best of the passes, binaries taking
+  turns), throughput and peak resident memory with all files in one
+  process, on the `gpu` and `cpu` engines, each change against the commit
+  before it and the counters commit against the base as the control. A
+  change passes on this cohort if it lowers latency p50 or p95 or raises
+  throughput on at least one engine by more than the control differs, and
+  makes nothing slower by more than that. Otherwise it is reported as no
+  gain here, or as a loss.
+- **Expected, said beforehand.** The authentic photos are large and have
+  six different views, so reuse has nothing to do on them; it can only act
+  on generated images of exactly 256 pixels that go on to a third view and
+  on the smallest processed copies. Lazy preparation saves the resize for
+  the whole-image view, which is largest on the 12-megapixel photos, for a
+  single file and on the GPU engines. Small or no gain is the likely
+  result for both; that would be reported as such.
+- **Looks at `test`.** These runs read every file of `test` but report no
+  detection figure: scores are only compared between binaries.
+
 ## INT8 linear layers on the frozen split: what was fixed before the look
 
 Written on 2026-11-14, after this workstream had scored 300 rows of `fit`
