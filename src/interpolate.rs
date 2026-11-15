@@ -137,12 +137,12 @@ pub fn combine(sources: &[&Checkpoint], weights: &[f64]) -> Result<Checkpoint> {
 /// profiles is the identity and each is listed in
 /// [`ModelSpec::uncalibrated`]; the strict and sensitive profiles (which are
 /// nothing but calibrations), the early exit (margins fitted to other
-/// weights) and the second-opinion bands (defined on calibrated logits) are
-/// dropped. The tensor names are written without a prefix.
+/// weights), the second-opinion bands and the review bands (all defined on
+/// calibrated logits) are dropped. The tensor names are written without a prefix.
 pub fn unfitted_spec(source: &ModelSpec) -> ModelSpec {
     let mut unfitted = vec!["photo".to_string()];
     let fast = source.fast.as_ref().map(|f| Profile { views: f.views.clone(), logit_scale: 1.0, logit_bias: 0.0 });
-    let video = source.video.as_ref().map(|v| VideoSpec { frames: v.frames, views: v.views.clone(), logit_scale: 1.0, logit_bias: 0.0, second_opinion: None, early_exit: None });
+    let video = source.video.as_ref().map(|v| VideoSpec { frames: v.frames, views: v.views.clone(), logit_scale: 1.0, logit_bias: 0.0, second_opinion: None, early_exit: None, review: None });
     unfitted.extend(fast.as_ref().map(|_| "fast".to_string()));
     unfitted.extend(video.as_ref().map(|_| "video".to_string()));
     ModelSpec {
@@ -158,6 +158,7 @@ pub fn unfitted_spec(source: &ModelSpec) -> ModelSpec {
         strict: None,
         early_exit: None,
         second_opinion: None,
+        review: None,
         arch: source.arch.clone(),
         uncalibrated: Some(unfitted),
     }
