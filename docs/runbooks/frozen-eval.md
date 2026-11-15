@@ -205,11 +205,16 @@ $B manifests data/frozen-src
 for set in fit calibrate test; do
   $B sets-from-record docs/manifests/frozen-eval-$set.frozen.tsv.gz data/frozen-eval/$set.tsv
 done
-# 4. The processed copies, if they are not on disk: the parents of each set's
-#    copies are the rows of the record with a transform; render them with
-#    scripts/stress-photo.py (FFmpeg 9.0.2 made the recorded bytes) into
-#    data/frozen-src/processed-{calibrate,test}/ with the twelve --transform
-#    names of the pre-registration.
+# 4. The processed copies. The sample of parents comes back from the set
+#    manifest, in the order that numbers the rendered files; FFmpeg 9.0.2 made
+#    the recorded bytes, and stress-photo.py is the version of the
+#    processing-chains change (#26).
+T=""; for t in resize-0.5-bicubic resize-0.25-bicubic jpeg-qv4 jpeg-qv12 blur-s1.0 blur-s3.0 noise-a10 noise-a40 \
+               sharpen-a1.0 repost-720-qv9x1 repost-960-qv7x4 repost-960-qv12x1; do T="$T --transform $t"; done
+for set in calibrate test; do
+  $B stress-sample data/frozen-eval/$set.tsv stress-$set.tsv 200
+  python3 -I scripts/stress-photo.py stress-$set.tsv data/frozen-src/processed-$set --jobs 8 $T   # about 20 GB and 6 minutes each
+done
 tintype verify-set docs/manifests/frozen-eval-{fit,calibrate,test}.frozen.tsv.gz
 ```
 
@@ -233,9 +238,12 @@ Three things to know:
   families and source are in `test` only, and no two sets share a file's
   bytes.
 
-The files themselves are large (103 GB with the processed copies) and are
-not kept on the machine that built them once the runs logged below were
-done; the steps above bring them back.
+The files themselves are large (103 GB with the processed copies) and
+were deleted from the machine that built them on 2026-11-14, once the runs
+logged below were done. The steps above bring them back; before the
+deletion the sample of step 4 and the numbering of the rendered files were
+checked against the records (0 of 9,600 processed rows differ). Fetching
+takes about two hours, most of it FloreView.
 
 ### Models trained on the old split
 
