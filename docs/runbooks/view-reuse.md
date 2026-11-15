@@ -465,6 +465,60 @@ construction on the CPU; the differences in the table (-2% to +1%) are the
 noise between runs of the same work. This change is small: worth having for
 clips, a wash for photos.
 
+### On the frozen split
+
+Same run, cohort, machine and model as "On the frozen split" under change
+1, pre-registered in the same entry. "Before" is change 1 (`c767b98`),
+"after" is this change (`844e686`; the binary was built before the branch
+was rebased, from a commit with identical `src/`, `tests/` and `Cargo.*`).
+
+Parity against the base binary, default profile unless said:
+
+| Engine | Scheme | Files | Rows | Differing |
+|---|---|---|---|---|
+| `gpu` | the whole `test` set in two processes (10,000 and 9,326 files) | 19,326 | 19,326 | 0 |
+| `gpu-f32` | one process | 2,000 | 2,000 | 0 (base against itself: 0) |
+| `cpu` (Accelerate) | one process per file, default and `--all-views` | 300 | 600 | 0 |
+| `cpu` (Accelerate) | one process | 500 | 500 | 1 row, logit difference 1.2e-7, same verdict and views (base against itself in that run: 0) |
+
+The last row is the case the entry allows for: with Accelerate the base
+binary does not reproduce itself when several files share a process (0 to
+3 rows of 550 above), and on this path the new binary does the same work
+as the base.
+
+Speed, times in milliseconds:
+
+| Measure | Engine | Files | Before → after |
+|---|---|---|---|
+| Single-image latency, p50 / p95 / mean (each image's best of 2 passes) | `cpu` | 300 | 37.0 / 98.8 / 43.8 → 35.1 / 97.9 / 43.0 |
+| | `gpu` | 300 | 12.0 / 73.2 / 26.4 → 11.9 / 73.3 / 26.4 |
+| Throughput, files/s, best of 4 passes (median) | `gpu` | 2,000 | 287.7 (283.9) → 287.5 (284.3) |
+| | `cpu` | 1,000 | 68.9 (67.4) → 68.4 (68.1) |
+| Peak memory, MB | `gpu` | 2,000 | 1871 → 1876 |
+| | `cpu` | 1,000 | 1748 → 1698 |
+| Whole `test` set, one pass, seconds (peak memory, MB) | `gpu` | 19,326 | 71.08 (3873) → 70.54 (3920) |
+
+Work: in the latency sample on the CPU, views cut out fall from 1740 to
+463 and the time preparing views from 1244 to 975 ms for the 300 images
+(the window ranking, which every image needs, is most of what is left).
+The median per-file ratio to the counters commit goes from 0.999 to 0.989.
+Over the whole set in one process views cut out go from 111,475 to
+110,459: with many photos only one is kept at a time.
+
+**Verdict on this cohort.** Parity: passed (one row in the seventh decimal
+of the logit on the Accelerate one-process path, as the entry allows; no
+verdict or view count changed). Speed: it passes on CPU single-image
+latency, by a little: 1.9 ms at the median, 0.9 ms at p95 and 0.8 ms in
+the mean (2%), which is the whole-image resize that most photos no longer
+need. The median of this cohort sits between the small generated images
+and the large photos, so the per-file ratio (1% faster for the typical
+file) is the fairer figure. There is **no gain** on the GPU engine for a
+single image (`latency` scores all six views in one batch there, so
+neither change acts), and **no gain** in throughput or memory on either
+engine, as designed for many photos; nothing is slower beyond the 2% the
+control moves. For photos this change is close to a wash here too; its
+measured gains are on clips, which the frozen split does not contain.
+
 ### Parity
 
 Both changes together (the final binary) against `b88c122`.
