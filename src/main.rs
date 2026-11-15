@@ -1472,11 +1472,10 @@ fn main() -> Result<()> {
                 }
                 let seen = match &exit {
                     Some(e) if stepwise => {
-                        // Views that repeat an earlier one are not cut out a second time.
+                        // A view is cut out when early exit gets to it, and one that repeats an earlier view not at all.
                         let plan = pre.plan(&img);
                         let same = tintype::image_io::first_uses(&plan);
-                        let crops: Vec<Option<tintype::image_io::Rgb>> = plan.iter().enumerate().map(|(v, p)| (same[v] == v).then(|| p.render(&img))).collect();
-                        det.logits_adaptive_with(e, &same, |v, out| out.copy_from_slice(&crops[same[v]].as_ref().expect("first uses are cut out").data))
+                        det.logits_adaptive_with(e, &same, |v, out| out.copy_from_slice(&plan[same[v]].render(&img).data))
                     }
                     Some(e) => e.looked_at(&det.logits(&buf)[..nv], det.threshold_logit()),
                     None => det.logits(&buf)[..nv].to_vec(),
