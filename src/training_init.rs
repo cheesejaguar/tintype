@@ -75,6 +75,7 @@ pub fn initialize(backbone: &Path, expected: &str, output: &Path) -> Result<()> 
         second_opinion: None,
         review: None,
         arch: "vit_small_patch16".into(),
+        uncalibrated: None,
     };
 
     let directory = output

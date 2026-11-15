@@ -238,6 +238,9 @@ impl Scan {
             // logits; the other profiles take one from the flags only.
             let stored = spec.review.filter(|_| matches!(self.profile, Profile::Default));
             self.photo_review = self.options.review.resolve(stored);
+            if let Some(warning) = spec.uncalibrated_warning(&weights) {
+                eprintln!("{warning}");
+            }
             match self.profile {
                 Profile::Default => {}
                 Profile::Fast => Detector::use_fast_profile(&mut spec),
@@ -336,6 +339,9 @@ impl Scan {
                 }
             };
             let spec = ModelSpec::load_for(&weights)?;
+            if let Some(warning) = spec.uncalibrated_warning(&weights) {
+                eprintln!("{warning}");
+            }
             let batch = if self.video_second.is_none()
                 && !self.options.all_views
                 && spec.video.as_ref().is_some_and(|v| v.early_exit.is_some())
