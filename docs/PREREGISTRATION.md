@@ -354,6 +354,222 @@ was scored.** Nothing above changed.
 - **Cutoffs are fitted on all authentic rows of `calibrate`**, originals
   and processed copies together, with `tintype calibrate`'s default rule.
 
+## Photo policy comparison on the frozen split: what was fixed before the test set was looked at
+
+Written on 2026-11-14 at 21:40 UTC, on top of commit `6a2c258`. The `fit`
+and `calibrate` sets were being scored while this was written; no number
+from them had been read, and nothing had been scored or computed on `test`
+for this comparison. `test` is not blind: it has been looked at for the
+released model and for the two processing-chain arms. The gate is the one
+of [the policy-comparison runbook](runbooks/policy-comparison.md), with the
+bounds it left open filled in here.
+
+- **What is scored** (Apple M6, GPU engine; the released weights as copies
+  under `runs/`, never `models/`): the released photo model with its
+  default, sensitive and strict profiles; its six-view scores, taken from
+  the incumbent's files of the frozen-evaluation run; Community Forensics
+  384 px alone; and, on `test` only, the real two-stage route at the shipped
+  band `(-7, 0.5, 0.5, 0)` and at the narrowed band `(-3, 0.5, 0.5, 0)` on a
+  copied spec. GPTTrace and the encoder probes (PE, DINOv3, MetaCLIP 2) are
+  not on disk and are not downloaded: they are not part of this run.
+- **Operating points**: 0.1% and 1% false-positive rate, both always.
+  Every policy's cutoff is the empirical one on **all authentic rows of
+  `calibrate`**, originals and processed copies together, flagged strictly
+  above (`floor(rate x rows)` authentic rows may be flagged), and is applied
+  to `test` unchanged. This is the pooled rule of
+  `scripts/compare-policies.py`, the same for every policy; it is not the
+  balanced-over-sources rule `tintype calibrate` used for the incumbent's
+  refitted cutoffs, so the baseline's numbers here need not equal those.
+  Recall at empirical cutoffs chosen on `test` itself is printed beside it
+  and labelled as a ranking measure.
+- **The degraded slice** is every row of `test` whose `transform` is not
+  none: the processed copies (2,400 authentic, 2,400 generated).
+- **Baseline**: the default profile of the released model at its two
+  cutoffs frozen as above.
+- **Candidates**, all fixed now:
+  1. retuned single profiles: sensitive, strict, and all six views;
+  2. Community Forensics alone;
+  3. the shipped band, at retuned cutoffs and at its shipped decision;
+  4. the narrowed band, likewise;
+  5. one fusion with Community Forensics as the second model, chosen on
+     `calibrate` from this family: a 50:50 blend of the two logits for
+     `abs(first logit) <= m` with `m` in 1, 2, 3; a 50:50 blend for every
+     photo; and the same four with weights fitted by plain logistic
+     regression on `fit` (inside the gate on both logits, outside it on
+     the first logit alone).
+  `fit` holds originals only, and there every authentic photo is a large
+  camera JPEG and every generated one a small PNG, so the fitted weights
+  are fitted under that confound.
+- **Choosing on `calibrate`**, with the cutoffs above (in-sample there):
+  the member of family 5 with the highest recall on `calibrate`'s
+  processed rows at the 1% cutoff, among the members whose recall on those
+  rows at the 0.1% cutoff is not below the baseline's. Ties: the smaller
+  routed share on `calibrate`, then a 50:50 blend before a fitted one, then
+  the smaller margin. If no member is at or above the baseline at 0.1%, the
+  member with the highest processed-row recall at 1% is carried to `test`
+  and reported as the family's best. The harness prints every member on
+  `test`; only the chosen one is a candidate, and none can be promoted from
+  what `test` shows.
+- **The gate**, per candidate, on `test` at the cutoffs frozen on
+  `calibrate`, against the baseline:
+  1. recall on the degraded slice at the 1% cutoff is higher by **at least
+     5.00 points**;
+  2. recall on the degraded slice at the 0.1% cutoff is not lower;
+  3. authentic photos hold: at each of the two cutoffs it flags no more of
+     `test`'s authentic rows than the baseline does at its cutoff for the
+     same target, and its worst authentic source and worst transform
+     (slices of 100 authentic rows or more) are not flagged at a higher
+     rate than the baseline's worst;
+  4. recall on unprocessed generated rows is within one point of the
+     baseline's at both cutoffs;
+  5. cost: the share of `test` photos sent to the second model is no higher
+     than the shipped band's share on `calibrate` (the number is added
+     below, before `test` is looked at), and p95 single-image latency and
+     peak memory are no higher than the shipped two-stage route's on the
+     same hardware. Latency and memory are **not measured in this run** (the
+     machine is shared), so that half of item 5 cannot be evaluated now; a
+     candidate that meets everything else is reported as such and no
+     further.
+  A candidate that gains at 1% and loses at 0.1% fails.
+- **The narrowed band as an opt-in speed candidate** is judged separately,
+  on `test` at the shipped decision (probability 0.5), against the shipped
+  band: (a) it sends fewer photos to the second model; (b) it reaches
+  Community Forensics at its own cutoff on at least as many slices as the
+  shipped band does, a slice being a generator family of 100 generated
+  rows or more (it flags at least as many) or an authentic source of 100
+  rows or more (it flags no more). The sets of this split hold one class
+  each, so the per-set precision-and-recall count of confirmation 7 is not
+  defined here and this count stands in for it; (c) its recall on the
+  degraded slice is not more than one point below the shipped band's, and
+  it flags no more authentic rows. Meeting all three does not ship it: that
+  still needs selection on development data and its own entry.
+- **Checks and analyses, not candidates**: the two real two-stage runs on
+  `test` against the same policy computed from the separate score files
+  (verdicts that differ are counted); the first-stage misses each gate
+  leaves outside; and the spread of the six view logits as a routing
+  feature. No learned gate is fitted.
+- **Intervals**: `tintype report --operating-points --cluster-by parent`
+  on the harness's score files, at the frozen cutoffs.
+- **Looks at `test`**: one scoring pass per system and one evaluation with
+  the commands of the runbook, logged there.
+
+**Added on 2026-11-14 at 21:46 UTC, after choosing on `calibrate` and
+before anything was scored or computed on `test`.** Nothing above changed.
+The choice was made at commit `6fc5ecb` with
+`scripts/compare-policies.py ... --report-on calibrate --cohort-by processing`
+(the command and its output are in the runbook).
+
+- **The fusion carried to `test`: weights fitted on `fit`, for
+  `abs(first logit) <= 3`.** On `calibrate`'s processed rows, at the cutoffs
+  frozen on `calibrate`, the baseline finds 1,109 of 2,400 at 0.1% and
+  1,905 at 1%. All eight members are at or above 1,109 at 0.1%; at 1% they
+  find 1,915 (50:50, margin 1), 1,905 (margin 2), 1,812 (margin 3), 1,792
+  (every photo), and fitted 1,915, 1,908, **1,948** and 1,929. The chosen
+  one gains 1.79 points at 1% on these rows, in-sample: below the 5 points
+  the gate asks for on `test`.
+- **The route bound of gate item 5**: the shipped band sends 6,752 of
+  12,457 `calibrate` photos (54.20%) to the second model. The chosen fusion
+  sends 2,406 (19.31%) there, the narrowed band 1,363 (10.94%).
+- For the record, among the single profiles on those rows: strict finds
+  1,712 at 0.1% and 1,930 at 1%, six views 1,633 and 1,859, sensitive 983
+  and 1,807.
+
+## Calibration and the review outcome on the frozen split: what was fixed before the look at `test`
+
+Written on 2026-11-14, after the cutoffs, the review band and the exit
+margins below were fitted on `fit` and `calibrate`, and before anything of
+this workstream was computed on `test`. It is the entry
+[the calibration runbook](runbooks/calibration-abstention.md) asks for.
+Nothing here changes a released file: every spec is a copy under `runs/`.
+
+- **The system is the released photo model, unchanged**: weights, six
+  views, mean pooling, GPU engine scores. No new scoring was done. Every
+  step is arithmetic on the all-views score files of the incumbent's
+  logged look (`fit.all.tsv`, `calibrate.all.tsv`, `test.all.tsv`). The
+  fast profile's two views are views 1 and 3 of the six (the whole image
+  and the most textured crop), so its score file is those two columns,
+  taken offline. There is no frozen video data: the video steps of the
+  runbook are not run.
+- **`test` is not blind.** The incumbent's look is published, and I have
+  read it: the cutoffs refitted with the default rule flag 120 of 9,726
+  authentic test files (1.23%) at the 1% target and 18 (0.19%) at 0.1%,
+  the held-out phone source carries most of it, and the shipped cutoff
+  (raw logit 1.692) flags 16 and 12 of 200 authentic `noise-a10` and
+  `noise-a40` copies. Arm A's 1% cutoff below is 1.636, looser than the
+  shipped one, so I expect gate 1 to fail on the noise strata at 1%. The
+  look measures it; the expectation is written here so that it cannot be
+  rewritten afterwards.
+- **Three arms, each a set of cutoffs fitted on the authentic rows of
+  `calibrate`** (3,457 parents; 200 of them also have twelve processed
+  copies, 5,857 rows in all). Raw-logit thresholds on the mean of six views:
+
+  | Arm | Rule | 1% (photo profile) | 0.1% (strict profile) | 5% (sensitive) | 0.5% (fast, two views) |
+  |---|---|---|---|---|---|
+  | **A, primary** | `--rule bound`, 95%, parents counted once, the highest score of a parent's versions (`--per-parent max`) | 1.636 (24 of 3,457 parents flagged) | 3.504 (0 flagged) | −0.494 (151) | 2.280 (10) |
+  | B | `--rule bound`, 95%, the unprocessed original only (`--per-parent original`) | 0.450 (24) | 2.563 (0) | −1.384 (151) | not fitted |
+  | C | the default rule (`balanced`), all 5,857 rows as items: the incumbent's refit, identical thresholds | 0.985 (58 of 5,857 rows) | 2.965 (5) | −0.795 (297) | not fitted |
+
+  The operating points are **1% and 0.1%**; the sensitive and fast
+  profiles are reported beside them at their shipped targets.
+- **Exit margins (arm A).** Fitted on `fit` (3,759 items) for the three
+  six-view profiles at arm A's thresholds, tolerance 0.001: after 1 to 5
+  views **6.5, 4, 4, 1.75, 1** raw logits (the shipped margins are 6, 3, 2,
+  1.5, 1). On `calibrate` the fitted schedule looks at 1.87 views per
+  image at the 1% cutoff and changes 19 verdicts of 12,457. Arm A is
+  reported under the fitted schedule, with the shipped margins beside it.
+  Arms B and C keep the shipped margins.
+- **Review band (arm A).** The rule of the runbook: the widest margin, in
+  steps of 0.25 calibrated logits, whose share of a stream reviewed at 1%
+  prevalence is at most 2% on `calibrate`. That gives **0.75** at the 1%
+  cutoff (1.44% reviewed; 1.0 would be 2.24%) and **1.5** at the 0.1%
+  cutoff (1.58%; 1.75 would be 3.06%). On `calibrate` these cost 3.70 and
+  15.72 points of recall counted with reviewed AI items as misses (86.15%
+  to 82.45%, and 79.74% to 64.02%); at the 0.1% cutoff no authentic row is
+  flagged with or without the band, so there the band has no false alarm
+  to remove. The rule is applied as declared all the same.
+- **View disagreement is not used.** Gate 3 already fails on `calibrate`:
+  at the 1% cutoff, a margin of 0.25 with "half the views disagree" covers
+  97.30%, leaves 16 authentic rows flagged without review and has 83.85%
+  recall, and a margin of 0.5 alone covers more (97.56%), leaves fewer
+  flagged (10) and has higher recall (84.06%). It is not computed on `test`.
+- **What is measured on `test`, once per arm** (9,726 authentic rows of
+  7,326 parents; 9,600 generated rows), at the cutoffs above and, labelled
+  as a ranking measure, at the empirical 1% and 0.1% cutoffs of `test`:
+  recall and authentic files flagged, over all rows, on the clean rows and
+  on the degraded slice (every `transform` other than none); for arm A
+  also coverage, review rate per class, and recall with every reviewed
+  generated item counted as a miss. Intervals resample parents.
+- **Strata, fixed now.** Authentic `source` (HDR+, each FloreView brand,
+  and `csafe-iphone14pro`, which is held out to `test` whole) and
+  `transform` (none and the twelve operations), authentic parents counted
+  once within a stratum, a parent being flagged when any of its rows in
+  the stratum is.
+- **The gate**, as the runbook states it, numbers unchanged:
+  1. *Cutoffs transfer*: at a frozen cutoff no stratum is shown to exceed
+     the budget (one-sided 95% lower bound over it), and the held-out
+     source `csafe-iphone14pro` is shown within twice the budget (upper
+     bound at most 2 × budget). Evaluated for arm A at 1% and at 0.1%;
+     arms B and C are reported the same way for comparison.
+  2. *Coverage is useful*: with the band, at most 2% of a stream at 1%
+     prevalence goes to review on `test`.
+  3. *Disagreement*: failed on `calibrate`, above.
+  4. *Early exit holds*: for the photo, strict and sensitive profiles of
+     arm A under the fitted schedule, pooled precision and pooled recall on
+     `test` are each within 0.001 of scoring every view, and the mean
+     false-positive rate over real sources with at least 100 rows is within
+     the profile's target.
+
+  The calibration passes only if 1, 2 and 4 hold at both operating points.
+  A stratum the data cannot resolve is reported as not resolved and is not
+  a pass: a `transform` stratum has 200 authentic rows, so at 1% it can
+  only be shown to exceed, never to be within.
+- **Cost.** Nothing is added to inference. Views looked at per image are
+  reported. Latency is not measured in this run: the machine is shared
+  with a training job.
+- **Nothing is chosen on `test`**, and nothing here is a ship decision:
+  whatever the verdict, the released cutoffs, margins and specs stay as
+  they are.
+
 ## Source and family matching on the frozen split: what was fixed before the first look
 
 Written on 2026-11-14 while the two arms below were training, before any

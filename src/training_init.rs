@@ -73,6 +73,7 @@ pub fn initialize(backbone: &Path, expected: &str, output: &Path) -> Result<()> 
         strict: None,
         early_exit: None,
         second_opinion: None,
+        review: None,
         arch: "vit_small_patch16".into(),
     };
 

@@ -1,4 +1,5 @@
 use crate::detector::{Detector, Device};
+use crate::review::{self, Review, ReviewArgs};
 use crate::{image_io, video};
 use anyhow::{bail, ensure, Context, Result};
 use axum::{
@@ -25,6 +26,16 @@ pub struct ServeArgs {
     video_weights: Option<PathBuf>,
     #[arg(long, default_value = "auto")]
     device: String,
+    #[command(flatten)]
+    review: ReviewArgs,
+}
+
+/// The review bands in use, for photos and for clips. `None` leaves the
+/// responses exactly as they are without the feature.
+#[derive(Clone, Copy, Default)]
+struct Bands {
+    photo: Option<Review>,
+    clip: Option<Review>,
 }
 
 const MAX_REQUEST: usize = 64 * 1024 * 1024;
@@ -82,8 +93,8 @@ struct Job {
 }
 
 impl Job {
-    fn execute(self, photo: &Detector, clip: &Detector, frames: usize) {
-        if let Some(rows) = score_uploads(photo, clip, frames, self.files, || {
+    fn execute(self, photo: &Detector, clip: &Detector, frames: usize, bands: Bands) {
+        if let Some(rows) = score_uploads(photo, clip, frames, bands, self.files, || {
             self.response.is_closed()
         }) {
             let _ = self.response.send(rows);
@@ -137,6 +148,7 @@ pub fn run(
         .build()?;
     let (jobs, mut receive) = mpsc::channel::<Job>(MAX_ACTIVE);
     let (ready, startup) = oneshot::channel();
+    let review = args.review;
     let worker = std::thread::spawn(move || {
         let setup = (|| -> Result<_> {
             let photo = Detector::load(&photo, None, 32, device)?;
@@ -150,9 +162,14 @@ pub fn run(
                 (1..=32).contains(&frames),
                 "video model must sample 1 to 32 frames"
             );
-            Ok((photo, clip, frames))
+            // Flags first, then the band stored with each model.
+            let bands = Bands {
+                photo: review.resolve(photo.spec.review),
+                clip: review.resolve(clip.spec.video.as_ref().and_then(|v| v.review)),
+            };
+            Ok((photo, clip, frames, bands))
         })();
-        let (photo, clip, frames) = match setup {
+        let (photo, clip, frames, bands) = match setup {
             Ok(models) => {
                 let _ = ready.send(Ok(()));
                 models
@@ -163,7 +180,7 @@ pub fn run(
             }
         };
         while let Some(job) = receive.blocking_recv() {
-            job.execute(&photo, &clip, frames);
+            job.execute(&photo, &clip, frames, bands);
         }
     });
     let result = runtime.block_on(async {
@@ -362,6 +379,7 @@ fn score_uploads(
     photo: &Detector,
     clip: &Detector,
     frames: usize,
+    bands: Bands,
     files: Vec<Upload>,
     cancelled: impl Fn() -> bool + Sync,
 ) -> Option<Vec<Value>> {
@@ -383,7 +401,7 @@ fn score_uploads(
             .unwrap_or("")
             .to_ascii_lowercase();
         if matches!(ext.as_str(), "mp4" | "mov" | "m4v") {
-            if let Ok(value) = score_video(clip, frames, &file, &ext) {
+            if let Ok(value) = score_video(clip, frames, bands.clip, &file, &ext) {
                 results[i] = value;
             }
         } else {
@@ -443,6 +461,15 @@ fn score_uploads(
                         "verdict": verdict(score), "views": scores.len(),
                         "logit": video::aggregate(&scores), "threshold_logit": photo.threshold_logit()
                     });
+                    if let Some(band) = bands.photo {
+                        // From the view logits already scored: no further inference.
+                        let reason = band.reason(
+                            photo.calibrated_logit(&scores),
+                            &scores,
+                            photo.threshold_logit(),
+                        );
+                        review::annotate(&mut results[i], reason);
+                    }
                 }
             }
         }
@@ -475,7 +502,13 @@ fn decode_image(bytes: &[u8]) -> Result<image_io::Rgb> {
     })
 }
 
-fn score_video(detector: &Detector, frames: usize, file: &Upload, ext: &str) -> Result<Value> {
+fn score_video(
+    detector: &Detector,
+    frames: usize,
+    band: Option<Review>,
+    file: &Upload,
+    ext: &str,
+) -> Result<Value> {
     use std::io::Write;
     let mut temporary = tempfile::Builder::new()
         .suffix(&format!(".{ext}"))
@@ -508,12 +541,22 @@ fn score_video(detector: &Detector, frames: usize, file: &Upload, ext: &str) -> 
     } else {
         "inconclusive"
     };
-    Ok(json!({
+    let mut object = json!({
         "name":file.name,"kind":"video","score":score,"profile":"video","verdict":verdict,
         "logit":logit,"threshold_logit":detector.threshold_logit(),
         "frames":c.frames,"frames_expected":c.frames_expected,"duration_s":c.duration,
         "analysed_until_s":c.until,"complete":c.complete
-    }))
+    });
+    if let Some(band) = band {
+        // Over the frame logits already scored; `inconclusive` stays what it is.
+        let reason = band.reason(
+            detector.calibrated_logit(&[logit]),
+            &values,
+            detector.threshold_logit(),
+        );
+        review::annotate(&mut object, reason);
+    }
+    Ok(object)
 }
 
 fn verdict(score: f32) -> &'static str {
@@ -665,7 +708,7 @@ mod tests {
             .unwrap();
             let frames = clip.use_video_profile();
             while let Some(job) = receive.blocking_recv() {
-                job.execute(&photo, &clip, frames);
+                job.execute(&photo, &clip, frames, Bands::default());
             }
         });
         let photo = image::RgbImage::from_pixel(224, 224, image::Rgb([47, 127, 211]));
@@ -734,6 +777,54 @@ mod tests {
     }
 
     #[test]
+    fn a_review_band_adds_fields_and_changes_nothing_else() {
+        let model_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("models");
+        let photo = Detector::load(&model_dir.join("tintype.safetensors"), None, 6, Device::Cpu).unwrap();
+        let mut clip = Detector::load(&model_dir.join("tintype-video.safetensors"), None, 64, Device::Cpu).unwrap();
+        let frames = clip.use_video_profile();
+        let uploads = || {
+            vec![
+                Upload { name: "demo.png".into(), bytes: include_bytes!("../site/assets/demo.png").to_vec() },
+                Upload { name: "clip.mp4".into(), bytes: include_bytes!("../tests/fixtures/video.mp4").to_vec() },
+                Upload { name: "broken.png".into(), bytes: b"broken".to_vec() },
+            ]
+        };
+        let run = |bands: Bands| score_uploads(&photo, &clip, frames, bands, uploads(), || false).unwrap();
+        let plain = run(Bands::default());
+        // Off: no review keys anywhere.
+        assert!(plain.iter().all(|r| r.get("review").is_none() && r.get("review_reason").is_none()), "{plain:?}");
+
+        // A band wide enough to hold both results, and one too narrow to hold either.
+        let wide = Review { margin: 50.0, view_disagreement: None };
+        let narrow = Review { margin: 1e-6, view_disagreement: None };
+        for (band, expect) in [(wide, true), (narrow, false)] {
+            let with = run(Bands { photo: Some(band), clip: Some(band) });
+            for (a, b) in plain.iter().zip(&with) {
+                if a.get("error").is_some() {
+                    // An unreadable file has no verdict to review.
+                    assert_eq!(a, b);
+                    continue;
+                }
+                assert_eq!(b["review"], expect, "{b}");
+                assert_eq!(b.get("review_reason").and_then(|r| r.as_str()), expect.then_some("margin"), "{b}");
+                // Everything else, the verdict included, is what it was.
+                let mut stripped = b.clone();
+                let object = stripped.as_object_mut().unwrap();
+                object.remove("review");
+                object.remove("review_reason");
+                assert_eq!(&stripped, a);
+            }
+        }
+        // Disagreement alone: consistent with the logits behind the score.
+        let split = Review { margin: 0.0, view_disagreement: Some(1e-6) };
+        let with = run(Bands { photo: Some(split), clip: None });
+        assert!(with[1].get("review").is_none(), "no band for clips: {}", with[1]);
+        let reason = with[0].get("review_reason").and_then(|r| r.as_str());
+        assert!(reason.is_none() || reason == Some("view_disagreement"), "{}", with[0]);
+        assert_eq!(with[0]["review"], reason.is_some());
+    }
+
+    #[test]
     fn abandoned_upload_stops_before_decoding_remaining_files() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -748,7 +839,7 @@ mod tests {
             })
             .collect();
         let checks = AtomicUsize::new(0);
-        let output = score_uploads(&detector, &detector, 1, files, || {
+        let output = score_uploads(&detector, &detector, 1, Bands::default(), files, || {
             // The request closes after the first video reaches the decoder.
             checks.fetch_add(1, Ordering::Relaxed) >= 2
         });
