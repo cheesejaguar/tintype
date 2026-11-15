@@ -14,7 +14,8 @@ exit rule is chosen.
 | The same on x86-64 and on Linux | **not run**: no such machine here; commands below | [Ready to run elsewhere](#ready-to-run-elsewhere) |
 | 2. INT8 simulation behind `--device cpu-int8` | built | `cpu_vit::Int8`, `detector::Device::CpuInt8` |
 | 3. Agreement of INT8 with FP32 on 3,148 labelled store images | measured (training data: a parity check, not an evaluation) | `scripts/int8-agreement.py` |
-| The same on the frozen split and the suites | **not run**: the files are not on this machine; commands below | [Ready to run elsewhere](#ready-to-run-elsewhere) |
+| The same on the frozen split | **run: the gate fails at 0.1% FPR and holds at 1%** | [Frozen split](#frozen-split) |
+| The same on the archived suites | **not run**: their files are not on this machine | |
 | 4. An integer kernel timed against the FP32 products | benchmarked on ARM64, test-only, **not wired into scoring**; no x86-64 kernel | `src/cpu_vit/int8_gemm.rs` |
 | 5a. What 6, 7 and 8 blocks would cost to run | timed with the released weights cut short (timing only) | `vit_small_patch16_d<N>` in a spec |
 | 5b. Exits part-way with the weights as shipped | measured with a fitted linear read-out | `tintype probe-exits`, `src/exit_probe.rs` |
@@ -885,7 +886,7 @@ accuracy half is unknown until a student exists.
 
 | Route | Speed clause (1.3x throughput, or 25% lower p95) | Accuracy clause (at most 1 point of recall at equal FPR, each clean and degraded suite) |
 |---|---|---|
-| INT8 linear layers, eight bits, a range per token (`all`) | **Bounded, not measured end to end, ARM64 only.** Kernel benchmark times profile share: 1.45x throughput against Accelerate and 2.16x against the pure-Rust NEON kernels; latency 22% lower against Accelerate (just short) and 36% lower against pure Rust. x86-64 unknown: no kernel, no machine | **Not decided.** On 3,148 training-store images: -0.22 and -0.06 points at 1% and 0.1% FPR with every view, +0.11 and +0.17 with early exit, 3 and 6 verdicts changed, no authentic file newly flagged. The suites' files are not here |
+| INT8 linear layers, eight bits, a range per token (`all`) | **Bounded, not measured end to end, ARM64 only.** Kernel benchmark times profile share: 1.45x throughput against Accelerate and 2.16x against the pure-Rust NEON kernels; latency 22% lower against Accelerate (just short) and 36% lower against pure Rust. x86-64 unknown: no kernel, no machine | **Fails at 0.1% FPR, holds at 1%, on the frozen split** ([Frozen split](#frozen-split)): at 1% every slice is within one point; at 0.1% INT8 flags 15 authentic rows of 9,726 against the 32-bit engine's 7 at the frozen cutoffs, and loses 4.9 (clean) and 7.8 (processed) points at equal false-positive counts. The training-store check (-0.22 and -0.06 points with every view) did not show it |
 | INT8 with one range per view, or seven-bit inputs | as above | **Fails even on the store images**: -1.95 / -5.01 points and -1.28 / -0.39 |
 | INT8 with seven-bit weights (plain AVX2) | not measured | at the edge on the store images: -0.06 / -1.06 points |
 | A student with 8, 7 or 6 blocks | **Timed with untrained stand-ins**: 1.50x, 1.73x, 2.03x throughput with Accelerate (1.49x, 1.71x, 2.04x pure Rust), p95 26% to 45% lower, six views per file | **Unknown**: no student exists. Code and commands are ready; needs the GPU, the training stores and a teacher chosen on the frozen split |
@@ -895,13 +896,252 @@ accuracy half is unknown until a student exists.
 Read together: the linear layers are where CPU time goes (step 1), eight
 bits with a range per token keep the scores on everything that could be
 measured (step 3), and an `SDOT` kernel is 1.8 to 3.4 times faster than the
-FP32 products it would replace on this chip (step 4), so **INT8 looks able
-to reach the speed clause on ARM64 by throughput without retraining**, and
-the next step for it is the frozen-split run, then an x86-64 kernel. **A
+FP32 products it would replace on this chip (step 4), so INT8 looks able
+to reach the speed clause on ARM64 by throughput without retraining. **The
+frozen-split run has since been made and INT8 as simulated fails the
+accuracy clause at 0.1% FPR** ([Frozen split](#frozen-split)), so no kernel
+should be built on this evidence. **A
 student of eight blocks or fewer reaches the speed clause by construction**
 and by a wider margin, on every platform at once, but its accuracy is an
 open training question. The two compound: a quantised student is both.
 Neither is a decision to ship anything.
+
+## Frozen split
+
+The run that the accuracy clause was waiting for, on the frozen independent
+split of [the frozen evaluation runbook](frozen-eval.md). What was fixed
+beforehand is in [PREREGISTRATION.md](../PREREGISTRATION.md#int8-linear-layers-on-the-frozen-split-what-was-fixed-before-the-look),
+committed (`f514ed6`) before anything was computed on `test`.
+
+Caveats that go with every number here. Every authentic original is a
+camera JPEG of 12 megapixels or more and every generated original a PNG of
+256 to 1,024 pixels, so clean rows carry that confound; the processed
+copies re-encode both classes alike. FloreView is 36 scenes on 46 phones
+and CSAFE ten units of one phone model: scenes and devices are far fewer
+than parents. No platform round trips and no learned-codec copies are in
+the split. `test` was not blind: the incumbent and two processing-chain
+arms had been scored on it by other workstreams; this was this
+workstream's first and only look.
+
+### What was run
+
+Apple M6, 12 cores, 32 GB, macOS 27.2; Accelerate build of this branch
+(Rust source as at `92d5547`); nothing else running. One candidate, the
+simulation `--device cpu-int8` with `TINTYPE_INT8=all`, against `--device
+cpu`, on copies of the released model with the shipped spec in both.
+
+```bash
+F=/path/to/data/frozen-eval
+mkdir -p runs/ws8-frozen
+for e in fp32 int8; do cp models/tintype.safetensors runs/ws8-frozen/$e.safetensors; cp models/tintype.json runs/ws8-frozen/$e.json; done
+for set in calibrate test; do
+  tintype score --weights runs/ws8-frozen/fp32.safetensors --device cpu --manifest $F/$set.tsv --out runs/ws8-frozen/$set-fp32.tsv
+  TINTYPE_INT8=all tintype score --weights runs/ws8-frozen/int8.safetensors --device cpu-int8 --manifest $F/$set.tsv --out runs/ws8-frozen/$set-int8.tsv
+done
+python3 -I scripts/int8-agreement.py --frozen --groups $F/test.tsv \
+    --calibrate-fp32 runs/ws8-frozen/calibrate-fp32.tsv --calibrate-int8 runs/ws8-frozen/calibrate-int8.tsv \
+    --test-fp32 runs/ws8-frozen/test-fp32.tsv --test-int8 runs/ws8-frozen/test-int8.tsv
+tintype verify-models
+```
+
+Every row of both sets, default profile (early exit, as `detect` runs).
+For each engine and each rate the cutoff is the empirical one over the
+authentic rows of its own `calibrate` scores (originals and processed copies
+pooled) and is applied unchanged to its `test` scores. This replaces the
+`tintype calibrate` calls of the commands written earlier on this page (see
+the pre-registration entry for why); those commands are left as they were
+written.
+
+| Run | Rows | Seconds | Files/s | Views per row | Peak memory |
+|---|---:|---:|---:|---:|---:|
+| `calibrate`, `cpu` | 12,457 | 179.7 | 69.3 | 1.66 | 4,049 MB |
+| `calibrate`, `cpu-int8` | 12,457 | 192.2 | 64.8 | 1.66 | 4,137 MB |
+| `test`, `cpu` | 19,326 | 274.5 | 70.4 | 1.53 | 3,894 MB |
+| `test`, `cpu-int8` | 19,326 | 282.1 | 68.5 | 1.53 | 3,875 MB |
+
+No row was unreadable. Load average 2.4 at the start, 7.8 to 8.6 between
+runs (the runs themselves). The score files are in
+`docs/results/ws8-int8-frozen/` with the machine's path prefix removed.
+
+### Accuracy at cutoffs frozen on `calibrate`
+
+19326 test rows scored by both engines. Mean view logit, INT8 against 32-bit: median absolute difference 0.1306, 99th percentile 1.3578, largest 8.9083, mean signed +0.0469; 874 rows stop at a different stage; views per row 1.529 and 1.530.
+
+**1% FPR.** Cutoffs frozen on the authentic calibration rows (5857 and 5857): probability 0.284799 (32-bit) and 0.282554 (INT8).
+
+| Test rows | Rows | Flagged, 32-bit | Flagged, INT8 | Rate, 32-bit → INT8 | Difference (points) | Gate |
+|---|---:|---:|---:|---|---:|---|
+| authentic, all | 9726 | 127 | 130 | 1.31% → 1.34% | +0.03 |  |
+| authentic, clean | 7326 | 48 | 53 | 0.66% → 0.72% | +0.07 |  |
+| authentic, processed | 2400 | 79 | 77 | 3.29% → 3.21% | -0.08 |  |
+| generated, clean | 7200 | 6908 | 6917 | 95.94% → 96.07% | +0.12 | holds |
+| generated, processed | 2400 | 2032 | 2039 | 84.67% → 84.96% | +0.29 | holds |
+| generated, blur-s1.0 | 200 | 195 | 196 | 97.50% → 98.00% | +0.50 | holds |
+| generated, blur-s3.0 | 200 | 197 | 197 | 98.50% → 98.50% | +0.00 | holds |
+| generated, jpeg-qv12 | 200 | 158 | 157 | 79.00% → 78.50% | -0.50 | holds |
+| generated, jpeg-qv4 | 200 | 176 | 177 | 88.00% → 88.50% | +0.50 | holds |
+| generated, noise-a10 | 200 | 185 | 186 | 92.50% → 93.00% | +0.50 | holds |
+| generated, noise-a40 | 200 | 50 | 48 | 25.00% → 24.00% | -1.00 | holds |
+| generated, repost-720-qv9x1 | 200 | 165 | 167 | 82.50% → 83.50% | +1.00 | holds |
+| generated, repost-960-qv12x1 | 200 | 158 | 158 | 79.00% → 79.00% | +0.00 | holds |
+| generated, repost-960-qv7x4 | 200 | 173 | 174 | 86.50% → 87.00% | +0.50 | holds |
+| generated, resize-0.25-bicubic | 200 | 188 | 190 | 94.00% → 95.00% | +1.00 | holds |
+| generated, resize-0.5-bicubic | 200 | 195 | 196 | 97.50% → 98.00% | +0.50 | holds |
+| generated, sharpen-a1.0 | 200 | 192 | 193 | 96.00% → 96.50% | +0.50 | holds |
+
+Verdicts that differ at these cutoffs: 63 (1 authentic clean flagged by 32-bit only, 6 authentic clean flagged by INT8 only, 6 authentic processed flagged by 32-bit only, 4 authentic processed flagged by INT8 only, 9 generated clean flagged by 32-bit only, 18 generated clean flagged by INT8 only, 6 generated processed flagged by 32-bit only, 13 generated processed flagged by INT8 only).
+At each engine's own empirical cutoff on the test set's authentic rows (a ranking measure, not a transfer result): recall on clean rows 95.62% → 95.81% (+0.18 points); recall on processed rows 82.54% → 83.08% (+0.54 points).
+
+**0.1% FPR.** Cutoffs frozen on the authentic calibration rows (5857 and 5857): probability 0.982144 (32-bit) and 0.839894 (INT8).
+
+| Test rows | Rows | Flagged, 32-bit | Flagged, INT8 | Rate, 32-bit → INT8 | Difference (points) | Gate |
+|---|---:|---:|---:|---|---:|---|
+| authentic, all | 9726 | 7 | 15 | 0.07% → 0.15% | +0.08 |  |
+| authentic, clean | 7326 | 4 | 6 | 0.05% → 0.08% | +0.03 |  |
+| authentic, processed | 2400 | 3 | 9 | 0.12% → 0.38% | +0.25 |  |
+| generated, clean | 7200 | 5655 | 6543 | 78.54% → 90.88% | +12.33 | holds |
+| generated, processed | 2400 | 1179 | 1672 | 49.12% → 69.67% | +20.54 | holds |
+| generated, blur-s1.0 | 200 | 158 | 184 | 79.00% → 92.00% | +13.00 | holds |
+| generated, blur-s3.0 | 200 | 131 | 180 | 65.50% → 90.00% | +24.50 | holds |
+| generated, jpeg-qv12 | 200 | 57 | 110 | 28.50% → 55.00% | +26.50 | holds |
+| generated, jpeg-qv4 | 200 | 90 | 137 | 45.00% → 68.50% | +23.50 | holds |
+| generated, noise-a10 | 200 | 107 | 163 | 53.50% → 81.50% | +28.00 | holds |
+| generated, noise-a40 | 200 | 3 | 24 | 1.50% → 12.00% | +10.50 | holds |
+| generated, repost-720-qv9x1 | 200 | 69 | 116 | 34.50% → 58.00% | +23.50 | holds |
+| generated, repost-960-qv12x1 | 200 | 63 | 113 | 31.50% → 56.50% | +25.00 | holds |
+| generated, repost-960-qv7x4 | 200 | 78 | 133 | 39.00% → 66.50% | +27.50 | holds |
+| generated, resize-0.25-bicubic | 200 | 117 | 149 | 58.50% → 74.50% | +16.00 | holds |
+| generated, resize-0.5-bicubic | 200 | 167 | 187 | 83.50% → 93.50% | +10.00 | holds |
+| generated, sharpen-a1.0 | 200 | 139 | 176 | 69.50% → 88.00% | +18.50 | holds |
+
+Verdicts that differ at these cutoffs: 1391 (2 authentic clean flagged by INT8 only, 6 authentic processed flagged by INT8 only, 1 generated clean flagged by 32-bit only, 889 generated clean flagged by INT8 only, 493 generated processed flagged by INT8 only).
+At each engine's own empirical cutoff on the test set's authentic rows (a ranking measure, not a transfer result): recall on clean rows 89.56% → 84.67% (-4.89 points); recall on processed rows 67.54% → 59.75% (-7.79 points).
+
+Recall clause of the gate (at most one point of recall lost on every gated slice, at both rates, at these cutoffs): holds. The false-positive clause is below, and it does not.
+
+From `tintype report --operating-points` on the same files (pooled over all
+generated rows; recall intervals are a 95% bootstrap over items, the
+false-positive bound a one-sided 95% Clopper–Pearson):
+
+| Operating point | Engine | Cutoff | Authentic flagged | FPR | FPR upper bound | Recall, all generated rows |
+|---|---|---:|---:|---:|---:|---:|
+| 1%, frozen on `calibrate` | 32-bit | 0.284799 | 127 of 9,726 | 1.31% | 1.51% | 93.12% (92.64%–93.67%) |
+| 1%, frozen on `calibrate` | INT8 | 0.282554 | 130 of 9,726 | 1.34% | 1.54% | 93.29% (92.81%–93.84%) |
+| 0.1%, frozen on `calibrate` | 32-bit | 0.982144 | 7 of 9,726 | 0.07% | 0.14% | 71.19% (70.33%–72.10%) |
+| 0.1%, frozen on `calibrate` | INT8 | 0.839894 | 15 of 9,726 | 0.15% | 0.24% | 85.57% (84.86%–86.27%) |
+| 1%, empirical on `test` (ranking only) | 32-bit | 0.345605 | 97 of 9,726 | 1.00% | 1.18% | 92.35% (91.84%–92.92%) |
+| 1%, empirical on `test` (ranking only) | INT8 | 0.340731 | 97 of 9,726 | 1.00% | 1.18% | 92.62% (92.11%–93.20%) |
+| 0.1%, empirical on `test` (ranking only) | 32-bit | 0.880820 | 9 of 9,726 | 0.09% | 0.16% | 84.05% (83.35%–84.81%) |
+| 0.1%, empirical on `test` (ranking only) | INT8 | 0.950183 | 9 of 9,726 | 0.09% | 0.16% | 78.44% (77.67%–79.30%) |
+
+```bash
+tintype report --operating-points --system "fp32=runs/ws8-frozen/test-fp32.tsv@0.284799" --system "int8=runs/ws8-frozen/test-int8.tsv@0.282554" --fpr 0.001,0.01
+tintype report --operating-points --system "fp32=runs/ws8-frozen/test-fp32.tsv@0.982144" --system "int8=runs/ws8-frozen/test-int8.tsv@0.839894" --fpr 0.001
+```
+
+How to read the 0.1% rows. The two engines' frozen cutoffs are far apart
+(0.982 and 0.840) because each is set by the sixth-highest of 5,857
+authentic calibration scores, and INT8 moves a few of those by several
+logits: with early exit a file that stops at a different stage is averaged
+over different views (874 of 19,326 test rows, 4.5%, stop at a different
+stage; the largest logit difference is 8.9). At its looser cutoff INT8
+flags 15 authentic test rows where the 32-bit engine flags 7, so its
+higher recall there (+12.3 points clean, +20.5 processed) is bought with
+twice the false positives and is **not a gain**. At equal false-positive
+counts on `test` itself (9 authentic rows each) INT8's recall is 5.6 points
+lower over all generated rows (84.05% to 78.44%, intervals apart), 4.9
+points lower on clean rows and 7.8 on processed rows. Either way the 0.1%
+operating point does not survive: the cutoff does not transfer, and the
+ranking in the tail is worse.
+
+### Speed and memory: the simulation against the engine it imitates
+
+`cpu-int8` rounds values and then runs the same single-precision products,
+so it cannot be faster than `cpu`; these numbers say what the simulation
+costs, not what an integer kernel would gain. That bound is still the one
+under [Step 4](#against-the-gate-by-amdahl). 300 `test` rows drawn with
+seed 8 (150 authentic, 150 generated, 72 of them processed copies), the two
+engines taking turns, three passes:
+
+```bash
+python3 -I scripts/view-reuse-bench.py --bin cpu=target/release/tintype --bin int8=target/release/tintype \
+    --device-of int8=cpu-int8 --env int8:TINTYPE_INT8=all --device cpu \
+    --weights-of cpu=runs/ws8-frozen/fp32.safetensors --weights-of int8=runs/ws8-frozen/int8.safetensors \
+    --latency --manifest timing.tsv --n 295 --repeat 3       # and: --together --list timing.txt --repeat 3
+```
+
+| | `cpu` | `cpu-int8` (`all`) |
+|---|---:|---:|
+| Single image, file to verdict: p50 / p95 / mean (ms), each image's best of 3, 295 images | 37.8 / 101.6 / 46.1 | 39.9 / 104.1 / 47.6 |
+| Peak memory, one image at a time | 824 MB | 825 MB |
+| Throughput, 300 files in one process (median of 3; best) | 69.7 files/s (71.2) | 67.1 files/s (68.1) |
+| Peak memory, 300 files in one process | 1,799 MB | 1,710 MB |
+| Views scored per file (throughput run) | 1.533 | 1.507 |
+
+Load average 5.5 before the latency run, 6.8 after it and 7.1 after the
+throughput run; nothing else was running. The simulation is 5% slower at
+the median image and 4% lower in throughput, as expected of extra rounding
+passes: it is not a speed result.
+
+Where the time goes on this cohort (`scripts/cpu-profile.py` on the same
+runs, `cpu` column), because these files are not the store photos of
+step 1: half of them are camera JPEGs of 12 megapixels or more.
+
+| | One image at a time | 300 files in one process |
+|---|---:|---:|
+| Reading and decoding the file | 19.5 ms, **42.0%** | 32.1 ms of processor time on worker threads |
+| Ranking windows, resizing and cropping views | 3.5 ms, 7.5% | 10.8 ms on worker threads |
+| In the network | 23.5 ms, 50.5% | 13.6 ms, 93.3% of wall time |
+| The four linear layers of the blocks | 12.6 ms, **27.1%** | 9.1 ms, **62.8%** |
+| File to verdict / wall time per file | 46.5 ms | 14.5 ms |
+
+With those shares and the kernel ratios of step 4 (1.98 for one view, 1.79
+for many, against Accelerate), the Amdahl bound for an integer kernel on
+this cohort is 1.38x throughput and 1.16x single-image latency (arithmetic,
+not a timing). Large camera files spend their single-image time in the JPEG
+decoder, which no change to the network touches.
+
+### Verdict
+
+**The gate fails at the 0.1% operating point and holds at 1%.**
+
+- *1% FPR, cutoffs frozen on `calibrate`.* Holds on every pre-registered
+  slice. Recall on clean rows 95.94% (32-bit) and 96.07% (INT8), on
+  processed rows 84.67% and 84.96%; the worst transform is `noise-a40`,
+  25.0% to 24.0%, exactly the one point allowed (two detections of 200).
+  Authentic rows flagged: 127 and 130 of 9,726 (1.31% and 1.34%; the 32-bit
+  engine's upper bound is 1.51%). 63 verdicts differ of 19,326.
+- *0.1% FPR, cutoffs frozen on `calibrate`.* **Fails the false-positive
+  clause**: INT8 flags 15 authentic rows of 9,726 (0.15%), above the 32-bit
+  engine's one-sided 95% bound of 0.14% (7 flagged). The recall clause holds
+  only because INT8's cutoff is looser. At equal false-positive counts on
+  `test` INT8 loses 4.9 points of recall on clean rows and 7.8 on processed
+  rows, far outside one point. 1,391 verdicts differ.
+- *Speed.* Not evaluated end to end: there is no integer kernel in the
+  scoring path, and the simulation is 4 to 5% slower than `cpu`. The bound
+  for a kernel on this cohort is 1.38x throughput (clears 1.3x) and 1.16x
+  single-image latency (does not reach 25% lower p95).
+- *The student.* Not run: it needs training. Its commands stay as written
+  under [Training a student](#training-a-student-commands-not-run).
+
+So eight-bit linear layers as simulated here are **not** shown to keep the
+detector's strict operating point: the store-image check of step 3, with
+1,350 authentic files, could not see a tail this thin, and the frozen split
+with 9,726 can. What the failure looks like is tail instability under early
+exit, not a broad loss: at 1% nothing moves by more than the noise of a
+200-row slice. What would have to be tried before INT8 could be proposed
+again, none of it run here: the same comparison with every view looked at
+(no stage changes), which separates the arithmetic from the early-exit
+amplification; early-exit margins and a calibration refitted for the INT8
+engine on `fit` and `calibrate`; and keeping the first view, which decides
+most files, in single precision. Each needs its own pre-registered look.
+
+### Log of looks at `test`
+
+| When | What | By |
+|---|---|---|
+| 2026-11-14 | `score` on all 19,326 rows with `cpu` and with `cpu-int8` (`all`), default profile, once each; the table above computed once | this workstream |
+| 2026-11-14 | 300 rows read for timing (labels not used) | this workstream |
 
 ## Ready to run elsewhere
 
@@ -940,7 +1180,7 @@ is the one row where the pure-Rust kernels are weak here. On macOS on Intel
 the same commands time Accelerate's x86-64 build; add `--features
 portable-cpu` to the build for the AVX2 kernels.
 
-### INT8 against FP32 on the frozen split (not run: the files are not here)
+### INT8 against FP32 on the frozen split (as first written; since run, see [Frozen split](#frozen-split))
 
 This is the run that decides the accuracy clause. It needs the frozen split
 of [the frozen evaluation runbook](frozen-eval.md) on disk, and macOS
