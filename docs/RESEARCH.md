@@ -4,6 +4,9 @@ This is the survey that shaped Tintype's design and its choice of baselines.
 Claims are tied to sources; numbers measured on this machine are marked
 "measured here".
 
+See the [combined detection research report](../reports/Tintype%20detection%20improvement%20research.md)
+for the current experiment priorities and score replays.
+
 ## 1. Images
 
 ### What works
