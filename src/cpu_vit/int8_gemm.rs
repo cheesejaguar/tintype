@@ -1,19 +1,18 @@
-//! An eight-bit matrix product and the linear layer around it, for
-//! measuring only: compiled into the test binary, never into `tintype`, and
-//! not used to score anything.
-//!
-//! It answers two questions the [`Int8`] simulation leaves open. Does an
-//! integer kernel give the numbers the simulation says it would
-//! (`an_integer_linear_layer_gives_what_the_simulation_gives`)? And how much
-//! faster than the single-precision products is it, at this network's
-//! shapes, on the machine at hand (`int8_against_f32_at_the_networks_shapes`,
-//! ignored by default; see docs/runbooks/cpu-profile-int8.md)?
+//! The eight-bit matrix product behind `--device cpu-int8`, and the linear
+//! layer around it.
 //!
 //! The product is `c[m, n] = a[m, k] * w[n, k]^T` with `i8` operands and
 //! `i32` sums. On ARM64 with the dot-product extension (every ARMv8.4 core,
 //! and all Apple silicon) it is four rows against four rows, sixteen `SDOT`
-//! accumulators; anywhere else, a plain loop. There is no x86-64 kernel
-//! here: that one has to be written and timed on such a machine.
+//! accumulators; on x86-64 with AVX2 the bytes are widened to sixteen bits
+//! and multiplied with `vpmaddwd`; anywhere else, a plain loop. Every kernel
+//! gives exactly the integer sums of the definition, so the logits do not
+//! depend on which one ran.
+//!
+//! [`LinI8`] rounds each token of its input to 256 levels between the
+//! token's smallest and largest value and holds its weights as bytes with
+//! one step per output channel: what the [`Int8`] simulation's `all`
+//! variant rounds, computed in integers instead of in single precision.
 use super::*;
 
 /// The definition, and the fallback where there is no kernel.
@@ -105,31 +104,158 @@ unsafe fn gemm_i8_dotprod(a: &[i8], w: &[i8], c: &mut [i32], m: usize, n: usize,
     }
 }
 
+/// AVX2: the weights are held widened to sixteen bits (see [`LinI8`]), each
+/// sixteen input bytes are widened once, and `vpmaddwd` multiplies sixteen
+/// pairs and adds them in pairs into eight 32-bit sums, exactly. Four rows of
+/// `a` against two rows of `w`, eight accumulators.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn gemm_i8_avx2(a: &[i8], w: &[i16], c: &mut [i32], m: usize, n: usize, k: usize) {
+    use std::arch::x86_64::*;
+    let wide = k / 16 * 16;
+    let tail = |i: usize, j: usize| -> i32 { a[i * k + wide..(i + 1) * k].iter().zip(&w[j * k + wide..(j + 1) * k]).map(|(&x, &y)| x as i32 * y as i32).sum() };
+    let hsum = |v: __m256i| -> i32 {
+        let s = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v));
+        let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b01_00_11_10>(s));
+        let s = _mm_add_epi32(s, _mm_shuffle_epi32::<0b10_11_00_01>(s));
+        _mm_cvtsi128_si32(s)
+    };
+    let (ap, wp) = (a.as_ptr(), w.as_ptr());
+    let widen = |p: *const i8| _mm256_cvtepi8_epi16(_mm_loadu_si128(p as *const __m128i));
+    let load = |p: *const i16| _mm256_loadu_si256(p as *const __m256i);
+    let mut j = 0;
+    while j + 2 <= n {
+        let (w0, w1) = (wp.add(j * k), wp.add((j + 1) * k));
+        let mut i = 0;
+        while i + 4 <= m {
+            let (a0, a1, a2, a3) = (ap.add(i * k), ap.add((i + 1) * k), ap.add((i + 2) * k), ap.add((i + 3) * k));
+            let z = _mm256_setzero_si256();
+            let (mut s00, mut s01, mut s10, mut s11) = (z, z, z, z);
+            let (mut s20, mut s21, mut s30, mut s31) = (z, z, z, z);
+            let mut p = 0;
+            while p < wide {
+                let (y0, y1) = (load(w0.add(p)), load(w1.add(p)));
+                let x = widen(a0.add(p));
+                s00 = _mm256_add_epi32(s00, _mm256_madd_epi16(x, y0));
+                s01 = _mm256_add_epi32(s01, _mm256_madd_epi16(x, y1));
+                let x = widen(a1.add(p));
+                s10 = _mm256_add_epi32(s10, _mm256_madd_epi16(x, y0));
+                s11 = _mm256_add_epi32(s11, _mm256_madd_epi16(x, y1));
+                let x = widen(a2.add(p));
+                s20 = _mm256_add_epi32(s20, _mm256_madd_epi16(x, y0));
+                s21 = _mm256_add_epi32(s21, _mm256_madd_epi16(x, y1));
+                let x = widen(a3.add(p));
+                s30 = _mm256_add_epi32(s30, _mm256_madd_epi16(x, y0));
+                s31 = _mm256_add_epi32(s31, _mm256_madd_epi16(x, y1));
+                p += 16;
+            }
+            let sums = [[s00, s01], [s10, s11], [s20, s21], [s30, s31]];
+            for (r, row) in sums.iter().enumerate() {
+                for (s, &acc) in row.iter().enumerate() {
+                    c[(i + r) * n + j + s] = hsum(acc) + if wide < k { tail(i + r, j + s) } else { 0 };
+                }
+            }
+            i += 4;
+        }
+        while i < m {
+            let a0 = ap.add(i * k);
+            let z = _mm256_setzero_si256();
+            let (mut s0, mut s1) = (z, z);
+            let mut p = 0;
+            while p < wide {
+                let x = widen(a0.add(p));
+                s0 = _mm256_add_epi32(s0, _mm256_madd_epi16(x, load(w0.add(p))));
+                s1 = _mm256_add_epi32(s1, _mm256_madd_epi16(x, load(w1.add(p))));
+                p += 16;
+            }
+            c[i * n + j] = hsum(s0) + if wide < k { tail(i, j) } else { 0 };
+            c[i * n + j + 1] = hsum(s1) + if wide < k { tail(i, j + 1) } else { 0 };
+            i += 1;
+        }
+        j += 2;
+    }
+    for j in j..n {
+        for i in 0..m {
+            c[i * n + j] = a[i * k..][..k].iter().zip(&w[j * k..][..k]).map(|(&x, &y)| x as i32 * y as i32).sum();
+        }
+    }
+}
+
 /// Which kernel [`gemm_i8`] runs here.
+#[cfg(test)]
 fn kernel_name() -> &'static str {
     #[cfg(target_arch = "aarch64")]
     if std::arch::is_aarch64_feature_detected!("dotprod") {
         return "NEON dot product (SDOT), four rows by four";
     }
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        return "AVX2 sixteen-bit multiply-add (VPMADDWD), four rows by two";
+    }
     "scalar loop (no integer kernel for this processor)"
 }
 
+/// Whether this processor has an integer kernel (otherwise the plain loop
+/// runs, which is slower than the single-precision products).
+pub(super) fn has_kernel() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    if std::arch::is_aarch64_feature_detected!("dotprod") {
+        return true;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        return true;
+    }
+    false
+}
+
 /// `c[m, n] = a[m, k] * w[n, k]^T` on the calling thread.
-fn gemm_i8(a: &[i8], w: &[i8], c: &mut [i32], m: usize, n: usize, k: usize) {
-    assert!(a.len() >= m * k && w.len() >= n * k && c.len() >= m * n);
+fn gemm_i8(a: &[i8], w: &Packed, c: &mut [i32], m: usize, n: usize, k: usize) {
+    assert!(a.len() >= m * k && w.bytes.len() >= n * k && c.len() >= m * n);
     #[cfg(target_arch = "aarch64")]
     if std::arch::is_aarch64_feature_detected!("dotprod") {
         // The feature was just detected, and the lengths were checked above.
-        return unsafe { gemm_i8_dotprod(a, w, c, m, n, k) };
+        return unsafe { gemm_i8_dotprod(a, &w.bytes, c, m, n, k) };
     }
-    gemm_i8_scalar(a, w, c, m, n, k)
+    #[cfg(target_arch = "x86_64")]
+    if let Some(wide) = w.wide.as_deref() {
+        // Packed only where AVX2 was detected; the lengths were checked above.
+        return unsafe { gemm_i8_avx2(a, wide, c, m, n, k) };
+    }
+    gemm_i8_scalar(a, &w.bytes, c, m, n, k)
+}
+
+/// Weights as the kernel here wants them: the bytes, and on x86-64 with AVX2
+/// the same values widened to sixteen bits, so that only the input is
+/// widened in the loop.
+pub(super) struct Packed {
+    bytes: Vec<i8>,
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+    wide: Option<Vec<i16>>,
+}
+
+impl Packed {
+    fn new(bytes: Vec<i8>) -> Self {
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx2") {
+            let wide = Some(bytes.iter().map(|&b| b as i16).collect());
+            return Self { bytes, wide };
+        }
+        Self { bytes, wide: None }
+    }
+
+    /// Bytes the weights take in memory.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.bytes.len() + self.wide.as_ref().map_or(0, |w| 2 * w.len())
+    }
 }
 
 /// A linear layer as an integer kernel would hold it: weights as signed
 /// bytes with a step per output channel, as [`fake_quantise_weights`] rounds
 /// them.
-struct LinI8 {
-    v: Vec<i8>,
+pub(super) struct LinI8 {
+    v: Packed,
     /// Per output channel: the step, and the step times the sum of the channel's bytes.
     step: Vec<f32>,
     step_sum: Vec<f32>,
@@ -138,9 +264,14 @@ struct LinI8 {
     inp: usize,
 }
 
+thread_local! {
+    /// Each thread's buffers for [`LinI8::apply`].
+    pub(super) static SCRATCH: std::cell::RefCell<Scratch> = std::cell::RefCell::new(Scratch::default());
+}
+
 /// Buffers one thread needs to apply integer layers.
 #[derive(Default)]
-struct Scratch {
+pub(super) struct Scratch {
     q: Vec<i8>,
     sums: Vec<i32>,
     /// Per token: the step of its input, and `128 * step + lowest value`.
@@ -148,7 +279,7 @@ struct Scratch {
 }
 
 impl LinI8 {
-    fn new(lin: &Lin) -> Self {
+    pub(super) fn new(lin: &Lin) -> Self {
         let mut v = vec![0i8; lin.w.len()];
         let (mut step, mut step_sum) = (vec![0f32; lin.out], vec![0f32; lin.out]);
         for (j, (row, bytes)) in lin.w.chunks(lin.inp).zip(v.chunks_mut(lin.inp)).enumerate() {
@@ -162,7 +293,7 @@ impl LinI8 {
             }
             step_sum[j] = step[j] * bytes.iter().map(|&b| b as i32).sum::<i32>() as f32;
         }
-        Self { v, step, step_sum, b: lin.b.clone(), out: lin.out, inp: lin.inp }
+        Self { v: Packed::new(v), step, step_sum, b: lin.b.clone(), out: lin.out, inp: lin.inp }
     }
 
     /// Each token of `x` to 256 levels between its smallest and largest
@@ -185,7 +316,7 @@ impl LinI8 {
     /// `y[rows, out] = x[rows, in] W^T + b` through bytes: round the input,
     /// multiply in integers, and scale the sums back
     /// (docs/runbooks/cpu-profile-int8.md, "What an integer kernel would compute").
-    fn apply(&self, x: &[f32], y: &mut [f32], rows: usize, s: &mut Scratch) {
+    pub(super) fn apply(&self, x: &[f32], y: &mut [f32], rows: usize, s: &mut Scratch) {
         self.quantise(x, rows, s);
         s.sums.resize(rows * self.out, 0);
         gemm_i8(&s.q, &self.v, &mut s.sums, rows, self.out, self.inp);
@@ -197,14 +328,19 @@ impl LinI8 {
     }
 
     /// Only the integer product of [`LinI8::apply`], on an input rounded before.
+    #[cfg(test)]
     fn product(&self, rows: usize, s: &mut Scratch) {
         s.sums.resize(rows * self.out, 0);
         gemm_i8(&s.q, &self.v, &mut s.sums, rows, self.out, self.inp);
     }
 }
 
+#[cfg(test)]
+mod tests {
+use super::*;
+
 fn random_lin(rng: &mut crate::rng::Rng, out: usize, inp: usize) -> Lin {
-    Lin { w: (0..out * inp).map(|_| rng.range(-0.2, 0.2) * rng.f32()).collect(), b: (0..out).map(|_| rng.range(-0.5, 0.5)).collect(), out, inp }
+    Lin { w: (0..out * inp).map(|_| rng.range(-0.2, 0.2) * rng.f32()).collect(), b: (0..out).map(|_| rng.range(-0.5, 0.5)).collect(), out, inp, q: None }
 }
 
 #[test]
@@ -215,14 +351,14 @@ fn the_integer_product_matches_the_definition() {
         let a: Vec<i8> = (0..m * k).map(|_| rng.below(256) as u8 as i8).collect();
         let w: Vec<i8> = (0..n * k).map(|_| (rng.below(255) as i32 - 127) as i8).collect();
         let (mut got, mut want) = (vec![0i32; m * n], vec![0i32; m * n]);
-        gemm_i8(&a, &w, &mut got, m, n, k);
+        gemm_i8(&a, &Packed::new(w.clone()), &mut got, m, n, k);
         gemm_i8_scalar(&a, &w, &mut want, m, n, k);
         assert_eq!(got, want, "{m} x {n} x {k}");
     }
     // The extremes stay inside 32 bits at the network's longest row.
     let (a, w) = (vec![-128i8; 1536], vec![-127i8; 1536]);
     let mut c = [0i32];
-    gemm_i8(&a, &w, &mut c, 1, 1, 1536);
+    gemm_i8(&a, &Packed::new(w), &mut c, 1, 1, 1536);
     assert_eq!(c[0], 128 * 127 * 1536);
 }
 
@@ -236,7 +372,7 @@ fn an_integer_linear_layer_gives_what_the_simulation_gives() {
         let mut got = vec![0f32; rows * out];
         LinI8::new(&lin).apply(&x, &mut got, rows, &mut Scratch::default());
         // The simulation: round weights per channel and inputs per token, multiply in single precision.
-        let mut sim = Lin { w: lin.w.clone(), b: lin.b.clone(), out, inp };
+        let mut sim = Lin { w: lin.w.clone(), b: lin.b.clone(), out, inp, q: None };
         fake_quantise_weights(&mut sim.w, inp, 127.0);
         let mut xq = x.clone();
         xq.chunks_mut(inp).for_each(|row| fake_quantise_inputs(row, 255.0));
@@ -384,4 +520,5 @@ fn int8_against_f32_at_the_networks_shapes() {
         None => println!("| all four, {BLOCKS} blocks (best) | (run with VECLIB_MAXIMUM_THREADS=1) | {:.2} ms | |", single_whole.0),
     }
     println!("| billion multiply-adds per second | {} | {:.0} | |", single_f32.map_or("".to_string(), |f| format!("{:.0}", mac / f.0 / 1e6)), mac / single_whole.0 / 1e6);
+}
 }
