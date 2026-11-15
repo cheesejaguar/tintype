@@ -95,6 +95,7 @@ standard error when they finish; standard output is unchanged.
 | `views_reused` | views that took the score of an identical view of the same image |
 | `clips_reopened` | clips opened a second time for their second half |
 | `decode_ms`, `convert_ms`, `views_ms`, `model_ms` | time decoding files and frames, converting frames, ranking windows and preparing views, and in the network, added up over threads |
+| `forward_ms` and the counters after it | the CPU forward pass and its parts: see [the CPU profile](cpu-profile-int8.md#what-is-timed) |
 
 `views_scored + views_reused` is the number of views looked at, which the
 JSON output reports as `views` for a photo. With `TINTYPE_STATS` set,

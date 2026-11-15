@@ -54,6 +54,7 @@ impl Embedder {
             #[cfg(not(target_os = "macos"))]
             Device::Gpu | Device::GpuF32 => anyhow::bail!("the GPU engine is only available on macOS; use the CPU engine"),
             Device::Cpu => Engine::Cpu { vit: CpuVit::new(w, cfg)? },
+            Device::CpuInt8 => Engine::Cpu { vit: CpuVit::with_int8(w, cfg, Some(crate::cpu_vit::Int8::from_env()?))? },
         };
         Ok(Self { engine, cfg, batch, blocks: blocks.to_vec() })
     }

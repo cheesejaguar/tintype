@@ -3,7 +3,7 @@
 #![cfg(target_os = "macos")]
 
 use crate::mps::{Graph, Op, Precision, T};
-use crate::mps_vit::{build_head, build_vit, ParamSource};
+use crate::mps_vit::{build_head, build_vit, build_vit_cls, Frozen, ParamSource};
 use crate::vit::VitConfig;
 use crate::weights::{transpose2, Weights};
 use anyhow::Result;
@@ -46,6 +46,17 @@ impl Default for OptConfig {
     }
 }
 
+/// A frozen network whose softened probability is part of what the
+/// trained one is pulled towards (see [`crate::distill::soft_target`]).
+pub struct Teacher<'a> {
+    pub weights: &'a Weights,
+    pub cfg: VitConfig,
+    /// Share of the target that is the teacher's, from 0 to 1.
+    pub weight: f64,
+    /// The teacher's logit is divided by this before the sigmoid.
+    pub temperature: f64,
+}
+
 pub struct Trainer {
     g: Graph,
     params: Vec<Entry>,
@@ -80,6 +91,12 @@ fn no_decay(name: &str) -> bool {
 
 impl Trainer {
     pub fn new(w: &Weights, cfg: VitConfig, batch: usize, opt: OptConfig) -> Result<Self> {
+        Self::with_teacher(w, cfg, batch, opt, None)
+    }
+
+    /// As [`Trainer::new`], with a teacher that sees the same batch in the
+    /// same graph and is never updated.
+    pub fn with_teacher(w: &Weights, cfg: VitConfig, batch: usize, opt: OptConfig, teacher: Option<Teacher>) -> Result<Self> {
         let g = Graph::new(Precision::F32)?;
         let (b, s) = (batch as isize, cfg.img as isize);
         let x = g.placeholder(&[b, 3, s, s]);
@@ -96,6 +113,17 @@ impl Trainer {
             g.add(&g.scale(&y, 1.0 - opt.smoothing), &g.scalar(opt.smoothing * 0.5))
         } else {
             y.clone()
+        };
+        // With a teacher: (1 - weight) * target + weight * sigmoid(teacher logit / temperature).
+        let target = match &teacher {
+            Some(t) => {
+                anyhow::ensure!((0.0..=1.0).contains(&t.weight) && t.temperature > 0.0, "the teacher's weight is between 0 and 1 and its temperature above 0");
+                let trunk = build_vit_cls(&g, t.weights, &t.cfg, &x, batch)?;
+                let z = build_head(&g, t.weights, &mut Frozen, &trunk.cls)?;
+                let soft = g.div(&g.scalar(1.0), &g.add(&g.scalar(1.0), &g.exp(&g.scale(&z, -1.0 / t.temperature))));
+                g.add(&g.scale(&target, 1.0 - t.weight), &g.scale(&soft, t.weight))
+            }
+            None => target,
         };
         let zero = g.scalar(0.0);
         let per = g.add(
@@ -190,5 +218,53 @@ impl Trainer {
             }
         }
         w
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::distill::{bce_with_logits, soft_target, take_blocks};
+
+    /// Needs the Apple GPU, so it is run by hand:
+    /// `cargo test --release --locked --lib trainer -- --ignored`.
+    #[test]
+    #[ignore = "uses the Apple GPU"]
+    fn the_loss_with_a_teacher_is_the_cross_entropy_against_the_soft_target() {
+        let (w, cfg) = crate::cpu_vit::small_network();
+        // The student: the teacher's first block alone.
+        let (student_w, student_cfg) = (take_blocks(&w, &[0]).unwrap(), VitConfig { depth: 1, ..cfg });
+        let batch = 4;
+        let mut rng = crate::rng::Rng::new(2);
+        let x: Vec<f32> = (0..batch * 3 * cfg.img * cfg.img).map(|_| rng.range(-2.0, 2.0)).collect();
+        let y = [1.0f32, 0.0, 1.0, 0.0];
+        let opt = OptConfig::default();
+        let teacher_logits = Trainer::new(&w, cfg, batch, opt.clone()).unwrap().logits(&x);
+        let mut plain = Trainer::new(&student_w, student_cfg, batch, opt.clone()).unwrap();
+        let student_logits = plain.logits(&x);
+        assert!(teacher_logits.iter().zip(&student_logits).any(|(a, b)| (a - b).abs() > 1e-3), "the student should not be the teacher");
+        let mean = |target: &dyn Fn(usize) -> f32| (0..batch).map(|i| bce_with_logits(student_logits[i], target(i))).sum::<f32>() / batch as f32;
+        // Without a teacher: the labels.
+        let loss = plain.train_step(&x, &y, 0.0);
+        assert!((loss - mean(&|i| y[i])).abs() < 1e-4, "{loss} against {}", mean(&|i| y[i]));
+        for (weight, temperature) in [(0.0f32, 1.0f32), (0.5, 1.0), (1.0, 2.0), (0.3, 4.0)] {
+            let teacher = Teacher { weights: &w, cfg, weight: weight as f64, temperature: temperature as f64 };
+            let mut tr = Trainer::with_teacher(&student_w, student_cfg, batch, opt.clone(), Some(teacher)).unwrap();
+            // The student's own logits are untouched by the teacher being in the graph.
+            for (a, b) in tr.logits(&x).iter().zip(&student_logits) {
+                assert!((a - b).abs() < 1e-5);
+            }
+            let want = mean(&|i| soft_target(y[i], teacher_logits[i], weight, temperature));
+            let loss = tr.train_step(&x, &y, 0.0);
+            assert!((loss - want).abs() < 1e-4, "weight {weight}, temperature {temperature}: {loss} against {want}");
+            // Only the student is exported, and a step moves it towards the target.
+            assert_eq!(tr.export().0.len(), student_w.0.len());
+            let before = tr.train_step(&x, &y, 1e-3);
+            for _ in 0..20 {
+                tr.train_step(&x, &y, 1e-3);
+            }
+            let after = tr.train_step(&x, &y, 0.0);
+            assert!(after < before, "weight {weight}: the loss went from {before} to {after}");
+        }
     }
 }

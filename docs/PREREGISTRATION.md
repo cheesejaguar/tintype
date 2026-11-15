@@ -980,6 +980,75 @@ enter: every score is required to be the same as before, at any cutoff.
 - **Looks at `test`.** These runs read every file of `test` but report no
   detection figure: scores are only compared between binaries.
 
+## INT8 linear layers on the frozen split: what was fixed before the look
+
+Written on 2026-11-14, after this workstream had scored 300 rows of `fit`
+(a rate probe) and started scoring `calibrate`, and before it computed
+anything on `test`. It applies the gate of
+[the CPU profile runbook](runbooks/cpu-profile-int8.md) to the frozen split
+of [the frozen evaluation runbook](runbooks/frozen-eval.md). `test` is not
+blind: it has been scored for the incumbent and for two processing-chain
+arms by other workstreams. This is this workstream's first look at it.
+
+- **One candidate, no choice among variants on `test`.** The INT8 simulation
+  `--device cpu-int8` with `TINTYPE_INT8=all` (weights and inputs of the
+  four linear layers of every block in eight bits, a range per token),
+  against the reference `--device cpu`, on copies of the released photo
+  model under `runs/ws8-frozen/` with the shipped spec unchanged in both.
+  The other variants were dropped on training-store images beforehand
+  (one range per view, seven-bit inputs) and are not run here.
+- **The student is not run.** It needs training; its commands stay as
+  written in the runbook.
+- **Nothing is fitted on `fit`.** Only the rate probe: 150 authentic and 150
+  generated `fit` rows drawn with seed 8, 75 files a second on either
+  engine. The rule fixed before the probe: score the whole of `calibrate`
+  and `test` if the four runs are projected under 16 minutes, otherwise a
+  seeded half. The projection is 14 minutes, so **every row of both sets is
+  scored**: 12,457 and 19,326.
+- **Scoring.** `tintype score` on the CPU, default profile (early exit, as
+  `detect` runs), one job at a time. Both engines keep the shipped
+  threshold, so the early-exit rule is the same on both sides.
+- **Cutoffs are frozen on `calibrate`, per engine.** For each engine and
+  each rate (1% and 0.1%), the cutoff is the empirical one over all
+  authentic rows of its own `calibrate` scores, originals and processed
+  copies pooled, on the score file's probability: the strictest value that
+  lets at most that share through, flagging strictly above it
+  (`metrics::empirical_cutoff`; computed by `scripts/int8-agreement.py
+  --frozen`). This departs from the runbook as first written, which called
+  `tintype calibrate` on each copy: that fits one cutoff per spec from
+  `--all-views` scores with a per-source rule, where two cutoffs per engine
+  from the same default-profile files are wanted here, by the same rule on
+  both sides. Nothing is selected on `calibrate`.
+- **What is reported on `test`**, at each engine's own frozen cutoffs, at
+  1% and at 0.1%: authentic rows flagged (all, clean, processed); recall on
+  clean generated rows (`transform` `-`), on processed generated rows (every
+  other `transform`, pooled) and on each of the twelve transforms; the
+  verdicts that differ between the engines, by class and slice; the
+  difference in mean view logit; rows that stop at a different early-exit
+  stage. Beside it, labelled as such, recall at each engine's own empirical
+  cutoff on `test`.
+- **The gate**, from the runbook: INT8's recall at most one point under the
+  32-bit engine's, at 1% and at 0.1%, on the clean slice, on the pooled
+  processed slice and on every transform slice of at least 100 generated
+  rows (each has 200, so one point is two detections there); and INT8's
+  false-positive rate on all authentic rows no higher than the one-sided
+  95% Clopper–Pearson upper bound of the 32-bit engine's, at both rates. It
+  passes only if all of that holds; any failure is reported as a failure.
+- **Speed is measured, not gated, here.** `cpu-int8` is a simulation in
+  single precision and cannot be faster than `cpu`; no integer kernel is in
+  the scoring path. Single-image latency (p50, p95), throughput and peak
+  memory are measured for both engines on 300 `test` rows drawn with seed 8
+  (150 authentic, 150 generated, originals and processed as drawn), the
+  engines taking turns, with nothing else running. The speed clause stays
+  what the runbook says it is: a bound from the kernel benchmark and the
+  profile's shares.
+- **Caveats that go with every number.** Authentic originals are camera
+  JPEGs of 12 megapixels or more and generated originals are PNGs of 256 to
+  1,024 pixels, so clean rows carry that confound; processed copies
+  re-encode both classes alike. Scenes and devices are far fewer than
+  parents. No platform round trips and no learned-codec copies are in the
+  split.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames

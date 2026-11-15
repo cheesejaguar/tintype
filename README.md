@@ -325,6 +325,7 @@ the newest blind photo batch.
 | `gpu` (default on macOS) | Apple GPU, 16-bit | The whole network is compiled into one MPSGraph, driven from Rust through `objc2`. Training uses the same graph builder, with autodiff and AdamW inside the graph. |
 | `gpu-f32` | Apple GPU, 32-bit | Matches PyTorch output to five decimals. |
 | `cpu` | Anywhere | An engine written for this network. The matrix products go to Accelerate on macOS and to pure-Rust kernels (NEON, AVX2 or AVX-512, chosen at run time) on Linux and Windows. |
+| `cpu-int8` | Anywhere, only when asked for | Not an engine to use: the `cpu` engine with the weights and inputs of the blocks' linear layers rounded to eight bits, to measure what an INT8 kernel would do to the scores before one is written. Slower than `cpu`, never chosen by `auto`, not offered by `serve`. `TINTYPE_INT8` picks what is rounded ([variants and results](docs/runbooks/cpu-profile-int8.md)). |
 
 Images are decoded and resized in Rust (`image`, `zune-jpeg`,
 `fast_image_resize`) on all cores and fed to the engine through a bounded
@@ -345,7 +346,8 @@ depends in its last bits on how many views run together).
 `TINTYPE_VIEW_REUSE=off` turns it off and `=on` forces it on everywhere;
 `TINTYPE_STATS=1` prints how many frames were decoded and how many views were
 prepared, scored and reused, on standard error
-([measurements](docs/runbooks/view-reuse.md)).
+([measurements](docs/runbooks/view-reuse.md)), and where the time of a CPU
+run goes, layer by layer ([profile](docs/runbooks/cpu-profile-int8.md)).
 
 Early exit also prepares only what it gets to: a view is cut out, and a
 video frame converted to RGB, when a stage is about to score it, so a clip

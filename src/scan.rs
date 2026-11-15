@@ -19,7 +19,7 @@ pub struct DemoOptions {
     /// Use the more sensitive photo profile.
     #[arg(long)]
     sensitive: bool,
-    /// Inference engine (auto, gpu, gpu-f32, or cpu).
+    /// Inference engine (auto, gpu, gpu-f32, or cpu; cpu-int8 simulates eight-bit linear layers).
     #[arg(long, default_value = "auto")]
     device: String,
 }
@@ -112,7 +112,7 @@ pub struct ScanOptions {
     /// Write one JSON object per file.
     #[arg(long)]
     json: bool,
-    /// Inference engine (auto, gpu, gpu-f32, or cpu).
+    /// Inference engine (auto, gpu, gpu-f32, or cpu; cpu-int8 simulates eight-bit linear layers).
     #[arg(long, default_value = "auto")]
     device: String,
     #[command(flatten)]
@@ -290,7 +290,7 @@ impl Scan {
         let (logits, _) = match exit {
             Some(e)
                 if !warm
-                    && !matches!(self.device, Device::Cpu)
+                    && !self.device.is_cpu()
                     && paths.len() <= 64 / det.spec.views.len() =>
             {
                 let (all, timing) = det.score_files(paths, threads);

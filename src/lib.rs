@@ -35,3 +35,5 @@ pub mod pool;
 pub mod eval;
 pub mod partial;
 pub mod stats;
+pub mod exit_probe;
+pub mod distill;

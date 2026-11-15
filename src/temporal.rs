@@ -468,7 +468,7 @@ pub fn dump(weights: &Path, manifests: &[PathBuf], out: &Path, o: &DumpOptions) 
             let n = p.at.len();
             let t = std::time::Instant::now();
             let tapped = emb.embed(&p.fit)?;
-            let other_logits = det.as_ref().map(|d| logits_of(d, &p.others, vl, o.device != Device::Cpu)).unwrap_or_default();
+            let other_logits = det.as_ref().map(|d| logits_of(d, &p.others, vl, !o.device.is_cpu())).unwrap_or_default();
             model_s += t.elapsed().as_secs_f64();
             anyhow::ensure!(tapped.logits.len() == n && other_logits.len() == n * others.len(), "the network returned {} + {} logits for {n} frames", tapped.logits.len(), other_logits.len());
             let per = emb.tokens_per_view() * dim;
