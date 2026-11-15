@@ -610,6 +610,12 @@ enum Cmd {
         /// Also write the per-item output: the global score and the local scores of every image.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Write the cutoffs of every rule at every `--fpr`, set on this file's authentic images, for use on another set.
+        #[arg(long, conflicts_with = "cutoffs")]
+        freeze_cutoffs: Option<PathBuf>,
+        /// Operate every rule at cutoffs written by `--freeze-cutoffs` on another set; nothing is refitted.
+        #[arg(long, conflicts_with = "disjoint_cutoff")]
+        cutoffs: Option<PathBuf>,
     },
 }
 
@@ -1089,7 +1095,7 @@ fn main() -> Result<()> {
             anyhow::ensure!(!items.is_empty(), "the manifests list no items");
             tintype::partial::score_windows(&weights, &items, &out, parse_device(&device)?, &tintype::partial::WindowOptions { stride, max_windows, batch, threads })
         }
-        Cmd::PartialReport { scores, manifest, edits, fpr, top_k, overlap, cutoff_on, disjoint_cutoff, out } => {
+        Cmd::PartialReport { scores, manifest, edits, fpr, top_k, overlap, cutoff_on, disjoint_cutoff, out, freeze_cutoffs, cutoffs } => {
             use tintype::partial;
             anyhow::ensure!(fpr.iter().all(|f| (0.0..1.0).contains(f)) && (0.0..1.0).contains(&overlap), "--fpr and --overlap are fractions, e.g. 0.01");
             let items = load_manifests(&manifest)?;
@@ -1105,7 +1111,14 @@ fn main() -> Result<()> {
             if !all_edits.is_empty() && entries.iter().all(|e| e.mask.is_none()) {
                 eprintln!("warning: none of the scored files has a mask in the edits files; localisation will be empty");
             }
-            let opts = partial::ReportOptions { fprs: fpr, top_k, overlap, cutoff_on, disjoint: disjoint_cutoff };
+            let frozen = match &cutoffs {
+                Some(p) => Some(partial::Frozen::parse(&std::fs::read_to_string(p)?)?),
+                None => None,
+            };
+            let opts = partial::ReportOptions { fprs: fpr, top_k, overlap, cutoff_on, disjoint: disjoint_cutoff, frozen };
+            if let Some(p) = freeze_cutoffs {
+                std::fs::write(&p, partial::Frozen::fit(&entries, &opts).text())?;
+            }
             print!("{}", partial::report(&entries, &opts));
             if let Some(out) = out {
                 std::fs::write(&out, partial::per_item(&entries, &opts))?;

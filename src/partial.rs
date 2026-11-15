@@ -502,11 +502,79 @@ pub struct ReportOptions {
     pub cutoff_on: String,
     /// Set cutoffs on half of the parents and report on the other half.
     pub disjoint: bool,
+    /// Cutoffs fixed on another set: used as they are, nothing is refitted here.
+    pub frozen: Option<Frozen>,
 }
 
 impl Default for ReportOptions {
     fn default() -> Self {
-        Self { fprs: vec![0.01, 0.001], top_k: 3, overlap: 0.1, cutoff_on: "parent".into(), disjoint: false }
+        Self { fprs: vec![0.01, 0.001], top_k: 3, overlap: 0.1, cutoff_on: "parent".into(), disjoint: false, frozen: None }
+    }
+}
+
+/// Cutoffs fixed on one set of authentic images, to be applied to another:
+/// per false-positive rate and pooling rule, the cutoff that rate gave
+/// there. Written by `partial-report --freeze-cutoffs`, read by `--cutoffs`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Frozen {
+    /// Authentic images the cutoffs were set on.
+    pub authentic: usize,
+    /// `(rate as a percentage, rule name)` to cutoff.
+    pub cutoffs: BTreeMap<(String, String), f32>,
+}
+
+impl Frozen {
+    /// The cutoffs of every rule at every rate of `o`, set on the authentic entries `o` selects.
+    pub fn fit(entries: &[Entry], o: &ReportOptions) -> Self {
+        let (authentic, _) = partition(entries, o);
+        let mut cutoffs = BTreeMap::new();
+        for &fpr in &o.fprs {
+            for st in stats_for(entries, o.top_k) {
+                if let Some(c) = cutoff(&authentic, st, fpr) {
+                    cutoffs.insert((percent(fpr), st.name()), c);
+                }
+            }
+        }
+        Self { authentic: authentic.len(), cutoffs }
+    }
+
+    pub fn get(&self, st: Stat, fpr: f64) -> Option<f32> {
+        self.cutoffs.get(&(percent(fpr), st.name())).copied()
+    }
+
+    /// `# authentic <n>`, then `rate%  rule  cutoff` rows, tab-separated.
+    pub fn text(&self) -> String {
+        let mut out = format!("# cutoffs frozen by tintype partial-report: authentic FPR in percent, rule, cutoff (logit)\n# authentic\t{}\n", self.authentic);
+        for ((rate, rule), c) in &self.cutoffs {
+            out.push_str(&format!("{rate}\t{rule}\t{c}\n"));
+        }
+        out
+    }
+
+    pub fn parse(text: &str) -> Result<Self> {
+        let mut out = Self::default();
+        for l in text.lines().filter(|l| !l.is_empty()) {
+            let f: Vec<&str> = l.split('\t').collect();
+            match f.as_slice() {
+                ["# authentic", n] => out.authentic = n.parse()?,
+                [first, ..] if first.starts_with('#') => {}
+                [rate, rule, c] => {
+                    out.cutoffs.insert((rate.to_string(), rule.to_string()), c.parse()?);
+                }
+                _ => bail!("bad cutoff line (need rate, rule, cutoff): {l}"),
+            }
+        }
+        ensure!(!out.cutoffs.is_empty(), "no cutoffs in the file");
+        Ok(out)
+    }
+}
+
+/// The cutoff a rule is operated at: the frozen one when there is one,
+/// otherwise the one the authentic entries here give.
+fn cutoff_at(authentic: &[&Entry], st: Stat, fpr: f64, o: &ReportOptions) -> Option<f32> {
+    match &o.frozen {
+        Some(frozen) => frozen.get(st, fpr),
+        None => cutoff(authentic, st, fpr),
     }
 }
 
@@ -570,7 +638,7 @@ fn cutoff(authentic: &[&Entry], st: Stat, fpr: f64) -> Option<f32> {
 
 pub fn flag_table(entries: &[Entry], stats: &[Stat], fpr: f64, o: &ReportOptions) -> FlagTable {
     let (authentic, reported) = partition(entries, o);
-    let cutoffs: Vec<Option<f32>> = stats.iter().map(|&st| cutoff(&authentic, st, fpr)).collect();
+    let cutoffs: Vec<Option<f32>> = stats.iter().map(|&st| cutoff_at(&authentic, st, fpr, o)).collect();
     let rows = slices(&reported)
         .into_iter()
         .map(|(name, idx)| {
@@ -578,7 +646,8 @@ pub fn flag_table(entries: &[Entry], stats: &[Stat], fpr: f64, o: &ReportOptions
             (name, idx.len(), flagged)
         })
         .collect();
-    FlagTable { fpr, authentic: authentic.len(), allowed: (fpr * authentic.len() as f64).floor() as usize, cutoffs, rows }
+    let set_on = o.frozen.as_ref().map_or(authentic.len(), |f| f.authentic);
+    FlagTable { fpr, authentic: set_on, allowed: (fpr * set_on as f64).floor() as usize, cutoffs, rows }
 }
 
 /// How well the grid windows above a cutoff match the masks of one slice.
@@ -682,9 +751,12 @@ pub fn report(entries: &[Entry], o: &ReportOptions) -> String {
         out.push('\n');
     };
     let (authentic, reported) = partition(entries, o);
-    line(format!("Partial edits: {} scored images, {} reported, cutoffs set on {} authentic `{}` images{}.", entries.len(), reported.len(), authentic.len(), o.cutoff_on, if o.disjoint { " of the other half of the parents".to_string() } else { format!(" (the same images the `{}` row reports: in-sample)", o.cutoff_on) }));
+    match &o.frozen {
+        Some(frozen) => line(format!("Partial edits: {} scored images, {} reported, at cutoffs frozen on {} authentic images of another set. Nothing was refitted here: the authentic rows show what those cutoffs let through on this set.", entries.len(), reported.len(), frozen.authentic)),
+        None => line(format!("Partial edits: {} scored images, {} reported, cutoffs set on {} authentic `{}` images{}.", entries.len(), reported.len(), authentic.len(), o.cutoff_on, if o.disjoint { " of the other half of the parents".to_string() } else { format!(" (the same images the `{}` row reports: in-sample)", o.cutoff_on) })),
+    }
     line("Every pooling rule is operated at its own cutoff, the one that lets the stated share of those authentic images through, so the columns compare at equal authentic FPR. Cells are images flagged.".into());
-    if stats.is_empty() || authentic.is_empty() {
+    if stats.is_empty() || (authentic.is_empty() && o.frozen.is_none()) {
         line(format!("\nNothing to compare: no `{}` images to set cutoffs on, or no pooling rule every image has a value for.", o.cutoff_on));
         return out;
     }
@@ -702,7 +774,7 @@ pub fn report(entries: &[Entry], o: &ReportOptions) -> String {
     if stats.contains(&Stat::GridMax) {
         line(format!("\n## Localisation from the grid windows\n\nA window counts as edited when the mask covers more than {:.0}% of it. A window is flagged when its logit is above the `grid max` cutoff, so an authentic image has a flagged window at the stated rate. \"Top window on the edit\" needs no cutoff: the share of edited images whose highest-scoring window is an edited one, beside what picking a window at random would give.", o.overlap * 100.0));
         for &fpr in &o.fprs {
-            let Some(cut) = cutoff(&authentic, Stat::GridMax, fpr) else { continue };
+            let Some(cut) = cutoff_at(&authentic, Stat::GridMax, fpr, o) else { continue };
             line(format!("\n### Window cutoff {cut:.3} ({}% authentic FPR for `grid max`)\n", percent(fpr)));
             line("| slice | images | windows | edited | flagged | flagged and edited | flagged, touching the edit | precision | recall | images with a flagged edited window | top window on the edit | by chance |".into());
             line("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|".into());
@@ -739,7 +811,7 @@ pub fn report(entries: &[Entry], o: &ReportOptions) -> String {
 /// `--fpr` as `x,y,w,h,logit,coverage`.
 pub fn per_item(entries: &[Entry], o: &ReportOptions) -> String {
     let (authentic, reported) = partition(entries, o);
-    let cut = o.fprs.first().and_then(|&f| cutoff(&authentic, Stat::GridMax, f));
+    let cut = o.fprs.first().and_then(|&f| cutoff_at(&authentic, Stat::GridMax, f, o));
     let mut out = String::from("# path\ttransform\tkind\tparent_id\tgenerated\tglobal_prob\tglobal_logit\tviews_mean\tgrid_max\tgrid_top_k\twindows\tedited_area\tflagged\ttop_window\ttop_window_coverage\n");
     let num = |v: Option<f32>| v.map_or("-".to_string(), |v| format!("{v:.5}"));
     for e in reported {
@@ -1397,6 +1469,39 @@ mod tests {
         let wrong = Scored { size: (100, 100), ..scored("a.jpg") };
         assert!(join(vec![wrong], &items, &edits).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn frozen_cutoffs_are_applied_as_they_are_and_nothing_is_refitted() {
+        // The set the cutoffs come from: authentic view means 0..0.99, grid maxima twice that.
+        let fit: Vec<Entry> = (0..100).map(|i| entry(&format!("c{i}"), "parent", "parent", false, i as f32 / 100.0, &[i as f32 / 50.0, 0.0], None)).collect();
+        let o = ReportOptions { fprs: vec![0.01, 0.001], ..Default::default() };
+        let frozen = Frozen::fit(&fit, &o);
+        assert_eq!(frozen.authentic, 100);
+        assert_eq!((frozen.get(Stat::ViewsMean, 0.01), frozen.get(Stat::GridMax, 0.01), frozen.get(Stat::GridMax, 0.001)), (Some(0.98), Some(1.96), Some(1.98)));
+        // The file round-trips.
+        let again = Frozen::parse(&frozen.text()).unwrap();
+        assert_eq!(again, frozen);
+        assert!(Frozen::parse("# nothing\n").is_err());
+        // Another set, whose authentic images score higher: at its own cutoffs it would flag 1%, at the frozen ones it flags more.
+        let mut other: Vec<Entry> = (0..100).map(|i| entry(&format!("t{i}"), "parent", "parent", false, i as f32 / 50.0, &[i as f32 / 25.0, 0.0], None)).collect();
+        for i in 0..10 {
+            other.push(entry(&format!("t{i}"), "generated-paste-hard-area0.05", "generated-paste", true, 0.5, &[0.0, 9.0], Some(right_half())));
+        }
+        let stats = [Stat::ViewsMean, Stat::GridMax];
+        let own = flag_table(&other, &stats, 0.01, &o);
+        assert_eq!(own.rows.iter().find(|r| r.0 == "parent").unwrap().2, vec![1, 1]);
+        let with = ReportOptions { frozen: Some(again), ..o };
+        let t = flag_table(&other, &stats, 0.01, &with);
+        assert_eq!(t.cutoffs, vec![Some(0.98), Some(1.96)]);
+        // View means above 0.98 are i >= 50; grid maxima above 1.96 likewise.
+        assert_eq!(t.rows.iter().find(|r| r.0 == "parent").unwrap().2, vec![50, 50]);
+        assert_eq!(t.rows.iter().find(|r| r.0.starts_with("generated")).unwrap().2, vec![0, 10]);
+        assert_eq!((t.authentic, t.allowed), (100, 1));
+        let text = report(&other, &with);
+        assert!(text.contains("at cutoffs frozen on 100 authentic images of another set") && text.contains("| parent | 100 | 50/100 (50.0%) |"), "{text}");
+        // The per-item output and the localisation use the frozen grid cutoff too.
+        assert!(per_item(&other, &with).lines().any(|l| l.starts_with("t0/generated") && l.contains("\t224,0,224,224,9.00000,1.000\t")));
     }
 
     #[test]
