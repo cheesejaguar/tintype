@@ -895,6 +895,13 @@ pub fn frames_uniform_range(path: &Path, n: usize, max_seconds: f64, from: usize
     yuv::uniform_range(&mut r, n, max_seconds, from, to, path).map_err(|_| r.why_empty(path))
 }
 
+/// As [`frames_uniform`], with each frame's presentation time and position
+/// in the stream and a trace of every frame read (see [`yuv::uniform_timed`]).
+pub fn frames_uniform_timed(path: &Path, n: usize, max_seconds: f64, follow: usize, blur: usize) -> Result<(Vec<yuv::Timed>, yuv::Trace)> {
+    let mut r = open(path, None)?;
+    yuv::uniform_timed(&mut r, n, max_seconds, follow, blur, path).map_err(|_| r.why_empty(path))
+}
+
 pub fn frames_first(path: &Path, n: usize) -> Result<Vec<Rgb>> {
     let mut r = open(path, None)?;
     yuv::first(&mut r, n, true, path).map_err(|_| r.why_empty(path))
