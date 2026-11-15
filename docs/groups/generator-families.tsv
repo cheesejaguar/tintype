@@ -1,0 +1,180 @@
+# Starter map from generator names to decoder families, for
+# scripts/group-manifest.py (which writes the family into manifest column 8)
+# and, resolved to exact names with --write-map, for `tintype train
+# --family-map` and `tintype sampling-shares --family-map`.
+#
+# Tab-separated: generator glob, dataset glob, family, basis, note. Matching
+# ignores case; the first row that matches wins; a generator that matches no
+# row is `unknown`. Real items are not mapped (their family column stays
+# empty).
+#
+# Families: latent-diffusion, pixel-diffusion, gan, autoregressive-vq,
+# hybrid, video-diffusion, commercial-unknown, other, unknown.
+#
+# Basis says what an assignment rests on:
+#   name         the name itself states the family
+#   dataset-doc  the dataset's own documentation states it
+#   model-doc    the model's paper or model card, as recalled when this file
+#                was written; not looked up again. Confirm before relying on
+#                a row for a hold-out or a report slice
+#   closed       a closed commercial service: family commercial-unknown
+#   none         nothing to go on: family unknown
+#
+# This is a proposal for the maintainer to correct, not a record of fact.
+reddit-wild	*	unknown	none	posts collected from Reddit; the generator of each image is not recorded
+defactify-gen*	*	unknown	none	anonymised generator labels of the Defactify train split; which label is which generator is not recorded here
+communityai	*	unknown	none	a mixed collection of community images, not one generator
+wildscrape	*	unknown	none	a mixed collection of community images, not one generator
+rddm10k	*	unknown	none	family not evident from the name
+amateur-photography-*	*	unknown	none	family not evident from the name
+anima-preview*	*	unknown	none	family not evident from the name
+realism_riiwa	*	unknown	none	family not evident from the name
+ernie-image*	*	unknown	none	family not evident from the name
+openforensics_fake	*	other	dataset-doc	face swap or reenactment of a real photo, not full generation
+faceforensics++ deepfakes	*	other	dataset-doc	face swap or reenactment of a real photo, not full generation
+crn	*	other	model-doc	feed-forward image synthesis or enhancement networks of the CNNDetection test set (no GAN, diffusion or tokenizer decoder)
+imle	*	other	model-doc	feed-forward image synthesis or enhancement networks of the CNNDetection test set (no GAN, diffusion or tokenizer decoder)
+san	*	other	model-doc	feed-forward image synthesis or enhancement networks of the CNNDetection test set (no GAN, diffusion or tokenizer decoder)
+sitd	*	other	model-doc	feed-forward image synthesis or enhancement networks of the CNNDetection test set (no GAN, diffusion or tokenizer decoder)
+*/*	commfor-small	latent-diffusion	dataset-doc	Community Forensics: its systematically collected generators are latent diffusion pipelines from the Hugging Face hub, named owner/repository
+vqgan	*	autoregressive-vq	name	VQ tokenizer decoder
+tamingtransformers	*	autoregressive-vq	model-doc	VQGAN tokens sampled by an autoregressive transformer
+vqdiffusion	*	autoregressive-vq	name	discrete diffusion over VQ tokens: the final decoder is a VQ tokenizer, the sampler is not autoregressive
+genimage-vqdm	*	autoregressive-vq	name	discrete diffusion over VQ tokens: the final decoder is a VQ tokenizer, the sampler is not autoregressive
+janus*	*	autoregressive-vq	model-doc	autoregressive over VQ image tokens
+glm-image	*	hybrid	model-doc	autoregressive generator with a diffusion decoder
+hunyuanimage-3.0	*	hybrid	model-doc	autoregressive multimodal backbone with diffusion over continuous image latents
+stylegan*	*	gan	name	
+biggan	*	gan	name	
+genimage-biggan	*	gan	name	
+gigagan	*	gan	name	
+progan	*	gan	name	
+projectedgan	*	gan	name	
+r3gan	*	gan	name	
+attgan	*	gan	name	
+began	*	gan	name	
+cramergan	*	gan	name	
+infomaxgan	*	gan	name	
+mmdgan	*	gan	name	
+relgan	*	gan	name	
+sngan	*	gan	name	
+stgan	*	gan	name	
+cyclegan	*	gan	name	
+gaugan	*	gan	name	
+stargan	*	gan	name	
+gansformer	*	gan	name	
+sgxl	*	gan	model-doc	GAN whose name does not say so (StyleGAN-XL, StyleSAN-XL, StyleSwin, CIPS; the which-face-is-real faces are StyleGAN)
+stylesanxl	*	gan	model-doc	GAN whose name does not say so (StyleGAN-XL, StyleSAN-XL, StyleSwin, CIPS; the which-face-is-real faces are StyleGAN)
+styleswin	*	gan	model-doc	GAN whose name does not say so (StyleGAN-XL, StyleSAN-XL, StyleSwin, CIPS; the which-face-is-real faces are StyleGAN)
+styleswim	*	gan	model-doc	GAN whose name does not say so (StyleGAN-XL, StyleSAN-XL, StyleSwin, CIPS; the which-face-is-real faces are StyleGAN)
+cips	*	gan	model-doc	GAN whose name does not say so (StyleGAN-XL, StyleSAN-XL, StyleSwin, CIPS; the which-face-is-real faces are StyleGAN)
+wfir	*	gan	model-doc	GAN whose name does not say so (StyleGAN-XL, StyleSAN-XL, StyleSwin, CIPS; the which-face-is-real faces are StyleGAN)
+gpt-image*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+gpt4o	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+4o-*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+dall*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+nano-banana*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+nano_banana*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+imagen*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+seedream*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+midjourney*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+genimage-midjourney	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+ideogram*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+recraft*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+firefly	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+grok*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+aurora-*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+mystic	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+frames-*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+halfmoon-*	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+qwen-image-2.0-pro	*	commercial-unknown	closed	closed service; its decoder is not published in a form that can be checked
+pika*	*	commercial-unknown	closed	closed video service
+luma*	*	commercial-unknown	closed	closed video service
+vidu*	*	commercial-unknown	closed	closed video service
+kling*	*	commercial-unknown	closed	closed video service
+sora*	*	commercial-unknown	closed	closed video service
+veo*	*	commercial-unknown	closed	closed video service
+gen-3*	*	commercial-unknown	closed	closed video service
+gen2	*	commercial-unknown	closed	closed video service
+gen-2	*	commercial-unknown	closed	closed video service
+jimeng	*	commercial-unknown	closed	closed video service
+marey	*	commercial-unknown	closed	closed video service
+moonvalley	*	commercial-unknown	closed	closed video service
+morphstudio	*	commercial-unknown	closed	closed video service
+hailuo-*	*	commercial-unknown	closed	closed video service
+minimax-*	*	commercial-unknown	closed	closed video service
+pixverse-*	*	commercial-unknown	closed	closed video service
+seedance*	*	commercial-unknown	closed	closed video service
+wan-video-2.5	*	commercial-unknown	closed	closed video service
+wan-2.6-flash	*	commercial-unknown	closed	closed video service
+glide	*	pixel-diffusion	model-doc	diffusion in pixel space with diffusion upsamplers
+genimage-glide	*	pixel-diffusion	model-doc	diffusion in pixel space with diffusion upsamplers
+genimage-adm	*	pixel-diffusion	model-doc	diffusion in pixel space with diffusion upsamplers
+sd-*	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+sdxl*	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+sd3*	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+stable-diffusion*	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+latent_diffusion	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+genimage-sd15	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+*-sdxl	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+animagine-xl*	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+cyberrealistic-xl*	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+novaanimexl*	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+realvisxl*	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+blip-diffusion	*	latent-diffusion	name	Stable Diffusion family or a fine-tune named after it
+flux*	*	latent-diffusion	name	FLUX family (latent flow matching); the pro and max variants are served by API only
+openflux*	*	latent-diffusion	name	FLUX family (latent flow matching); the pro and max variants are served by API only
+twbabeflux*	*	latent-diffusion	name	FLUX family (latent flow matching); the pro and max variants are served by API only
+black-forest-labs/flux*	*	latent-diffusion	name	FLUX family (latent flow matching); the pro and max variants are served by API only
+playground*	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+kandinsky*	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+hidream*	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+qwen-image	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+qwen-image-2512	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+z-image*	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+tongyi-mai/z-image*	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+efficient-large-model/sana*	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+tiny-random-sana	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+chroma	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+lumina-*	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+kolors*	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+hunyuan-image-2.1	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+genimage-wukong	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+lfm	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+codiff	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+dit10k	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+sit10k	*	latent-diffusion	model-doc	latent diffusion or latent flow model whose name does not say so
+realistic_vision*	*	latent-diffusion	model-doc	community checkpoint of Stable Diffusion 1.5 or SDXL
+absolute_reality	*	latent-diffusion	model-doc	community checkpoint of Stable Diffusion 1.5 or SDXL
+cyberrealistic-pony*	*	latent-diffusion	model-doc	community checkpoint of Stable Diffusion 1.5 or SDXL
+pony	*	latent-diffusion	model-doc	community checkpoint of Stable Diffusion 1.5 or SDXL
+noobai	*	latent-diffusion	model-doc	community checkpoint of Stable Diffusion 1.5 or SDXL
+illustrious	*	latent-diffusion	model-doc	community checkpoint of Stable Diffusion 1.5 or SDXL
+ip-adapter*	*	latent-diffusion	model-doc	identity adapter on a Stable Diffusion model
+instantid	*	latent-diffusion	model-doc	identity adapter on a Stable Diffusion model
+infinite-id	*	latent-diffusion	model-doc	identity adapter on a Stable Diffusion model
+photomaker	*	latent-diffusion	model-doc	identity adapter on a Stable Diffusion model
+opensora	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+zeroscope	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+cogvideox	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+hunyuanvideo	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+hunyuan-video	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+hunyuan-1.5	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+easyanimate	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+ltx*	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+animatediff	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+svd	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+pyramid-flow	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+wan	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+wan-video-2.1	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+wan-video-2.2	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+*wan2.1*	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+mochi 1	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+videocrafter	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+crafter	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+repvideo	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+seine	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+lavie	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+modelscope	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+show_1	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)
+hotshot	*	video-diffusion	model-doc	open video diffusion model (frames decoded by a video autoencoder)

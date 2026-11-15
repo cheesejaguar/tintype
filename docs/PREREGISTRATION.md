@@ -570,6 +570,113 @@ Nothing here changes a released file: every spec is a copy under `runs/`.
   whatever the verdict, the released cutoffs, margins and specs stay as
   they are.
 
+## Source and family matching on the frozen split: what was fixed before the first look
+
+Written on 2026-11-14 while the two arms below were training, before any
+of their checkpoints existed and so before anything of theirs was scored,
+on `calibrate`, on `test` or anywhere else. It applies the gate of
+[the source and family runbook](runbooks/source-family-matching.md#the-gate)
+to [the frozen split](runbooks/frozen-eval.md#as-built-on-2026-11-14) and
+fixes what that gate left open.
+
+- **Candidates**, each trained once (`--seed 1`) from the phase-3
+  checkpoint on the 25 phase-6 manifests with 8,000 steps, batch 32,
+  learning rate 2e-5, warmup 300 and messenger probability 0.25:
+  - **B, family-weighted**: `--family-map runs/ws4/families.tsv
+    --weights-file runs/ws4/family-weights.tsv --family-weight other=1`.
+    Each AI family's share of AI draws is moved to the square root of what
+    it is (latent diffusion 72.4% → 39.6%, VQ and autoregressive 1.65% →
+    5.99%, hybrid 0.57% → 3.53%; printed by `--print-sampling` before the
+    run).
+  - **C, source-matched**: `--family-weight reddit-wild=3.85`, which draws
+    Reddit-posted generated images as often in the AI class (4.26%) as
+    Reddit-posted photos are drawn in the real class (4.25%).
+- **Control.** Arm A of the runbook, the current mix, is the recipe
+  workstream 1 has already trained twice on the same manifests from the
+  same checkpoint with the same budget (`--seed 1` and `--seed 2`, no
+  chain flags, built from that workstream's branch at `7156565`). It is
+  not trained a third time: those two runs are the control, with their
+  `calibrate` and `test` score files as that workstream wrote them. The
+  default sampler of this branch draws what that build's sampler draws, so the
+  recipes are the same; the builds are not, and that is said wherever the
+  comparison is reported. Seed 1 is the control the gate is read against;
+  seed 2 shows how much one recipe moves between seeds.
+- **Not run.** Arm D needs reconstruction stores, which do not exist (the
+  licence checks and the generation come first). The refresh arms need
+  stores of new generators that are neither in training nor in the frozen
+  split; none is on disk, and the split's own families may not be trained
+  on while it is in use.
+- **Operating points**: 1% and 0.1%. Each model is read at its own
+  cutoffs, fitted on all authentic rows of `calibrate` with `tintype
+  calibrate --profile photo --target-fpr 0.01` and `--target-fpr 0.001` on
+  copies of its checkpoint. Recall at the empirical 1% and 0.1% cutoffs of
+  `test` itself is reported beside it and labelled as a ranking measure.
+- **Fitted on `fit`**: nothing. **Selected on `calibrate`**: nothing but
+  the two cutoffs. The checkpoint is the last step of each run; no
+  checkpoint, weight or share is chosen after seeing a score.
+- **Measures**, printed by `scripts/family-gate.py` from the `test` score
+  files and manifest:
+  - *New families*: `llamagen`, `var`, `infinity`, `rar`, `switti`,
+    `open-magvit2`, which no training manifest lists. `infinity` and `rar`
+    are also absent from `calibrate` and are reported by name. *Older
+    families*: `janus-pro`, `flux`, `sd3`.
+  - A family's recall is over its unprocessed test items; macro recall is
+    the unweighted mean over families (every family here has more than 100
+    such items).
+  - *Processed slice*: every `transform` other than none: 2,400 generated
+    and 2,400 authentic rows from 200 parents per class.
+  - *Authentic sources*: unprocessed photos flagged per `source_id`,
+    `csafe-iphone14pro` (held out whole) among them.
+  - Differences are candidate minus control seed 1, with a 95% interval
+    from a bootstrap over parents, and are set beside control seed 2 minus
+    control seed 1.
+- **The gate.** A candidate passes if, at the cutoffs frozen on
+  `calibrate`:
+  1. new-family macro recall is higher than the control's at 1%, the
+     interval of the difference is above zero, **and the difference is
+     larger than the absolute difference between the two control seeds**
+     on that measure; and it is not lower at 0.1%;
+  2. at both rates, older-family macro recall and recall on processed
+     copies are not lower than the control's by more than one point;
+  3. at both rates, the false-positive rate on processed authentic copies
+     is not higher than the control's.
+  The seed condition in item 1 is added here: each candidate is one run,
+  and a difference no larger than what the control shows between its own
+  seeds is reported as within seed-to-seed movement, not as a pass. A
+  difference in items 2 and 3 that is inside the two control seeds' range
+  is reported as such.
+- **Cost.** Neither arm changes the network, the views or the spec, so
+  latency, memory and the route rate are the control's by construction and
+  are not measured.
+- **What is expected, said now.** Neither arm adds an image of any new
+  family. Arm B draws the VQ, autoregressive and hybrid generators that
+  training does have about four times as often and latent diffusion about
+  half as often; if family weighting helps anywhere on this split it is on
+  the autoregressive families, and if it costs anywhere it is on `flux`
+  and `sd3`. Arm C changes one generator's share; the split has no real
+  platform round trips, so the simulated repost rows are the only place it
+  could show, and little is expected.
+- **Diagnostic, which chooses nothing**: both arms scored on confirmation
+  batch 7 with every view and compared with the two control runs at
+  empirical false-positive rates. The frozen split's clean rows are camera
+  originals against small PNGs and cannot show a loss of ranking on
+  ordinary photo sets; batch 7 can. It is archived development data.
+- **Looks at `test`**: one per candidate, logged in the runbook. `test`
+  has been looked at before for the released model and for workstream 1's
+  arms. A pass makes an arm a ship *candidate* under
+  [the selection rule](runbooks/frozen-eval.md#the-selection-rule), which
+  still asks for a second seed, a re-calibration, an early-exit re-check
+  and a fresh blind batch.
+
+**Added on 2026-11-14 at about 19:20, before the run it describes.** A
+second seed of arm B (family-weighted): the same command with `--seed 2`,
+calibrated on `calibrate` at 1% and 0.1% and looked at once on `test` with
+every view, then confirmation 7 as a diagnostic. Nothing in the gate or
+its conditions changes. It is read beside the control's second seed and
+beside the two-seed means, and the question it answers is whether the
+seed-1 differences (new-family macro recall, processed recall, authentic
+copies flagged) repeat.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames

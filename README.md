@@ -466,7 +466,8 @@ shipped here. The Community Forensics weights are MIT.
 | `verify-models`, `freeze-set`, `verify-set` | Verify released weights and reproduce the exact evaluation inputs |
 | `split-groups`, `verify-split` | Divide manifests into fit, calibrate and test sets that keep parents, scenes, sources and generator families together, and fail if any cross ([runbook](docs/runbooks/frozen-eval.md)) |
 | `data` | Download and prepare a dataset plan |
-| `train` | Fine-tune on image and video manifests |
+| `train` | Fine-tune on image and video manifests. `--manifest-weight`, `--family-weight`, `--weights-file` and `--family-map` weight manifests and generator families, `--replay-manifest` with `--replay-share` draws a fixed share from a replay pool, `--print-sampling` prints the resulting shares and stops; with none of them sampling is unchanged ([runbook](docs/runbooks/source-family-matching.md)) |
+| `sampling-shares` | How often a training recipe draws each manifest, generator family and generator, per class, without training. Runs on every platform |
 | `finalize`, `finalize-video`, `calibrate` | Freeze a checkpoint and fit its operating points. `calibrate --rule bound` fits the threshold to a Clopper–Pearson upper bound over independent authentic items instead of a quantile, and says how many items it needs ([runbook](docs/runbooks/calibration-abstention.md)) |
 | `refit-exit` | Re-check an early-exit schedule against a new threshold from all-views score files, and refit its margins; runs on every platform and scores nothing |
 | `evaluate` | Score a whole suite with Tintype and the reference detectors, print tables |
