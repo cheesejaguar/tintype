@@ -11,8 +11,11 @@ selects a model, a cutoff or a pooling rule: that needs the frozen split of
 **Status.** The tooling exists and is tested: `paste-edits`,
 `score-windows`, `partial-report`, `detect --coverage`,
 `scripts/build-splice-clips.py`, `scripts/report-splice-clips.py`. The
-numbers below are **exploratory diagnostics on development data**, there to
-show that the pipeline runs and what it measures. The supervised patch
+pasted-region part has been run on the frozen split with cutoffs frozen on
+`calibrate` ([Frozen split](#frozen-split)): **the gate failed on cutoff
+transfer**, with the local and control conditions met. The numbers in
+sections 3 and 9 are **exploratory diagnostics on development data**, there
+to show that the pipeline runs and what it measures. The supervised patch
 head, the self-blended-face ablation and every external edit set are
 specified here and not built: they need downloads or a trainer change
 (see [What is not done](#what-is-not-done)).
@@ -543,21 +546,227 @@ What this check says, and what it does not:
 
 ## Frozen split
 
-The pre-registration is in [PREREGISTRATION.md](../PREREGISTRATION.md)
-("Partial edits on the frozen split"), committed as `84b2040` before any
-`test`-side composite existed.
+Sections 1 and 2 on the frozen independent split
+([frozen-eval.md](frozen-eval.md)): pasted-region composites from the
+split's own originals, which the detector never trained on, then the
+global, top-k and dense-grid rules at equal authentic FPR, with cutoffs
+frozen on `calibrate` and reported on `test`. The pre-registration is in
+[PREREGISTRATION.md](../PREREGISTRATION.md) ("Partial edits on the frozen
+split"), committed as `84b2040` before any `test`-side composite existed.
+Sections 4 to 9 (inpainting sets, the patch head, self-blended faces,
+video) were not run: they need downloads or training that does not exist.
+
+**Verdict: the gate failed, at 1% and at 0.1%, on the transfer condition.**
+The frozen cutoff of the *global* score let through 1.8% and 0.6% of the
+untouched `test` images, above both targets, so the comparison at frozen
+cutoffs is not at equal authentic FPR. The other two conditions held:
+`grid max` found more of a parent's edits than the global score (53.2%
+against 21.5% of the generated pastes at the 1% cutoffs, 33.8% against
+18.2% at the 0.1% cutoffs), and no control slice was flagged more than
+untouched images. Nothing ships either way.
+
+### What subset of the split is usable, and why
+
+A region is pasted at native resolution, so a donor has to be at least as
+large as the region. The split's authentic originals are camera JPEGs of 12
+megapixels or more and its generated originals are PNGs of 256 to
+1,024 px. A region of 1% of such a photo is about 350 px square, so:
+
+- **Donors: the 1,024 px generators only.** In `calibrate` FLUX.1-dev,
+  FLUX.1-Krea and SD3 (1,200 of 4,200 generated originals); in `test`
+  those three and Infinity, a held-out family (2,700 of 7,200). Switti
+  (512 px), Janus-Pro and LlamaGen (384 px), VAR, Open-MAGVIT2 and RAR
+  (256 px) cannot donate a region of this size and are not measured.
+- **Areas: 1%, 2% and 3% of the image** (about 350, 490 and 600 px
+  square), not the 2% to 25% of the development diagnostic. A 12% region
+  of these photos would be larger than any generated image in the split.
+- **Parents: authentic originals with a longer side of at most 4,800 px**
+  (24 of the originals passed over while shuffling were larger; a 3%
+  region of them does not fit a 1,024 px donor). Processed copies are
+  never parents.
+
+The split's caveats apply: authentic and generated originals differ in
+format and size, FloreView is 36 scenes on 46 phones and CSAFE ten units of
+one phone model, there are no platform round trips or learned-codec copies,
+and `test` had already been scored for the incumbent and two
+processing-chain arms. This workstream looked at it once.
+
+### Commands
+
+```bash
+mkdir -p runs/ws9 && cp models/tintype.safetensors models/tintype.json runs/ws9/
+F=<the split>/data/frozen-eval
+for side in calibrate test; do
+  python3 -I scripts/prepare-partial-store.py --set $F/$side.tsv --out runs/frozen9/$side \
+    --chunks 4 --chunk-rows 30 --pool 1000 --seed 1
+  for k in 0 1 2 3; do            # one chunk at a time: about 2 GB of composites each
+    tintype paste-edits --real runs/frozen9/$side/real-$k.tsv --fake runs/frozen9/$side/donors.tsv \
+      --out runs/frozen9/$side/store-$k --parents 25 --areas 0.01,0.02,0.03 --blends hard,feather \
+      --max-side 4800 --dataset partial-paste-frozen --seed 1
+    tintype score-windows --weights runs/ws9/tintype.safetensors \
+      --manifest runs/frozen9/$side/store-$k/manifest.tsv --out runs/frozen9/$side/windows-$k.tsv \
+      --stride 224 --max-windows 128
+    rm -rf runs/frozen9/$side/store-$k/img
+  done
+  tintype score-windows --weights runs/ws9/tintype.safetensors --manifest runs/frozen9/$side/pool.tsv \
+    --out runs/frozen9/$side/windows-pool.tsv --stride 224 --max-windows 128
+  cat runs/frozen9/$side/windows-{0,1,2,3,pool}.tsv > runs/frozen9/$side/windows.tsv
+done
+M() { printf -- '--manifest runs/frozen9/%s/store-0/manifest.tsv --manifest runs/frozen9/%s/store-1/manifest.tsv --manifest runs/frozen9/%s/store-2/manifest.tsv --manifest runs/frozen9/%s/store-3/manifest.tsv --manifest runs/frozen9/%s/pool.tsv' $1 $1 $1 $1 $1; }
+
+# calibrate: set the cutoffs, choose the local rule
+tintype partial-report --scores runs/frozen9/calibrate/windows.tsv $(M calibrate) --fpr 0.01,0.001 \
+  --freeze-cutoffs runs/frozen9/calibrate-cutoffs.tsv --out runs/frozen9/calibrate-items.tsv
+# test: the frozen cutoffs, then the same at test's own cutoffs (empirical), then the gate
+tintype partial-report --scores runs/frozen9/test/windows.tsv $(M test) --fpr 0.01,0.001 \
+  --cutoffs runs/frozen9/calibrate-cutoffs.tsv --out runs/frozen9/test-items.tsv
+tintype partial-report --scores runs/frozen9/test/windows.tsv $(M test) --fpr 0.01,0.001
+python3 -I scripts/partial-gate.py --items runs/frozen9/test-items.tsv \
+  --cutoffs runs/frozen9/calibrate-cutoffs.tsv --local "grid max"
+```
+
+Tooling at commit `ab4808d`; the binary that built and scored both sides
+was built from it (later commits change tests and documents only).
+Weights: the released photo model, copied to `runs/ws9/`. Hardware: Apple
+M6, 12 cores, 32 GB, macOS 27.2, GPU engine at half precision, shared with
+another job, so no timing is reported. Per side: 100 parents in four
+chunks of 25, 20 slices each, and 1,000 further untouched originals:
+2,998 images on `calibrate` (two 3% generated pastes found no donor that
+fits) and 3,000 on `test`, about 116 grid windows per image (a 12-megapixel
+photo gets about 13 × 9 windows with gaps of 100 to 130 px between them:
+the cap of 128 was fixed in advance as a cost bound). Composites are
+deleted; the scores, cutoffs, manifests, edit geometry and reports are in
+[docs/results/partial-edits-frozen](../results/partial-edits-frozen/README.md).
 
 ### Log
 
-- 14 November 2026, `calibrate` side built and scored at `84b2040`
-  (tooling at `ab4808d`). 100 parents in four chunks of 25, 1,998
-  composites and controls (two generated pastes of 3% found no donor that
-  fits), and the pool of 1,000 untouched originals: 2,998 images. Cutoffs
-  frozen on the 1,100 untouched images:
+- 14 November 2026, `calibrate` built and scored. Cutoffs frozen on its
+  1,100 untouched images (11 and 1 false positives allowed):
   [calibrate-cutoffs.tsv](../results/partial-edits-frozen/calibrate-cutoffs.tsv).
-  At the 1% cutoff, in-sample, `grid max` flags 304 of the 598
-  `calibrate`-side generated pastes and `grid top-3` 183, so **the local
-  rule of the gate is `grid max`**. Chosen before the `test` look.
+  In-sample at the 1% cutoffs, of the 598 `calibrate`-side generated
+  pastes: global 50 (8.4%), `grid max` 304 (50.8%), `grid top-3` 183
+  (30.6%). **The local rule of the gate is `grid max`**, recorded at
+  `8edce94` before the `test` look.
+- 14 November 2026, `test` built and scored, once. Results below.
+
+### Edited images found on `test`, by area and blend, at the frozen cutoffs
+
+Every slice has 100 images (one per parent), so a count is also a
+percentage. "Untouched" is the 100 parents and the 1,000 pool originals.
+
+At the cutoffs frozen for **1%** authentic FPR:
+
+| Slice | n | Global (deployed) | Views mean | Views max | Views top-2 | Grid mean | Grid max | Grid top-3 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| untouched | 1,100 | 20 (1.8%) | 20 (1.8%) | 18 (1.6%) | 12 (1.1%) | 14 (1.3%) | 16 (1.5%) | 10 (0.9%) |
+| `resave` | 100 | 1 | 0 | 0 | 0 | 1 | 0 | 0 |
+| all `self-paste` | 600 | 8 (1.3%) | 0 | 0 | 0 | 6 (1.0%) | 0 | 0 |
+| all `authentic-paste` | 600 | 4 (0.7%) | 0 | 0 | 0 | 6 (1.0%) | 0 | 0 |
+| generated, hard, 1% | 100 | 14 | 6 | 17 | 14 | 1 | 36 | 6 |
+| generated, hard, 2% | 100 | 21 | 15 | 31 | 24 | 1 | 62 | 31 |
+| generated, hard, 3% | 100 | 32 | 24 | 44 | 34 | 1 | 70 | 62 |
+| generated, feathered, 1% | 100 | 11 | 4 | 15 | 10 | 1 | 25 | 2 |
+| generated, feathered, 2% | 100 | 20 | 12 | 30 | 20 | 1 | 59 | 23 |
+| generated, feathered, 3% | 100 | 31 | 23 | 39 | 31 | 1 | 67 | 52 |
+| all generated pastes | 600 | 129 (21.5%) | 84 (14.0%) | 176 (29.3%) | 133 (22.2%) | 6 (1.0%) | 319 (53.2%) | 176 (29.3%) |
+
+At the cutoffs frozen for **0.1%** (one false positive allowed on
+`calibrate`: the rate is resolved by a single image):
+
+| Slice | n | Global (deployed) | Views mean | Views max | Views top-2 | Grid mean | Grid max | Grid top-3 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| untouched | 1,100 | 7 (0.6%) | 8 (0.7%) | 3 (0.3%) | 5 (0.5%) | 3 (0.3%) | 3 (0.3%) | 0 |
+| `resave`, `self-paste`, `authentic-paste` | 1,300 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| generated, hard, 1% | 100 | 9 | 3 | 15 | 11 | 0 | 20 | 1 |
+| generated, hard, 2% | 100 | 19 | 11 | 28 | 21 | 0 | 39 | 11 |
+| generated, hard, 3% | 100 | 26 | 20 | 40 | 30 | 0 | 53 | 35 |
+| generated, feathered, 1% | 100 | 10 | 2 | 12 | 8 | 0 | 8 | 0 |
+| generated, feathered, 2% | 100 | 18 | 8 | 27 | 19 | 0 | 35 | 6 |
+| generated, feathered, 3% | 100 | 27 | 18 | 38 | 28 | 0 | 48 | 24 |
+| all generated pastes | 600 | 109 (18.2%) | 62 (10.3%) | 160 (26.7%) | 117 (19.5%) | 0 | 203 (33.8%) | 77 (12.8%) |
+
+**The frozen cutoffs did not hold the authentic rate on `test`** for most
+rules: at the 1% cutoffs the untouched images are flagged at 0.9% to 1.8%,
+at the 0.1% cutoffs at 0.0% to 0.7%. The columns above are therefore not at
+equal authentic FPR. The same table at `test`'s own cutoffs, where every
+rule flags exactly 11 and 1 of the 1,100 untouched images, is **empirical,
+not frozen**:
+
+| All 600 generated pastes | Global (deployed) | Views mean | Views max | Views top-2 | Grid mean | Grid max | Grid top-3 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| empirical 1% | 114 (19.0%) | 76 (12.7%) | 170 (28.3%) | 130 (21.7%) | 6 (1.0%) | 292 (48.7%) | 190 (31.7%) |
+| empirical 0.1% | 104 (17.3%) | 31 (5.2%) | 148 (24.7%) | 101 (16.8%) | 0 | 197 (32.8%) | 83 (13.8%) |
+
+At the empirical cutoffs no `resave`, `self-paste` or `authentic-paste`
+image is flagged by any rule but `grid mean` (13 of 1,300 at 1%). By area
+and blend: [test-report-empirical.md](../results/partial-edits-frozen/test-report-empirical.md).
+
+### Localisation on `test` (grid windows above the frozen `grid max` cutoff)
+
+| Cutoff | Flagged windows on generated pastes | Of them on the edit | Window recall | Images with a flagged edited window | Flagged windows on the 1,100 untouched images |
+|---|---:|---:|---:|---:|---:|
+| 1% | 472 | 472 (100%) | 472 of 2,249 (21.0%) | 319 of 600 | 19 |
+| 0.1% | 262 | 262 (100%) | 262 of 2,249 (11.6%) | 203 of 600 | 3 |
+
+With no cutoff at all, the highest-scoring window of a generated paste is
+on the pasted region in 545 of 600 images (90.8%), against 3.3% by chance;
+for an authentic paste in 36 of 600 (6.0%) and for a self-paste in 24 of
+600 (4.0%). No window on a self-paste or an authentic paste is above
+either cutoff.
+
+### The gate, as pre-registered
+
+From [test-gate.md](../results/partial-edits-frozen/test-gate.md)
+(`grid max` against the global score, tests over the 100 `test` parents):
+
+| Condition | 1% | 0.1% |
+|---|---|---|
+| Transfer, global: untouched `test` images above the frozen cutoff | 20 of 1,100 (1.8%; 95% interval 1.11% to 2.79%): **above the target** | 7 of 1,100 (0.6%; 0.26% to 1.31%): **above the target** |
+| Transfer, `grid max` | 16 of 1,100 (1.5%; 0.83% to 2.35%): within | 3 of 1,100 (0.3%; 0.06% to 0.79%): within |
+| Local: parents where `grid max` finds more of the generated pastes than the global score, against fewer | 73 against 11 (p = 1.1e-12): met | 52 against 20 (p = 1.0e-4): met |
+| Controls (`resave`, `self-paste`, `authentic-paste`) | 0 of 1,300 flagged by `grid max`: met | 0 of 1,300: met |
+| **Gate** | **failed** (transfer) | **failed** (transfer) |
+
+The failure is the global score's cutoff, not the local rule: the cutoff
+frozen on FloreView and HDR+ photos lets through too many untouched `test`
+photos, which add the held-out CSAFE phone. At 1% those 20 are 6 of 577
+CSAFE, 8 of 230 HDR+ and 6 of 293 FloreView images. Because the global
+score ran at a higher authentic rate than `grid max` at the frozen cutoffs
+and still found fewer edits, the miss does not favour the local rule; but
+the pre-registered gate asks for equal authentic FPR at frozen cutoffs,
+and that was not shown. The gate is not passed.
+
+### What the run says, and what it does not
+
+- **On photos the detector never trained on, it reacts to pasted generated
+  pixels and not to the paste.** No re-save, self-paste or authentic paste
+  was flagged by `grid max` at either frozen cutoff (0 of 1,300), and every
+  flagged window on an edited image was on the edit.
+- **A dense grid with max pooling finds about half of 1% to 3% pasted
+  regions at the 1% cutoff and a third at the 0.1% cutoff**; the deployed
+  global score about a fifth. Area matters more than the seam: `grid max`
+  finds 36, 62 and 70 of 100 hard-edged regions of 1%, 2% and 3%, and 25,
+  59 and 67 feathered ones.
+- **`grid top-3` and `grid mean` are worse than `grid max` here.** A 1%
+  region is one or two windows of about 116, so anything that averages
+  loses it.
+- **The global score finds more here than on the development diagnostic**
+  (21.5% against 4.9% of pastes) although the regions are a smaller share
+  of the image. Why was not tested; the regions are as large in pixels,
+  the donors differ, and the global score here ran at 1.8% authentic FPR.
+  Not pre-registered, descriptive: at the 1% cutoffs the global score and `grid max` find 97
+  and 171 of 338 Infinity pastes, 13 and 62 of 82 FLUX.1-dev, 13 and 59 of
+  92 SD3, and 6 and 27 of 88 FLUX.1-Krea.
+- **Cutoffs set on 1,100 authentic photos of two sources did not hold
+  their rate on 1,100 photos of three**, for the global score at both
+  operating points and for most pooled rules.
+- It does not say anything about inpainting, about generators below
+  1,024 px, about edits larger than 3% or smaller than 1% of a
+  12-megapixel photo, or about processed copies: none could be built from
+  what is on disk. The grid had gaps, so a full tiling could find more.
+  Scoring cost was not measured (the machine was shared); a dense grid is
+  about 116 forward passes per photo against the default profile's one to
+  six, and is an evaluation tool, not a proposal.
 
 ## What is ready to run
 
@@ -566,8 +775,9 @@ selects anything.
 
 | Step | Command | Needs |
 |---|---|---|
-| Pasted-region store on the frozen split's authentic and generated test items | section 1 | the frozen split ([frozen-eval.md](frozen-eval.md)) |
-| Dense scoring and the report, cutoffs on `calibrate`, numbers on `test` | section 2, one `score-windows` run per 2,000 images on the GPU or any size on the CPU | the store |
+| Pasted regions on the frozen split, cutoffs on `calibrate`, numbers on `test` | [done](#frozen-split): the gate failed on cutoff transfer | – |
+| The same on the split's processed copies as parents, and with a full grid (`--max-windows 400`) | the commands of the frozen-split section | disk for about 12 times the composites; an idle GPU |
+| Scoring cost of a dense grid: `tintype latency`, and `score-windows` timed alone | not run: the machine was shared | an idle machine |
 | The same on an inpainting set | section 4, then section 2 | the licence check and the download |
 | Splice clips from authentic clips at least a minute long, with enough authentic clips to resolve 1% (100 or more) | section 8 | long authentic clips: a licence check and a download |
 | Coverage modes on real edited footage | section 7 | the same |
