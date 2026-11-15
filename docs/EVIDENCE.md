@@ -231,6 +231,11 @@ With Pillow installed, reproduce the diagnostic counts from the four pinned orga
 python3 scripts/diagnose-ntire.py /path/to/ntire-archives
 ```
 
+`python3 scripts/diagnose-ntire.py /path/to/ntire-archives --operations`
+prints the same kind of counts for every operation and severity in the
+labels. It reads only the two label files and the archived scores, so it
+needs neither Pillow nor the image archives.
+
 ### Content-matched generated video clips
 
 Davodi, Barrington, Farid and Cooper released 24 scene themes with a Pixabay source and synthetic variants from Seedance Pro 1, Veo 3.1, Sora 2 and Kling 2.6. We recovered the exact listed authentic rendition for 20 themes. The exact files for themes 6, 7 and 16 were unavailable at the tested CDN paths, and theme 24's page and filename list different asset IDs. All variants of those four themes are outside the comparison. The release includes Kling alongside the three generators used in the human study. [Dataset and normalization protocol](https://zenodo.org/records/19463142) · [CVPR workshop paper](https://openaccess.thecvf.com/content/CVPR2026W/APAI/html/Davodi_Perceptual_Judgments_of_Video_Authenticity_An_Examination_of_Viewing_Duration_CVPRW_2026_paper.html).
