@@ -421,6 +421,18 @@ fn partial_edit_store_is_built_scored_and_reported_apart_from_the_global_score()
     // The per-item output keeps the global score and adds the local ones.
     let items = std::fs::read_to_string(dir.join("per-item.tsv")).unwrap();
     assert!(items.starts_with("# path\ttransform\tkind\tparent_id\tgenerated\tglobal_prob\t") && items.lines().count() == 16, "{items}");
+    // Cutoffs frozen on one set are applied to another as they are: here the same set, so the same counts.
+    let o = tintype(&["partial-report", "--scores", &d("windows.tsv"), "--manifest", &d("store/manifest.tsv"), "--fpr", "0.34", "--freeze-cutoffs", &d("cutoffs.tsv")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let frozen = std::fs::read_to_string(dir.join("cutoffs.tsv")).unwrap();
+    assert!(frozen.contains("# authentic\t3\n") && frozen.contains("34\tgrid max\t") && frozen.contains("34\tglobal (deployed)\t"), "{frozen}");
+    let o = tintype(&["partial-report", "--scores", &d("windows.tsv"), "--manifest", &d("store/manifest.tsv"), "--fpr", "0.34", "--cutoffs", &d("cutoffs.tsv")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let applied = stdout(&o);
+    assert!(applied.contains("at cutoffs frozen on 3 authentic images of another set"), "{applied}");
+    assert_eq!(applied.lines().find(|l| l.starts_with("| parent | 3 |")), Some(parents), "{applied}");
+    let o = tintype(&["partial-report", "--scores", &d("windows.tsv"), "--manifest", &d("store/manifest.tsv"), "--cutoffs", &d("cutoffs.tsv"), "--disjoint-cutoff"]);
+    assert_eq!(o.status.code(), Some(2));
     // A second store in the same place is refused, not merged.
     let o = tintype(&["paste-edits", "--real", &d("manifest.tsv"), "--fake", &d("manifest.tsv"), "--out", &d("store"), "--min-side", "224"]);
     assert!(!o.status.success());
