@@ -33,6 +33,26 @@ calibrate and test sets without separating related items, and
 `tintype verify-split` fails if any group crosses; see
 [the frozen evaluation runbook](runbooks/frozen-eval.md).
 
+`scripts/group-manifest.py` writes a grouped copy of a four-column
+manifest, filling the family and source columns from the name maps in
+[docs/groups](groups) and the parent, scene and transform columns from a
+side table. It never changes the manifest it reads: the copy is a new file
+(`manifest.grouped.tsv` beside it), so the manifests pinned under
+[Frozen evaluation sets](#frozen-evaluation-sets) stay byte for byte what
+they are. See [the source and family runbook](runbooks/source-family-matching.md).
+
+Two scripts write these columns. `scripts/stress-photo.py` renders
+paired per-operation evaluation suites (resizing, JPEG, blur, noise,
+sharpening, reposts, and files registered after a real upload round trip),
+with `parent_id` on every original and copy and the recipe as `transform`.
+`scripts/build-codec-store.py` registers training copies made offline by
+a learned codec or an enhancement tool, the same share of every generator
+and real source in both classes, with the parent's label. No such store
+exists yet, and no codec has been downloaded: the licence of each
+implementation is checked and recorded here and in
+[NOTICE.md](../NOTICE.md) first. See
+[the processing-chains runbook](runbooks/processing-chains.md).
+
 ## What is pinned
 
 A plan reads every repository at a fixed commit and checks every file it
@@ -171,7 +191,9 @@ before training, after which none of 314,282 training files matched any of
 
 Sampling: both classes equally often; within a class a source is drawn with
 weight `count^0.5`. Three percent of every store, chosen by path hash, is held
-out for validation and calibration.
+out for validation and calibration. What that rule gives each store and each
+generator family is measured under
+[What the training files are, and how often they are drawn](#what-the-training-files-are-and-how-often-they-are-drawn).
 
 ## How the evaluation was staged
 
@@ -335,6 +357,126 @@ SDXL, which that archive shares with others, so that set is AI only.
   images were checked against a saved list of those stores' file hashes: no
   matches among 11,730 files.
 
+## What the training files are, and how often they are drawn
+
+Diagnostics of the local training stores, measured on 2026-11-13 and
+2026-11-14 (Apple M6, 12 cores, 32 GB, CPU only; commands, commit and full
+tables in [docs/results/data-audit](results/data-audit/README.md) and
+[the source and family runbook](runbooks/source-family-matching.md)). They
+describe the stores as they are on that machine: `tiny-genimage` and
+`stylegan3` were no longer on disk and are missing from the file audit.
+
+**How often each family is drawn.** `tintype sampling-shares` on the 25
+phase-6 manifests reproduces the training log's first line (356,038
+training items, 16 real sources, 1,222 generators, 11,025 held out) and
+gives the share of the draws of each class:
+
+| Of the AI draws | Share |
+|---|---|
+| Latent diffusion (1,116 generator names) | 72.38% |
+| Closed commercial services | 8.12% |
+| Not attributable (`reddit-wild`, the anonymised Defactify generators) | 5.34% |
+| GANs | 5.33% |
+| Open video models | 5.09% |
+| VQ tokenizers and autoregressive models | 1.65% |
+| Pixel-space diffusion | 1.31% |
+| Hybrid autoregressive and diffusion | 0.57% |
+| Face swaps (`OpenForensics_fake`) | 0.19% |
+
+The two Community Forensics stores together are 66.3% of AI draws: they
+hold about 1,040 small generators, and `count^0.5` lifts every one of
+them. `reddit-wild` (15.8 k images) is 1.14% of AI draws, while
+`real:openfake-reddit` (3.0 k) is 4.25% of real draws. The families are
+those of the starter map in
+[docs/groups/generator-families.tsv](groups/generator-families.tsv), which
+states what each assignment rests on and is a proposal to be corrected.
+
+**What the files are.** `scripts/audit-manifests.py` read the header of
+284,304 files of the sixteen phase-6 photo stores (no pixels):
+
+| Store | Class | JPEG | PNG | JPEG quality p50 | Megapixels p50 | Both sides multiples of 64 |
+|---|---|---|---|---|---|---|
+| commfor-small | real | 87.5% | 12.5% | 75 | 0.31 | 6.4% |
+| commfor-small | AI | 17.3% | 82.7% | 75 | 0.07 | 100.0% |
+| commfor-small2 | real | 29.8% | 70.2% | 75 | 1.05 | 58.6% |
+| commfor-small2 | AI | 0.0% | 100.0% | – | 0.26 | 100.0% |
+| defactify | real | 100.0% | 0.0% | 75 | 0.27 | 2.1% |
+| defactify | AI | 100.0% | 0.0% | 75 | 0.59 | 60.0% |
+| openfake | real | 99.0% | 0.7% | 95 | 1.92 | 7.1% |
+| openfake | AI | 34.5% | 63.0% | 75 | 1.01 | 84.1% |
+| openfake-reddit | real | 97.9% | 2.1% | 75 | 11.84 | 7.1% |
+| openfake-reddit | AI | 95.1% | 4.9% | 95 | 1.56 | 3.4% |
+| sofake-set | real | 66.9% | 33.1% | 91 | 0.26 | 41.9% |
+| sofake-set | AI | 10.2% | 89.8% | 75 | 0.59 | 98.8% |
+
+In most stores that hold both classes the real items are mostly JPEG and
+the generated ones mostly PNG; where the format matches (`openfake-reddit`,
+`defactify`) the classes differ in JPEG quality or size instead. The
+single-class stores, the per-family tables and the remaining columns
+(chroma subsampling, EXIF, ICC, PNG text chunks) are in the full tables.
+
+**Whether the header alone gives the label away.**
+`scripts/metadata-probe.py` fits a logistic regression on those header
+columns only. Inside every training store that holds both classes it
+separates real from generated with AUROC 0.977 to 1.000; pooled over the
+fourteen stores read, 0.973 [0.938, 0.993] over files, 0.726 [0.551,
+0.968] with real sources and generators held out whole, and 0.781 [0.613,
+0.970] with each store scored by a model fitted on the others (95%
+intervals from a bootstrap over sources and generators). The picture's
+dimensions carry most of it (exact size alone 0.957, container format
+alone 0.659). Without the size columns the probe reaches 0.616 to 0.980
+inside a store and is at chance across stores (0.555 [0.368, 0.773]): the
+encoding differences are real in each store and point different ways in
+different stores. This measures what the files offer a detector, not what
+the released weights learned from them; the network sees 224-pixel crops
+after an augmentation that hides part of both cues.
+
+## Proposed labelling policy
+
+**A proposal for the maintainer to confirm; no manifest, plan or model
+follows it yet.** The label says whether the picture's content was
+generated. How a file was processed is recorded beside the label, in the
+`transform` and `generator_family` columns, and never folded into it, so
+that every case below is a named slice that can be reported by itself,
+weighted, or held out whole.
+
+| Case | Proposed label | `generator_family` | `transform` |
+|---|---|---|---|
+| Fully generated image | 1 | the decoder family | empty, or the processing applied |
+| Authentic photo, in-device processing (HDR, night mode, portrait blur) | 0 | empty | empty |
+| Authentic photo through a standard or learned codec (JPEG, WebP, AVIF, JPEG AI) | 0 | empty | `codec-<name>` |
+| Authentic photo, platform repost | 0 | empty | `repost-<...>` |
+| Authentic photo, AI-upscaled or AI-denoised with the content kept | 0 | `enhancement-upsampler`, `enhancement-restoration` | `sr-x2`, `denoise-<name>` |
+| Authentic photo round-tripped through a generator's autoencoder or tokenizer | 1, as its own slice | `reconstruction-<decoder>` | `recon-<decoder>` |
+| Authentic photo with a generated region | not used for this label | `partial-edit` | `inpaint-<name>` |
+| Face swap or reenactment | not used for this label | `other` | – |
+
+The reasons, from research notes 03, 04 and 09: a codec is a file format
+(JPEG AI is one to come), and 110 of the 155 authentic NTIRE images the
+shipped model flagged had been through JPEG AI, Cheng2020 or WMForger
+([EVIDENCE.md](EVIDENCE.md)); the notes cite a study in which learned
+super-resolution of pristine frames raised detectors' false-positive rates
+several-fold, so calling enhanced photos generated would train that
+failure in; and a round
+trip through a generator's decoder is the one content-preserving operation
+that is useful as a positive, because it carries the decoder's trace on
+content the model also sees untouched. That last row is the open point:
+a round trip through a VAE and a learned codec are the same kind of
+operation, and the proposal separates them by what the component is for.
+Reconstructions are therefore always their own slice and are never counted
+inside "recall on generated images".
+
+**Controlled reconstructions (planned, none made).** Same-content
+reconstructions of authentic training photos through each final-decoder
+family (4- and 16-channel VAEs, VQ tokenizers, learned upsamplers), saved
+in the source's format, size and JPEG quality, beside independent recent
+diffusion, autoregressive and hybrid outputs. Each reconstruction row
+keeps the `parent_id` and `scene_id` of the authentic photo it was made
+from. The licence of every autoencoder, tokenizer and upsampler is checked
+and recorded here and in [NOTICE.md](../NOTICE.md) before it is
+downloaded; none has been. The steps and the manifest layout are in
+[the runbook](runbooks/source-family-matching.md#5-controlled-reconstructions-and-the-labelling-policy).
+
 ## Frozen evaluation sets
 
 [docs/manifests](manifests) records every evaluation suite as it was scored:
@@ -380,6 +522,33 @@ tintype freeze-set --suite confirm7 --out confirm7.frozen.tsv.gz
 tintype freeze-set --manifest data/store/openfake/manifest.tsv --out openfake.frozen.tsv
 ```
 
+### The frozen independent split
+
+Built on 2026-11-14 for [the frozen evaluation runbook](runbooks/frozen-eval.md)
+from sources no training store, calibration set or earlier suite uses.
+It is evaluation data only: nothing from these sources may enter a
+training manifest while the split is in use. No file is redistributed
+here; the records hold hashes, sizes, labels and grouping columns.
+
+| Set | Record | Files | Size of the files |
+|---|---|---|---|
+| `fit` | [frozen-eval-fit.frozen.tsv.gz](manifests/frozen-eval-fit.frozen.tsv.gz) | 3,759 | 8.9 GB |
+| `calibrate` | [frozen-eval-calibrate.frozen.tsv.gz](manifests/frozen-eval-calibrate.frozen.tsv.gz) | 12,457 | 40.8 GB |
+| `test` | [frozen-eval-test.frozen.tsv.gz](manifests/frozen-eval-test.frozen.tsv.gz) | 19,326 | 53.0 GB |
+
+| Source | What is used | Licence, as stated at the source on 2026-11-14 | Pin |
+|---|---|---|---|
+| [HDR+ burst photography dataset](https://hdrplusdata.org/dataset.html) (Hasinoff et al., SIGGRAPH Asia 2016) | 3,640 `final.jpg` results | CC BY-SA 4.0 | Bucket `hdrplusdata`, folder `20171106/results_20171023`; each file checked against the MD5 the bucket lists |
+| [FloreView](https://lesc.dinfo.unifi.it/FloreView/) (Baracchi, Shullani, Iuliani, Piva, IEEE Access 2023) | 4,806 natural-scene JPEGs | CC BY-SA 4.0; the authors ask to be cited | Unversioned directory, no checksums published; the frozen records are the pin |
+| [CSAFE Multi-camera Smartphone Image Database](https://doi.org/10.25380/iastate.26932084.v1) (McGuire, Renfro, Reinders, Ommen, Carriquiry, Iowa State University, 2024) | 3,996 natural-scene JPEGs of `iPhone14.zip` | CC BY 4.0 | Version 1; archive MD5 `dfc01c89b14356141f53d253b72e946c` |
+| [ARForensics](https://huggingface.co/datasets/Yanran21/ARForensics) | 10,500 generated images of its test archives (1,500 per generator); its ImageNet photos are not used | MIT | Commit `828c2ee260361574f1c7f24ea50a1698128d6baf`, SHA-256 of each archive as listed |
+| [GenImage++](https://huggingface.co/datasets/Lunahera/genimagepp) | 3,000 generated images of three archives | CC BY-NC 4.0 | Commit `4160fbc103730771d3641139d3b995a3c2dbc719`, SHA-256 of each archive as listed |
+
+The processed copies (9,600 files) are rendered here from those originals
+by FFmpeg. The share-alike and non-commercial terms above apply to the
+images, which are not distributed; this page is not legal advice on what
+they mean for other uses.
+
 ## Released model files
 
 | File | Bytes | SHA-256 |
@@ -410,7 +579,12 @@ are not exercised: hosted runners have no GPU that the Apple GPU engine can use.
 ## Known caveats
 
 - AIGIBench CommunityAI stores every real image as JPEG and every AI image as
-  PNG. A detector could exploit that; all systems face the same files.
+  PNG. A detector could exploit that; all systems face the same files. It is
+  not the only set: from the manifests' file extensions alone, the classes
+  of 13 of the 30 sets of confirmation batch 7 separate with AUROC 0.84 or
+  more, and on the Frontier 2026-10 originals the file header separates
+  them completely
+  ([the audit](runbooks/source-family-matching.md#evaluation-sets)).
 - Generator *families* overlap between training and evaluation. The released
   weights have seen most image generators that appear in the evaluation sets,
   in the form of other images from other collections. The phase-3 weights had

@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Prepare matched four-second clips for the Davodi et al. video comparison."""
+"""Prepare matched four-second clips for the Davodi et al. video comparison.
+
+With `--grouped`, also write manifests with the grouping columns of
+`src/ingest.rs` (parent_id, scene_id, source_id, generator_family,
+transform) for the video audit (docs/runbooks/video-audit.md):
+`manifest-grouped.tsv` lists the normalised clips and
+`originals-grouped.tsv` the files they were made from, with the same
+`parent_id`. `--collection` adds held-out authentic collections registered
+with `scripts/video_audit.py collection`, normalised in the same way.
+"""
 
 import argparse
 import csv
@@ -8,6 +17,7 @@ import io
 import json
 import shutil
 import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
@@ -22,6 +32,11 @@ SOURCES = {
     "sora-2": ("sora2_filename", "Sora"),
     "kling-2.6": ("klingv2-6_filename", "Kling"),
 }
+# Grouped manifests: the collection a clip came from (column 7) and the model
+# line of its generator (column 8).
+AUTHENTIC_SOURCE = "pixabay"
+GENERATED_SOURCE = "davodi-2026"
+FAMILIES = {"seedance-pro-1": "seedance", "veo-3.1": "veo", "sora-2": "sora", "kling-2.6": "kling"}
 
 
 def digest(path):
@@ -67,7 +82,14 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--source-record", type=Path, help="Recorded inputs.tsv to verify source hashes and recover original URLs")
+    parser.add_argument("--grouped", action="store_true", help="Also write manifest-grouped.tsv, originals-grouped.tsv and audit.tsv for the video audit")
+    parser.add_argument("--collection", type=Path, action="append", default=[],
+                        help="Cohort directory written by `video_audit.py collection`: normalise its clips too (implies --grouped; repeatable)")
     args = parser.parse_args()
+    grouped = args.grouped or bool(args.collection)
+    if grouped:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import video_audit
     if digest(args.archive) != ZIP_SHA256:
         raise ValueError("Zenodo v1 ZIP checksum mismatch")
     out = args.output.resolve()
@@ -105,6 +127,14 @@ def main():
                         shutil.copyfileobj(stream, dest)
                 tasks.append((scene, source, label, member, original, record))
 
+    def encode(original, result):
+        filters = "scale=800:-2:flags=bicubic,setsar=1,fps=24,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+        subprocess.run([
+            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "1",
+            "-i", str(original), "-t", "4", "-map", "0:v:0", "-an", "-vf", filters, "-map_metadata", "-1",
+            "-c:v", "libx264", "-threads", "1", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(result),
+        ], check=True)
+
     def normalize(task):
         scene, source, label, origin, original, record = task
         source_sha = digest(original)
@@ -113,12 +143,7 @@ def main():
         stream, duration = validate_media(original)
         relpath = Path("clips") / f"{scene:02d}-{source}.mp4"
         result = out / relpath
-        filters = "scale=800:-2:flags=bicubic,setsar=1,fps=24,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709"
-        subprocess.run([
-            "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "1",
-            "-i", str(original), "-t", "4", "-map", "0:v:0", "-an", "-vf", filters, "-map_metadata", "-1",
-            "-c:v", "libx264", "-threads", "1", "-crf", "18", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(result),
-        ], check=True)
+        encode(original, result)
         output, _ = validate_media(result, full=True)
         normalized_sha = digest(result)
         if record and normalized_sha != record["normalized_sha256"]:
@@ -147,6 +172,64 @@ def main():
         "duration_seconds": 4, "width": 800, "fps": 24, "codec": "h264", "crf": 18,
     }, indent=2) + "\n")
     print(f"Prepared {len(finished)} normalized clips across {len(finished)//5} complete matched scenes")
+    if not grouped:
+        return
+
+    # The audit pairs every normalised clip with the file it was made from: same parent_id, different transform.
+    normalized, originals, audit = [], [], []
+    for path, label, generator, scene, *_ in finished:
+        stem = Path(path).stem
+        original = sources / f"{stem}.mp4"
+        if not label:
+            shutil.copyfile(args.authentic / f"{scene:02d}.mp4", original)
+        row = {"label": label, "generator": generator, "dataset": "davodi-2026-normalized", "parent_id": f"davodi-{stem}", "scene_id": f"davodi-{scene:02d}",
+               "source_id": GENERATED_SOURCE if label else AUTHENTIC_SOURCE, "generator_family": FAMILIES.get(generator, "")}
+        normalized.append({**row, "rel": path, "transform": "davodi-norm"})
+        originals.append({**row, "rel": f"sources/{stem}.mp4", "dataset": "davodi-2026", "transform": "original"})
+        audit.append((row["parent_id"], row["source_id"], "generated" if label else "stock", row["parent_id"], "", f"sources/{stem}.mp4", digest(original)))
+
+    extra, skipped = [], 0
+    for cohort in args.collection:
+        types = {r["parent_id"]: r for r in video_audit.read_table(cohort / "audit.tsv")}
+        for row in video_audit.read_manifest(cohort / "manifest.tsv"):
+            extra.append((row, types[row["parent_id"]], video_audit.safe_name(row["parent_id"])))
+
+    def normalize_extra(item):
+        # The same encode as the matched clips. A video track that starts a frame late gives 95 frames instead of 96,
+        # which the matched comparison refuses and an authentic-only collection can live with; the count is on record.
+        row, registered, name = item
+        try:
+            validate_media(row["path"])
+        except ValueError:
+            return None
+        result = Path("clips") / f"{name}.mp4"
+        encode(row["path"], out / result)
+        output = json.loads(subprocess.check_output([
+            "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,codec_name,pix_fmt,avg_frame_rate,nb_frames", "-of", "json", str(out / result)], text=True))["streams"][0]
+        if (output["width"], output["codec_name"], output["pix_fmt"], output["avg_frame_rate"]) != (800, "h264", "yuv420p", "24/1") or int(output["nb_frames"]) < 90:
+            raise ValueError(f"Unexpected output format for {result}: {output}")
+        original = sources / f"{name}{row['path'].suffix.lower()}"
+        shutil.copyfile(row["path"], original)
+        return row, registered, result.as_posix(), original, digest(original), output["nb_frames"]
+
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        added = list(pool.map(normalize_extra, extra))
+    for item in added:
+        if item is None:
+            skipped += 1
+            continue
+        row, registered, result, original, sha, _ = item
+        normalized.append({**row, "rel": result, "transform": "davodi-norm"})
+        originals.append({**row, "rel": f"sources/{original.name}", "transform": "original"})
+        audit.append((row["parent_id"], row["source_id"], registered["collection_type"], registered["source_video"], registered["start_frame"], f"sources/{original.name}", sha))
+    video_audit.write_manifest(out / "manifest-grouped.tsv", normalized)
+    video_audit.write_manifest(out / "originals-grouped.tsv", originals)
+    video_audit.write_table(out / "audit.tsv", ["parent_id", "source_id", "collection_type", "source_video", "start_frame", "file", "sha256"], audit)
+    print(f"Grouped manifests: {len(normalized)} clips ({len(finished)} DaVODi, {len(normalized) - len(finished)} from registered collections"
+          + (f", {skipped} shorter than four seconds left out" if skipped else "") + ")")
+    short = sum(1 for item in added if item and item[5] != "96")
+    if short:
+        print(f"  {short} collection clips have fewer than 96 frames after the trim (late-starting video track)")
 
 
 if __name__ == "__main__":
