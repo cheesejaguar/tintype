@@ -354,6 +354,61 @@ was scored.** Nothing above changed.
 - **Cutoffs are fitted on all authentic rows of `calibrate`**, originals
   and processed copies together, with `tintype calibrate`'s default rule.
 
+## View reuse and lazy preparation on the frozen split: what was fixed before timing
+
+Written on 2026-11-14, after the frozen split was built and the released
+model had been scored on it, and before either speed change was run on any
+of its files. These two changes ([runbook](runbooks/view-reuse.md)) alter how
+much work a verdict takes, not the verdict; nothing is fitted, calibrated or
+selected here, so `fit` and `calibrate` are not used and no operating point
+is chosen. The 1% and 0.1% operating points and the degraded slice do not
+enter: every score is required to be the same as before, at any cutoff.
+
+- **What is compared.** Four binaries: the base branch
+  (`research/step0-frozen-eval`), the counters commit (same scoring as the
+  base, with work counters), "score identical views of an image once", and
+  "prepare frames and views only when early exit reaches them" on top of
+  it. One model: an unchanged copy of the released photo model under
+  `runs/ws6-frozen/model/`.
+- **Cohort.** The frozen `test` set, 19,326 photos: 7,326 authentic camera
+  JPEGs, 7,200 generated PNGs of 256 to 1,024 pixels, and 2,400 processed
+  copies of each. Whole set for the GPU parity run. Fixed-seed subsets for
+  the rest, drawn before any run: 300 files for single-image latency (102
+  authentic originals, 98 generated originals, 50 processed copies of each;
+  in this sample 43 generated originals have a shorter side of exactly 256
+  pixels and 8 processed generated copies are below 224, the sizes where
+  views coincide; no authentic file is); 2,000, 1,000 and 500 files drawn
+  from the whole set at random for throughput and one-process parity; 300
+  (100 + 100 + 50 + 50) for one-process-per-file parity.
+- **Parity (gate, first half).** One process for the whole `test` set on the
+  `gpu` engine, default profile: every row of each change's JSON output the
+  same bytes as the base binary's. The same on `gpu-f32` over the
+  2,000-file subset, with the base binary run twice. One process per file on
+  the CPU engine (Accelerate) over the 300-file subset, default and
+  `--all-views`: the same bytes. One process on the CPU engine over the
+  500-file subset: there the base binary need not reproduce itself, so it
+  is run twice and a change may differ from it only as the base differs
+  from itself (a few rows in the seventh decimal of the logit); no verdict
+  and no number of views looked at may change in any comparison.
+- **Speed (gate, second half).** Single-image latency p50 and p95
+  (`tintype latency`, each image's best of the passes, binaries taking
+  turns), throughput and peak resident memory with all files in one
+  process, on the `gpu` and `cpu` engines, each change against the commit
+  before it and the counters commit against the base as the control. A
+  change passes on this cohort if it lowers latency p50 or p95 or raises
+  throughput on at least one engine by more than the control differs, and
+  makes nothing slower by more than that. Otherwise it is reported as no
+  gain here, or as a loss.
+- **Expected, said beforehand.** The authentic photos are large and have
+  six different views, so reuse has nothing to do on them; it can only act
+  on generated images of exactly 256 pixels that go on to a third view and
+  on the smallest processed copies. Lazy preparation saves the resize for
+  the whole-image view, which is largest on the 12-megapixel photos, for a
+  single file and on the GPU engines. Small or no gain is the likely
+  result for both; that would be reported as such.
+- **Looks at `test`.** These runs read every file of `test` but report no
+  detection figure: scores are only compared between binaries.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames
