@@ -474,6 +474,102 @@ The choice was made at commit `6fc5ecb` with
   1,712 at 0.1% and 1,930 at 1%, six views 1,633 and 1,859, sensitive 983
   and 1,807.
 
+## Calibration and the review outcome on the frozen split: what was fixed before the look at `test`
+
+Written on 2026-11-14, after the cutoffs, the review band and the exit
+margins below were fitted on `fit` and `calibrate`, and before anything of
+this workstream was computed on `test`. It is the entry
+[the calibration runbook](runbooks/calibration-abstention.md) asks for.
+Nothing here changes a released file: every spec is a copy under `runs/`.
+
+- **The system is the released photo model, unchanged**: weights, six
+  views, mean pooling, GPU engine scores. No new scoring was done. Every
+  step is arithmetic on the all-views score files of the incumbent's
+  logged look (`fit.all.tsv`, `calibrate.all.tsv`, `test.all.tsv`). The
+  fast profile's two views are views 1 and 3 of the six (the whole image
+  and the most textured crop), so its score file is those two columns,
+  taken offline. There is no frozen video data: the video steps of the
+  runbook are not run.
+- **`test` is not blind.** The incumbent's look is published, and I have
+  read it: the cutoffs refitted with the default rule flag 120 of 9,726
+  authentic test files (1.23%) at the 1% target and 18 (0.19%) at 0.1%,
+  the held-out phone source carries most of it, and the shipped cutoff
+  (raw logit 1.692) flags 16 and 12 of 200 authentic `noise-a10` and
+  `noise-a40` copies. Arm A's 1% cutoff below is 1.636, looser than the
+  shipped one, so I expect gate 1 to fail on the noise strata at 1%. The
+  look measures it; the expectation is written here so that it cannot be
+  rewritten afterwards.
+- **Three arms, each a set of cutoffs fitted on the authentic rows of
+  `calibrate`** (3,457 parents; 200 of them also have twelve processed
+  copies, 5,857 rows in all). Raw-logit thresholds on the mean of six views:
+
+  | Arm | Rule | 1% (photo profile) | 0.1% (strict profile) | 5% (sensitive) | 0.5% (fast, two views) |
+  |---|---|---|---|---|---|
+  | **A, primary** | `--rule bound`, 95%, parents counted once, the highest score of a parent's versions (`--per-parent max`) | 1.636 (24 of 3,457 parents flagged) | 3.504 (0 flagged) | −0.494 (151) | 2.280 (10) |
+  | B | `--rule bound`, 95%, the unprocessed original only (`--per-parent original`) | 0.450 (24) | 2.563 (0) | −1.384 (151) | not fitted |
+  | C | the default rule (`balanced`), all 5,857 rows as items: the incumbent's refit, identical thresholds | 0.985 (58 of 5,857 rows) | 2.965 (5) | −0.795 (297) | not fitted |
+
+  The operating points are **1% and 0.1%**; the sensitive and fast
+  profiles are reported beside them at their shipped targets.
+- **Exit margins (arm A).** Fitted on `fit` (3,759 items) for the three
+  six-view profiles at arm A's thresholds, tolerance 0.001: after 1 to 5
+  views **6.5, 4, 4, 1.75, 1** raw logits (the shipped margins are 6, 3, 2,
+  1.5, 1). On `calibrate` the fitted schedule looks at 1.87 views per
+  image at the 1% cutoff and changes 19 verdicts of 12,457. Arm A is
+  reported under the fitted schedule, with the shipped margins beside it.
+  Arms B and C keep the shipped margins.
+- **Review band (arm A).** The rule of the runbook: the widest margin, in
+  steps of 0.25 calibrated logits, whose share of a stream reviewed at 1%
+  prevalence is at most 2% on `calibrate`. That gives **0.75** at the 1%
+  cutoff (1.44% reviewed; 1.0 would be 2.24%) and **1.5** at the 0.1%
+  cutoff (1.58%; 1.75 would be 3.06%). On `calibrate` these cost 3.70 and
+  15.72 points of recall counted with reviewed AI items as misses (86.15%
+  to 82.45%, and 79.74% to 64.02%); at the 0.1% cutoff no authentic row is
+  flagged with or without the band, so there the band has no false alarm
+  to remove. The rule is applied as declared all the same.
+- **View disagreement is not used.** Gate 3 already fails on `calibrate`:
+  at the 1% cutoff, a margin of 0.25 with "half the views disagree" covers
+  97.30%, leaves 16 authentic rows flagged without review and has 83.85%
+  recall, and a margin of 0.5 alone covers more (97.56%), leaves fewer
+  flagged (10) and has higher recall (84.06%). It is not computed on `test`.
+- **What is measured on `test`, once per arm** (9,726 authentic rows of
+  7,326 parents; 9,600 generated rows), at the cutoffs above and, labelled
+  as a ranking measure, at the empirical 1% and 0.1% cutoffs of `test`:
+  recall and authentic files flagged, over all rows, on the clean rows and
+  on the degraded slice (every `transform` other than none); for arm A
+  also coverage, review rate per class, and recall with every reviewed
+  generated item counted as a miss. Intervals resample parents.
+- **Strata, fixed now.** Authentic `source` (HDR+, each FloreView brand,
+  and `csafe-iphone14pro`, which is held out to `test` whole) and
+  `transform` (none and the twelve operations), authentic parents counted
+  once within a stratum, a parent being flagged when any of its rows in
+  the stratum is.
+- **The gate**, as the runbook states it, numbers unchanged:
+  1. *Cutoffs transfer*: at a frozen cutoff no stratum is shown to exceed
+     the budget (one-sided 95% lower bound over it), and the held-out
+     source `csafe-iphone14pro` is shown within twice the budget (upper
+     bound at most 2 × budget). Evaluated for arm A at 1% and at 0.1%;
+     arms B and C are reported the same way for comparison.
+  2. *Coverage is useful*: with the band, at most 2% of a stream at 1%
+     prevalence goes to review on `test`.
+  3. *Disagreement*: failed on `calibrate`, above.
+  4. *Early exit holds*: for the photo, strict and sensitive profiles of
+     arm A under the fitted schedule, pooled precision and pooled recall on
+     `test` are each within 0.001 of scoring every view, and the mean
+     false-positive rate over real sources with at least 100 rows is within
+     the profile's target.
+
+  The calibration passes only if 1, 2 and 4 hold at both operating points.
+  A stratum the data cannot resolve is reported as not resolved and is not
+  a pass: a `transform` stratum has 200 authentic rows, so at 1% it can
+  only be shown to exceed, never to be within.
+- **Cost.** Nothing is added to inference. Views looked at per image are
+  reported. Latency is not measured in this run: the machine is shared
+  with a training job.
+- **Nothing is chosen on `test`**, and nothing here is a ship decision:
+  whatever the verdict, the released cutoffs, margins and specs stay as
+  they are.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames

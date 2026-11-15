@@ -47,7 +47,52 @@ A successful photo response looks like this. Values are illustrative.
 
 The detector flags scores above `0.5` and reports `likely-real` otherwise. Successful rows also carry the raw `logit` and `threshold_logit` used by the model profile. Treat the result as one signal when reviewing provenance.
 
+`score` is a detector score, not a probability that the file is AI-generated. The calibration places `0.5` at a false-positive target on held-out authentic media and fits the slope with both classes weighted equally. The share of flags that are correct depends on how common AI-generated files are among your inputs: `precision = recall·π / (recall·π + FPR·(1 − π))` for a share π. At the rates of the newest blind photo batch (89.7% recall, 1.21% of authentic photos flagged) and π = 1%, about 43% of flags would be correct, if those rates transferred. Reaching 90% at 90% recall takes a false-positive rate of about 0.10%.
+
 For video, `profile` is `video`. The response reports `frames`, `frames_expected`, `duration_s`, `analysed_until_s`, and `complete`. `analysed_until_s` is the latest sampling target represented in the score. The decoder can use the nearest frame to each target. Both timestamps may be `null` if the information is unavailable. `complete` means the model obtained the evidence its sampling and early-exit profile required. A decodable clip with insufficient coverage receives the `inconclusive` verdict. The server samples at most the first 30 seconds of each clip.
+
+## Review fields (opt-in)
+
+By default no response has a `review` field. Start the server with a review band to add one to every scored result:
+
+```sh
+tintype serve --review-margin 1.0                              # by margin
+tintype serve --review-margin 1.0 --review-disagreement 0.5    # and by disagreement among views
+```
+
+The same flags work on `tintype detect` and `tintype batch`. A model spec can carry the band instead, as `"review": {"margin": 1.0, "view_disagreement": 0.5}` at the top level for the default photo profile and inside `"video"` for clips; a flag overrides the stored value of the same name. The released specs have no band.
+
+```json
+{
+  "name": "photo.jpg",
+  "kind": "image",
+  "profile": "default",
+  "score": 0.61,
+  "verdict": "ai-generated",
+  "logit": 2.37,
+  "threshold_logit": 1.69,
+  "views": 6,
+  "review": true,
+  "review_reason": "margin"
+}
+```
+
+| Field | Present | Meaning |
+| --- | --- | --- |
+| `review` | On every scored result when a band is in use; never otherwise | `true` when the result should go to a person |
+| `review_reason` | Only when `review` is `true` | `"margin"`: the calibrated logit, `ln(score / (1 − score))`, is strictly within the margin of 0. `"view_disagreement"`: at least the stated share of the views scored fall on the other side of `threshold_logit` from their mean |
+
+These fields are additive. `verdict`, `score`, `logit`, HTTP status and CLI exit status are the same with and without a band, and no extra inference runs: the decision uses the view or frame logits already computed.
+
+- **Precedence.** When both reasons apply, `review_reason` is `"margin"`.
+- **Margin units.** Calibrated logits around the active profile's threshold: `logit_scale · (logit − threshold_logit)`. A margin of 0 marks nothing; the band is open, so a result exactly at the margin is outside it.
+- **Disagreement with early exit.** Only the views that were looked at exist. A photo decided on its first view has one logit and is never marked for disagreement. With `--all-views` every view counts.
+- **Video.** The margin is on the clip's calibrated logit, and disagreement is the share of scored frame logits (each the mean of that frame's views) on the other side of the threshold. `inconclusive` keeps its meaning (incomplete coverage) and is still reported in `verdict`; `review` is a separate field and is computed from the frames that were read.
+- **Second opinion** (`detect` only). The margin is measured on the blended score. Disagreement is among the first stage's views, against the first stage's threshold.
+- **Profiles.** A band stored in a spec is in the default profile's calibrated logits, so `--strict`, `--sensitive` and `--fast` ignore it unless a flag gives one.
+- **Errors.** A file that could not be scored has no verdict and no review fields.
+
+A band is a policy fitted on calibration data once the rest of the system is fixed, and an AI-generated file sent to review counts as a miss for automatic detection. `tintype report --operating-points --review-margin …` reports coverage, review rates and recall on that basis; see the [calibration and abstention runbook](runbooks/calibration-abstention.md).
 
 ## Detect a batch
 
