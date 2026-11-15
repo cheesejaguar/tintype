@@ -44,10 +44,12 @@ jobs:
           cargo +stable build --release --locked --bin tintype
           bin=target/release/tintype
           [ "$RUNNER_OS" = Windows ] && bin=target/release/tintype.exe
+          root=$PWD
+          [ "$RUNNER_OS" = Windows ] && root=$(cygpath -m "$PWD")
           : > bench.tsv
           for i in $(seq 1 100); do
-            printf '%s\t1\tdemo\tdemo\n' "$PWD/site/assets/demo.png" >> bench.tsv
-            printf '%s\t1\tdemo\tdemo\n' "$PWD/docs/assets/provenance-original.png" >> bench.tsv
+            printf '%s\t1\tdemo\tdemo\n' "$root/site/assets/demo.png" >> bench.tsv
+            printf '%s\t1\tdemo\tdemo\n' "$root/docs/assets/provenance-original.png" >> bench.tsv
           done
           for round in 1 2 3; do
             for dev in cpu cpu-int8; do
