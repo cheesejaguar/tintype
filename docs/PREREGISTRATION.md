@@ -452,6 +452,15 @@ fixes what that gate left open.
   still asks for a second seed, a re-calibration, an early-exit re-check
   and a fresh blind batch.
 
+**Added on 2026-11-14 at about 19:20, before the run it describes.** A
+second seed of arm B (family-weighted): the same command with `--seed 2`,
+calibrated on `calibrate` at 1% and 0.1% and looked at once on `test` with
+every view, then confirmation 7 as a diagnostic. Nothing in the gate or
+its conditions changes. It is read beside the control's second seed and
+beside the two-seed means, and the question it answers is whether the
+seed-1 differences (new-family macro recall, processed recall, authentic
+copies flagged) repeat.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames
