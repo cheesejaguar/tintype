@@ -30,8 +30,8 @@ candidate against a control trained here with the same budget
 |---|---|
 | Fixed FPR | Each model is read at its own cutoff for 1% and for 0.1% FPR, frozen on the authentic items of `calibrate`. The actual FPR on `test` is reported beside every recall. |
 | New families | The generator families named with `--new-family` when the measurement is run: for the matching, weighting and reconstruction arms, the families of the frozen split that no training store holds; for the refresh arms, the families the refresh adds, measured on items of them that were split off before training. They are written into the pre-registration entry before the first score. |
-| Macro recall | The unweighted mean of per-family recall over families with at least 100 generated test items. |
-| Older families | Every other family with at least 100 generated test items. |
+| Macro recall | The unweighted mean of per-family recall over families with at least 100 unprocessed generated test items. A family's recall is over its unprocessed items; processed copies are measured once, in their own row. |
+| Older families | Every other family with at least 100 unprocessed generated test items. |
 | Reposted images | Generated items whose `transform` column is set (reposts, recompressed and resized copies), and the false-positive rate on authentic items whose `transform` is set. |
 | Improves | New-family macro recall is higher at 1% FPR, with the 95% interval of the difference (bootstrap over parents) above zero, and is not lower at 0.1% FPR. |
 | Without regressing | At both rates: older-family macro recall and recall on processed copies are not lower by more than one point, and the false-positive rate on processed authentic copies is not higher. |
