@@ -160,3 +160,170 @@ pub fn compare_markdown(systems: &[(String, BTreeMap<String, Scored>, f32)], poo
     }
     let _ = probs_labels;
 }
+
+/// What [`operating_points_markdown`] reports beyond the scores themselves.
+#[derive(Clone, Debug)]
+pub struct OperatingPoints {
+    /// Empirical false-positive rates to operate at (cutoffs found on the
+    /// items reported, so exploratory unless those are calibration items).
+    pub fprs: Vec<f64>,
+    /// The predeclared share of AI-generated items among real-world inputs,
+    /// for the precision column.
+    pub prevalence: f64,
+    /// Columns to break the results down by: `dataset`, `generator`,
+    /// `source`, `family`, `transform`.
+    pub slice_by: Vec<String>,
+    /// Resample whole groups of this kind in the bootstrap (`parent`,
+    /// `scene`, `source`, `family`); `None` resamples items.
+    pub cluster_by: Option<crate::split::Key>,
+    /// Slices with fewer items of a class than this are listed but do not
+    /// count towards the worst slice.
+    pub min_slice: usize,
+    /// Manifest rows by path, for the grouping columns score files lack.
+    pub groups: BTreeMap<String, crate::ingest::Item>,
+}
+
+impl Default for OperatingPoints {
+    fn default() -> Self {
+        Self { fprs: vec![0.001, 0.01], prevalence: 0.01, slice_by: vec!["dataset".into()], cluster_by: None, min_slice: 100, groups: BTreeMap::new() }
+    }
+}
+
+/// The value of slicing column `by` for a scored item.
+fn slice_value(by: &str, it: &crate::ingest::Item) -> Result<String> {
+    Ok(match by {
+        "dataset" => it.dataset.clone(),
+        "generator" => it.generator.clone(),
+        "source" => crate::split::source_of(it).to_string(),
+        "family" => crate::split::family_of(it).to_string(),
+        "transform" => it.transform().unwrap_or("none").to_string(),
+        other => anyhow::bail!("unknown slice `{other}` (use dataset, generator, source, family, transform)"),
+    })
+}
+
+/// The fixed-budget tables of the frozen evaluation: for each system, on the
+/// items every system scored,
+///
+/// - recall at each empirical false-positive rate in `opts.fprs`, and the
+///   actual false-positive rate and recall at the system's own frozen
+///   cutoff, each with the number of real items flagged, a one-sided 95%
+///   Clopper–Pearson upper bound on the false-positive rate, a 95% bootstrap
+///   interval for recall (clustered when `opts.cluster_by` is set) and the
+///   precision at `opts.prevalence`;
+/// - the same rates per slice at the frozen cutoff, and the worst slice.
+///
+/// The Clopper–Pearson bound counts items as independent trials; where
+/// sources or parents repeat it is optimistic, and the clustered interval
+/// is the one to read.
+pub fn operating_points_markdown(systems: &[(String, BTreeMap<String, Scored>, f32)], opts: &OperatingPoints) -> Result<()> {
+    let common: Vec<&String> = systems[0].1.keys().filter(|k| systems.iter().all(|s| s.1.contains_key(*k))).collect();
+    // Manifest rows carry the grouping columns; a path without one gets what its score row says.
+    let items: Vec<crate::ingest::Item> = common
+        .iter()
+        .map(|k| {
+            let r = &systems[0].1[*k];
+            let extra = opts.groups.get(*k).map(|it| it.extra.clone()).unwrap_or_default();
+            crate::ingest::Item { path: (*k).into(), label: r.label, generator: r.generator.clone(), dataset: r.dataset.clone(), extra }
+        })
+        .collect();
+    let labels: Vec<u8> = items.iter().map(|it| it.label).collect();
+    let (n_real, n_fake) = (labels.iter().filter(|&&l| l == 0).count(), labels.iter().filter(|&&l| l == 1).count());
+    let clusters: Option<Vec<usize>> = opts.cluster_by.map(|key| {
+        // An item without the key is its own cluster.
+        metrics::cluster_ids(&items.iter().map(|it| key.of(it).map_or_else(|| format!("path:{}", it.path.display()), |v| format!("{}:{v}", key.name()))).collect::<Vec<_>>())
+    });
+    let n_clusters = clusters.as_ref().map(|c| c.iter().max().map_or(0, |m| m + 1));
+    let grouped = common.iter().filter(|k| opts.groups.contains_key(**k)).count();
+    println!("{} items scored by all {} systems: {n_fake} AI, {n_real} real{}", common.len(), systems.len(), if opts.groups.is_empty() { String::new() } else { format!("; grouping columns found for {grouped}") });
+    match (opts.cluster_by, &clusters) {
+        (Some(key), Some(c)) => {
+            let with_ai: std::collections::BTreeSet<usize> = c.iter().zip(&labels).filter(|(_, &l)| l == 1).map(|(&k, _)| k).collect();
+            println!("Recall intervals: 95% bootstrap over {} {} clusters ({} of them hold AI items).", n_clusters.unwrap_or(0), key.name(), with_ai.len());
+            if with_ai.len() < 20 {
+                println!("Fewer than 20 clusters hold AI items: these intervals are too narrow to rely on. Cluster by a finer key, or read them as unknown.");
+            }
+        }
+        _ => println!("Recall intervals: 95% bootstrap over items."),
+    }
+    println!("Precision is at {:.2}% prevalence. FPR bound: one-sided 95% Clopper–Pearson, items taken as independent.", 100.0 * opts.prevalence);
+    let pct = |x: f64| if x.is_finite() { format!("{:.2}%", 100.0 * x) } else { "–".to_string() };
+    for (name, scores, frozen) in systems {
+        let probs: Vec<f32> = common.iter().map(|k| scores[*k].prob).collect();
+        println!("\n**{name}**\n");
+        println!("| Operating point | Cutoff | Real items flagged | FPR | FPR upper bound | Recall | Precision at prevalence |");
+        println!("|---|---|---|---|---|---|---|");
+        let mut points: Vec<(String, f32)> = Vec::new();
+        for &f in &opts.fprs {
+            if let Some(c) = metrics::empirical_cutoff(&probs, &labels, f) {
+                points.push((format!("{}% empirical FPR", 100.0 * f), c));
+            }
+        }
+        points.push(("frozen cutoff".into(), *frozen));
+        for (what, cutoff) in &points {
+            let (fpr, recall) = metrics::rates_at(&probs, &labels, *cutoff);
+            let flagged = probs.iter().zip(&labels).filter(|(&p, &l)| l == 0 && p > *cutoff).count();
+            let c = *cutoff;
+            let (lo, hi) = metrics::bootstrap_ci_clustered(&probs, &labels, clusters.as_deref(), |s, l| metrics::rates_at(s, l, c).1, 1000, 12);
+            let recall_cell = if n_fake > 0 { format!("{} ({}–{})", pct(recall), pct(lo), pct(hi)) } else { "–".into() };
+            let (flag_cell, bound) = if n_real > 0 { (format!("{flagged} of {n_real}"), pct(metrics::clopper_pearson_upper(flagged, n_real, 0.95))) } else { ("–".into(), "–".into()) };
+            println!("| {what} | {cutoff:.6} | {flag_cell} | {} | {bound} | {recall_cell} | {} |", pct(fpr), pct(metrics::precision_at_prevalence(recall, fpr, opts.prevalence)));
+        }
+        for by in &opts.slice_by {
+            let mut slices: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+            for (i, it) in items.iter().enumerate() {
+                slices.entry(slice_value(by, it)?).or_default().push(i);
+            }
+            println!("\n{name} by {by}, at the frozen cutoff {frozen}:\n");
+            println!("| {by} | AI | Real | Recall | Real items flagged | FPR | AUROC |");
+            println!("|---|---|---|---|---|---|---|");
+            // (rate, slice) of the lowest recall and the highest false-positive rate among slices large enough.
+            let (mut worst_recall, mut worst_fpr): (Option<(f64, &str)>, Option<(f64, &str)>) = (None, None);
+            for (value, idx) in &slices {
+                let (p, l): (Vec<f32>, Vec<u8>) = idx.iter().map(|&i| (probs[i], labels[i])).unzip();
+                let (nr, nf) = (l.iter().filter(|&&x| x == 0).count(), l.iter().filter(|&&x| x == 1).count());
+                let (fpr, recall) = metrics::rates_at(&p, &l, *frozen);
+                let flagged = p.iter().zip(&l).filter(|(&p, &l)| l == 0 && p > *frozen).count();
+                if nf >= opts.min_slice && worst_recall.is_none_or(|w| recall < w.0) {
+                    worst_recall = Some((recall, value));
+                }
+                if nr >= opts.min_slice && worst_fpr.is_none_or(|w| fpr > w.0) {
+                    worst_fpr = Some((fpr, value));
+                }
+                let auroc = metrics::auroc(&p, &l);
+                println!("| {value} | {nf} | {nr} | {} | {} | {} | {} |", pct(recall), if nr > 0 { format!("{flagged} of {nr}") } else { "–".into() }, pct(fpr), if auroc.is_finite() { format!("{auroc:.3}") } else { "–".into() });
+            }
+            let show = |w: Option<(f64, &str)>| w.map_or_else(|| "none large enough".to_string(), |(r, v)| format!("{} ({v})", pct(r)));
+            println!("\nWorst {by} slice with at least {} items of the class: recall {}; FPR {}.", opts.min_slice, show(worst_recall), show(worst_fpr));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slices_use_grouping_columns_and_fall_back_to_the_score_row() {
+        let plain = crate::ingest::Item { path: "a.png".into(), label: 1, generator: "flux".into(), dataset: "set".into(), ..Default::default() };
+        let grouped = crate::ingest::Item { extra: vec!["p1".into(), "".into(), "reddit".into(), "diffusion".into(), "jpeg-q70".into()], ..plain.clone() };
+        for (by, a, b) in [("dataset", "set", "set"), ("generator", "flux", "flux"), ("source", "set", "reddit"), ("family", "flux", "diffusion"), ("transform", "none", "jpeg-q70")] {
+            assert_eq!((slice_value(by, &plain).unwrap().as_str(), slice_value(by, &grouped).unwrap().as_str()), (a, b), "{by}");
+        }
+        assert!(slice_value("prompt", &plain).is_err());
+    }
+
+    #[test]
+    fn operating_points_run_on_one_class_and_on_both() {
+        let row = |label: u8, prob: f32, gen: &str| Scored { label, generator: gen.into(), dataset: "d".into(), prob, logits: vec![] };
+        let mut scores = BTreeMap::new();
+        for i in 0..300 {
+            scores.insert(format!("r{i}"), row(0, i as f32 / 400.0, "real:cam"));
+            scores.insert(format!("f{i}"), row(1, 0.4 + i as f32 / 500.0, if i % 2 == 0 { "flux" } else { "sdxl" }));
+        }
+        let opts = OperatingPoints { slice_by: vec!["generator".into(), "transform".into()], cluster_by: Some(crate::split::Key::Source), ..Default::default() };
+        operating_points_markdown(&[("a".into(), scores.clone(), 0.5)], &opts).unwrap();
+        scores.retain(|_, r| r.label == 1);
+        operating_points_markdown(&[("a".into(), scores, 0.5)], &OperatingPoints::default()).unwrap();
+    }
+}

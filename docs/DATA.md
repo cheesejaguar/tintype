@@ -14,6 +14,25 @@ down to the selection, and writes a `manifest.tsv` per store
 (`path  label  generator  dataset`, label 1 = AI-generated). Image bytes are
 never re-encoded on the way in.
 
+A manifest may carry five more columns after those four, which say how its
+items are related:
+
+| Column | Name | Meaning |
+|---|---|---|
+| 5 | `parent_id` | The item a file was derived from. An original carries its own id and every processed copy carries the original's |
+| 6 | `scene_id` | The prompt or scene that sibling items share |
+| 7 | `source_id` | The collection, camera or platform it came from |
+| 8 | `generator_family` | The family of its generator |
+| 9 | `transform` | The processing applied to it, e.g. `jpeg-q70` |
+
+An empty column or `-` means none, and columns after the ninth are kept as
+they are. Every command that rewrites a manifest keeps these columns. The
+plans below write four-column manifests, which load exactly as before.
+`tintype split-groups` uses the columns to divide manifests into fit,
+calibrate and test sets without separating related items, and
+`tintype verify-split` fails if any group crosses; see
+[the frozen evaluation runbook](runbooks/frozen-eval.md).
+
 ## What is pinned
 
 A plan reads every repository at a fixed commit and checks every file it
@@ -346,6 +365,12 @@ plan's output can differ from the record if an upstream file was removed or
 replaced (the pins guard against the second) or if the RAISE-1k archive
 changed.
 
+A record of manifests that carry grouping columns (see the top of this
+page) is written as format 2, which adds those five columns to every row,
+so that `verify-split` can check a split from the records alone and
+`verify-set` reports a row whose group changed. Records of four-column
+manifests are format 1 as before, byte for byte, and both formats are read.
+
 The training stores and the `dev` sets are not recorded: several training
 stores were deleted between phases (see above), so a record would describe
 data that was not all there at once. To record any set, including your own:
@@ -354,6 +379,33 @@ data that was not all there at once. To record any set, including your own:
 tintype freeze-set --suite confirm7 --out confirm7.frozen.tsv.gz
 tintype freeze-set --manifest data/store/openfake/manifest.tsv --out openfake.frozen.tsv
 ```
+
+### The frozen independent split
+
+Built on 2026-11-14 for [the frozen evaluation runbook](runbooks/frozen-eval.md)
+from sources no training store, calibration set or earlier suite uses.
+It is evaluation data only: nothing from these sources may enter a
+training manifest while the split is in use. No file is redistributed
+here; the records hold hashes, sizes, labels and grouping columns.
+
+| Set | Record | Files | Size of the files |
+|---|---|---|---|
+| `fit` | [frozen-eval-fit.frozen.tsv.gz](manifests/frozen-eval-fit.frozen.tsv.gz) | 3,759 | 8.9 GB |
+| `calibrate` | [frozen-eval-calibrate.frozen.tsv.gz](manifests/frozen-eval-calibrate.frozen.tsv.gz) | 12,457 | 40.8 GB |
+| `test` | [frozen-eval-test.frozen.tsv.gz](manifests/frozen-eval-test.frozen.tsv.gz) | 19,326 | 53.0 GB |
+
+| Source | What is used | Licence, as stated at the source on 2026-11-14 | Pin |
+|---|---|---|---|
+| [HDR+ burst photography dataset](https://hdrplusdata.org/dataset.html) (Hasinoff et al., SIGGRAPH Asia 2016) | 3,640 `final.jpg` results | CC BY-SA 4.0 | Bucket `hdrplusdata`, folder `20171106/results_20171023`; each file checked against the MD5 the bucket lists |
+| [FloreView](https://lesc.dinfo.unifi.it/FloreView/) (Baracchi, Shullani, Iuliani, Piva, IEEE Access 2023) | 4,806 natural-scene JPEGs | CC BY-SA 4.0; the authors ask to be cited | Unversioned directory, no checksums published; the frozen records are the pin |
+| [CSAFE Multi-camera Smartphone Image Database](https://doi.org/10.25380/iastate.26932084.v1) (McGuire, Renfro, Reinders, Ommen, Carriquiry, Iowa State University, 2024) | 3,996 natural-scene JPEGs of `iPhone14.zip` | CC BY 4.0 | Version 1; archive MD5 `dfc01c89b14356141f53d253b72e946c` |
+| [ARForensics](https://huggingface.co/datasets/Yanran21/ARForensics) | 10,500 generated images of its test archives (1,500 per generator); its ImageNet photos are not used | MIT | Commit `828c2ee260361574f1c7f24ea50a1698128d6baf`, SHA-256 of each archive as listed |
+| [GenImage++](https://huggingface.co/datasets/Lunahera/genimagepp) | 3,000 generated images of three archives | CC BY-NC 4.0 | Commit `4160fbc103730771d3641139d3b995a3c2dbc719`, SHA-256 of each archive as listed |
+
+The processed copies (9,600 files) are rendered here from those originals
+by FFmpeg. The share-alike and non-commercial terms above apply to the
+images, which are not distributed; this page is not legal advice on what
+they mean for other uses.
 
 ## Released model files
 

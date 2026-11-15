@@ -11,8 +11,15 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Names of the optional grouping columns of a manifest, in column order
+/// (columns 5 to 9): what an item was derived from, the prompt or scene it
+/// shows, where it came from, the family of its generator, and the
+/// processing applied to it. They keep related items together when a
+/// manifest is split ([`crate::split`]) and name the slices of a report.
+pub const GROUP_COLUMNS: [&str; 5] = ["parent_id", "scene_id", "source_id", "generator_family", "transform"];
+
 /// One labelled image on disk.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Item {
     pub path: PathBuf,
     /// 1 = AI-generated, 0 = real.
@@ -20,6 +27,58 @@ pub struct Item {
     /// Generator name, or `real:<source>` for real images.
     pub generator: String,
     pub dataset: String,
+    /// Manifest columns 5 and up, verbatim: the grouping columns
+    /// ([`GROUP_COLUMNS`]) and anything after them. Empty for a
+    /// four-column manifest.
+    pub extra: Vec<String>,
+}
+
+impl Item {
+    /// Grouping column `k` of [`GROUP_COLUMNS`]; an absent or empty column,
+    /// or `-`, is `None`.
+    pub fn group(&self, k: usize) -> Option<&str> {
+        self.extra.get(k).map(String::as_str).filter(|v| !v.is_empty() && *v != "-")
+    }
+    /// The item this one was derived from (itself, for an original).
+    pub fn parent_id(&self) -> Option<&str> {
+        self.group(0)
+    }
+    /// The prompt or scene shared with sibling items.
+    pub fn scene_id(&self) -> Option<&str> {
+        self.group(1)
+    }
+    /// The collection or camera source.
+    pub fn source_id(&self) -> Option<&str> {
+        self.group(2)
+    }
+    pub fn generator_family(&self) -> Option<&str> {
+        self.group(3)
+    }
+    /// The processing applied to the item, e.g. `jpeg-q70`.
+    pub fn transform(&self) -> Option<&str> {
+        self.group(4)
+    }
+
+    /// Set grouping column `k`, padding the columns before it.
+    pub fn set_group(&mut self, k: usize, value: &str) {
+        if self.extra.len() <= k {
+            self.extra.resize(k + 1, String::new());
+        }
+        self.extra[k] = value.to_string();
+    }
+
+    /// The manifest row of this item with `path` in its first column. A
+    /// four-column item gives exactly the four-column row; trailing empty
+    /// columns are not written.
+    pub fn manifest_line(&self, path: &str) -> String {
+        let mut line = format!("{path}\t{}\t{}\t{}", self.label, self.generator, self.dataset);
+        let used = self.extra.iter().rposition(|v| !v.is_empty()).map_or(0, |k| k + 1);
+        for v in &self.extra[..used] {
+            line.push('\t');
+            line.push_str(v);
+        }
+        line
+    }
 }
 
 pub fn read_manifest(path: &Path) -> Result<Vec<Item>> {
@@ -32,7 +91,7 @@ pub fn read_manifest(path: &Path) -> Result<Vec<Item>> {
             if f.len() < 4 {
                 bail!("bad manifest line: {l}");
             }
-            Ok(Item { path: root.join(f[0]), label: f[1].parse()?, generator: f[2].to_string(), dataset: f[3].to_string() })
+            Ok(Item { path: root.join(f[0]), label: f[1].parse()?, generator: f[2].to_string(), dataset: f[3].to_string(), extra: f[4..].iter().map(|v| v.to_string()).collect() })
         })
         .collect()
 }
@@ -246,4 +305,58 @@ pub fn exact_overlap(train: &[Item], test: &[Item]) -> Vec<(PathBuf, PathBuf)> {
             tr.get(&f).map(|p| (i.path.clone(), p.to_path_buf()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("tintype-ingest-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn four_column_manifests_load_as_before() {
+        let d = scratch("four");
+        let text = "a.png\t1\tgen-x\tdemo\nsub/b.jpg\t0\treal:demo\tdemo\n";
+        std::fs::write(d.join("manifest.tsv"), text).unwrap();
+        let items = read_manifest(&d.join("manifest.tsv")).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!((items[0].path.clone(), items[0].label, items[0].generator.as_str(), items[0].dataset.as_str()), (d.join("a.png"), 1, "gen-x", "demo"));
+        assert!(items.iter().all(|i| i.extra.is_empty() && i.parent_id().is_none() && i.transform().is_none()));
+        // Written back, the rows are the bytes that were read.
+        let again: String = items.iter().map(|i| i.manifest_line(i.path.strip_prefix(&d).unwrap().to_str().unwrap()) + "\n").collect();
+        assert_eq!(again, text);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn grouping_columns_round_trip() {
+        let d = scratch("groups");
+        let text = concat!(
+            "a.png\t1\tflux\tdemo\tp1\ts1\tsrc-a\tdiffusion\tjpeg-q70\n",
+            // A gap, a dash, and a column after the five known ones.
+            "b.png\t0\treal:cam\tdemo\tp2\t\t-\t\t\tkept\n",
+            // Only some of the columns.
+            "c.png\t0\treal:cam\tdemo\tp3\n",
+        );
+        std::fs::write(d.join("manifest.tsv"), text).unwrap();
+        let items = read_manifest(&d.join("manifest.tsv")).unwrap();
+        assert_eq!((items[0].parent_id(), items[0].scene_id(), items[0].source_id(), items[0].generator_family(), items[0].transform()), (Some("p1"), Some("s1"), Some("src-a"), Some("diffusion"), Some("jpeg-q70")));
+        assert_eq!((items[1].parent_id(), items[1].scene_id(), items[1].source_id(), items[1].transform()), (Some("p2"), None, None, None));
+        assert_eq!(items[1].extra[5], "kept");
+        assert_eq!((items[2].parent_id(), items[2].scene_id()), (Some("p3"), None));
+        let again: String = items.iter().map(|i| i.manifest_line(i.path.file_name().unwrap().to_str().unwrap()) + "\n").collect();
+        assert_eq!(again, text);
+
+        let mut it = Item { path: "x.png".into(), label: 1, generator: "g".into(), dataset: "d".into(), ..Default::default() };
+        assert_eq!(it.manifest_line("x.png"), "x.png\t1\tg\td");
+        it.set_group(4, "blur");
+        assert_eq!(it.manifest_line("x.png"), "x.png\t1\tg\td\t\t\t\t\tblur");
+        assert_eq!((it.parent_id(), it.transform()), (None, Some("blur")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

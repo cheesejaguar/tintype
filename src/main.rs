@@ -1,9 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-#[cfg(target_os = "macos")]
-use tintype::detector::Detector;
-use tintype::detector::{Device, ModelSpec};
+use tintype::detector::{Detector, Device, ModelSpec};
 use tintype::ingest;
 
 #[cfg(feature = "provenance")]
@@ -126,6 +124,29 @@ enum Cmd {
         /// Name of one of the systems: print the others operated at its false-positive count on each set.
         #[arg(long)]
         at_rate_of: Option<String>,
+        /// Print the fixed-budget tables instead: recall at each `--fpr`,
+        /// the actual rates at each system's own cutoff, precision at
+        /// `--prevalence`, and the same per `--slice-by` slice.
+        #[arg(long, conflicts_with_all = ["markdown", "at_rate_of", "per_generator"])]
+        operating_points: bool,
+        /// With --operating-points: empirical false-positive rates to operate at.
+        #[arg(long, value_delimiter = ',', default_value = "0.001,0.01")]
+        fpr: Vec<f64>,
+        /// With --operating-points: the predeclared share of AI-generated items among inputs.
+        #[arg(long, default_value_t = 0.01)]
+        prevalence: f64,
+        /// With --operating-points: break results down by dataset, generator, source, family or transform.
+        #[arg(long, value_delimiter = ',', default_value = "dataset")]
+        slice_by: Vec<String>,
+        /// With --operating-points: bootstrap whole parent, scene, source or family groups instead of items.
+        #[arg(long)]
+        cluster_by: Option<String>,
+        /// With --operating-points: manifests whose grouping columns (5 and up) describe the scored files.
+        #[arg(long)]
+        groups: Vec<PathBuf>,
+        /// With --operating-points: smallest slice that counts towards the worst slice.
+        #[arg(long, default_value_t = 100)]
+        min_slice: usize,
     },
     /// Score a whole evaluation suite and print the comparison tables.
     Evaluate {
@@ -245,7 +266,8 @@ enum Cmd {
         #[arg(long)]
         model_only: bool,
     },
-    /// Single-item latency: one image at a time, decode to verdict.
+    /// Single-item latency: one image at a time, file to verdict. Runs on
+    /// every platform with `--device cpu`.
     Latency {
         #[arg(long)]
         weights: PathBuf,
@@ -433,6 +455,55 @@ enum Cmd {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Divide manifests into fit, calibrate and test sets so that related
+    /// items stay together: items that share a `parent_id` or `scene_id`
+    /// (manifest columns 5 and 6), and with `--together source,family`
+    /// whole sources and generator families. Writes `fit.tsv`,
+    /// `calibrate.tsv` and `test.tsv` to `--out-dir`. Record each with
+    /// `freeze-set` and check them with `verify-split`.
+    SplitGroups {
+        #[arg(long, required = true)]
+        manifest: Vec<PathBuf>,
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Target shares of fit, calibrate and test.
+        #[arg(long, default_value = "0.6,0.2,0.2")]
+        fractions: String,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// What must not cross sets: any of parent, scene, source, family.
+        #[arg(long, default_value = "parent,scene")]
+        together: String,
+        /// A source to keep out of fitting and calibration: every item of it
+        /// goes to the test set (`source_id`, or else `real:<name>` for real
+        /// items and the dataset for generated ones). Repeatable.
+        #[arg(long)]
+        hold_out_source: Vec<String>,
+        /// A generator family to keep out of fitting and calibration
+        /// (`generator_family`, or else the generator name). Repeatable.
+        #[arg(long)]
+        hold_out_family: Vec<String>,
+        /// The `--out-dir` of an earlier split: groups that contain an item
+        /// it placed go to the same set (for derivatives made afterwards).
+        #[arg(long)]
+        existing: Option<PathBuf>,
+    },
+    /// Fail if any group crosses the given sets: a shared path, `parent_id`
+    /// or `scene_id` (or, with `--together`, source or family), a held-out
+    /// source or family outside the test set, or, between records written by
+    /// `freeze-set`, two files with the same bytes.
+    VerifySplit {
+        /// `name=file`: a manifest or a `freeze-set` record of the set
+        /// called `name` (fit, calibrate, test). Repeatable, also per set.
+        #[arg(long = "set", required = true)]
+        sets: Vec<String>,
+        #[arg(long, default_value = "parent,scene")]
+        together: String,
+        #[arg(long)]
+        held_out_source: Vec<String>,
+        #[arg(long)]
+        held_out_family: Vec<String>,
+    },
     /// Check the released model files (weights and specs) against the
     /// SHA-256 values recorded in the source and in docs/DATA.md.
     VerifyModels {
@@ -464,6 +535,12 @@ fn system(reference: &Option<String>, fast: bool, sensitive: bool, strict: bool)
     })
 }
 
+/// The `f` quantile of sorted values (the same nearest-rank rule the
+/// latency line has always used for its median and p90).
+fn quantile(sorted: &[f64], f: f64) -> f64 {
+    sorted[((sorted.len() - 1) as f64 * f) as usize]
+}
+
 fn load_manifests(ms: &[PathBuf]) -> Result<Vec<ingest::Item>> {
     let mut v = Vec::new();
     for m in ms {
@@ -493,7 +570,7 @@ fn main() -> Result<()> {
         Cmd::ScoreVideo { weights, reference, manifest, out, frames, views, second_opinion, all_frames, batch, device } => {
             tintype::eval::score_videos(&weights, &system(&reference, false, false, false)?, &manifest, &out, parse_device(&device)?, batch, frames, views.as_deref(), second_opinion.as_deref(), all_frames).map(|_| ())
         }
-        Cmd::Report { systems, per_generator, markdown, pooled, at_rate_of } => {
+        Cmd::Report { systems, per_generator, markdown, pooled, at_rate_of, operating_points, fpr, prevalence, slice_by, cluster_by, groups, min_slice } => {
             let mut loaded = Vec::new();
             for s in &systems {
                 let (name, rest) = s.split_once('=').ok_or_else(|| anyhow::anyhow!("use name=scores.tsv[@threshold]"))?;
@@ -503,7 +580,19 @@ fn main() -> Result<()> {
                 };
                 loaded.push((name.to_string(), tintype::report::read_scores(std::path::Path::new(path))?, thr));
             }
-            if let Some(baseline) = at_rate_of {
+            if operating_points {
+                anyhow::ensure!(fpr.iter().all(|f| (0.0..1.0).contains(f)) && (0.0..=1.0).contains(&prevalence), "--fpr and --prevalence are fractions, e.g. 0.001");
+                let cluster_by = match cluster_by.as_deref() {
+                    None | Some("none") => None,
+                    Some(k) => tintype::split::Key::parse_list(k)?.first().copied(),
+                };
+                let mut by_path = std::collections::BTreeMap::new();
+                for it in load_manifests(&groups)? {
+                    by_path.insert(it.path.display().to_string(), it);
+                }
+                let opts = tintype::report::OperatingPoints { fprs: fpr, prevalence, slice_by, cluster_by, min_slice, groups: by_path };
+                tintype::report::operating_points_markdown(&loaded, &opts)?;
+            } else if let Some(baseline) = at_rate_of {
                 tintype::report::matched_markdown(&loaded, &baseline, pooled.as_deref())?;
             } else if markdown {
                 tintype::report::compare_markdown(&loaded, pooled.as_deref());
@@ -550,7 +639,6 @@ fn main() -> Result<()> {
             };
             tintype::eval::calibrate(&weights, &scores, target_fpr, &profile, rule)
         }
-        #[cfg(target_os = "macos")]
         Cmd::Latency { weights, reference, manifest, n, device, fast, all_views } => {
             let items = ingest::read_manifest(&manifest)?;
             let mut spec = match reference.as_deref() {
@@ -585,9 +673,9 @@ fn main() -> Result<()> {
                     ms.push(t.elapsed().as_secs_f64() * 1e3);
                 }
             }
+            anyhow::ensure!(!ms.is_empty(), "none of the first {} files of {} could be read", n + 5, manifest.display());
             ms.sort_by(|a, b| a.total_cmp(b));
-            let q = |f: f64| ms[((ms.len() - 1) as f64 * f) as usize];
-            println!("single-image latency over {} images: median {:.1} ms, p90 {:.1} ms, mean {:.1} ms", ms.len(), q(0.5), q(0.9), ms.iter().sum::<f64>() / ms.len() as f64);
+            println!("single-image latency over {} images: median {:.1} ms, p90 {:.1} ms, p95 {:.1} ms, mean {:.1} ms", ms.len(), quantile(&ms, 0.5), quantile(&ms, 0.9), quantile(&ms, 0.95), ms.iter().sum::<f64>() / ms.len() as f64);
             Ok(())
         }
         #[cfg(target_os = "macos")]
@@ -650,7 +738,7 @@ fn main() -> Result<()> {
             })
         }
         #[cfg(not(target_os = "macos"))]
-        Cmd::Score { .. } | Cmd::ScoreVideo { .. } | Cmd::Evaluate { .. } | Cmd::Finalize { .. } | Cmd::FinalizeVideo { .. } | Cmd::Calibrate { .. } | Cmd::Latency { .. } | Cmd::Profile { .. } | Cmd::Train { .. } => {
+        Cmd::Score { .. } | Cmd::ScoreVideo { .. } | Cmd::Evaluate { .. } | Cmd::Finalize { .. } | Cmd::FinalizeVideo { .. } | Cmd::Calibrate { .. } | Cmd::Profile { .. } | Cmd::Train { .. } => {
             anyhow::bail!("this command uses the Apple GPU engine and needs macOS on Apple Silicon; `detect --device cpu` works everywhere")
         }
         Cmd::SetPhotoSecondOpinion { weights, band } => {
@@ -804,6 +892,79 @@ fn main() -> Result<()> {
                 failed += problems.len();
             }
             anyhow::ensure!(failed == 0, "{failed} differences from the frozen evaluation sets");
+            Ok(())
+        }
+        Cmd::SplitGroups { manifest, out_dir, fractions, seed, together, hold_out_source, hold_out_family, existing } => {
+            use tintype::split;
+            let items = load_manifests(&manifest)?;
+            anyhow::ensure!(!items.is_empty(), "the manifests list no items");
+            let opts = split::Options { fractions: split::parse_fractions(&fractions)?, seed, together: split::Key::parse_list(&together)?, hold_out_sources: hold_out_source, hold_out_families: hold_out_family };
+            // Paths are written absolute (symbolic links kept), so the sets load from anywhere.
+            let abs = |p: &std::path::Path| std::path::absolute(p).map(|a| a.display().to_string());
+            let mut pinned = std::collections::BTreeMap::new();
+            if let Some(dir) = &existing {
+                for (s, name) in split::SETS.iter().enumerate() {
+                    for it in ingest::read_manifest(&dir.join(format!("{name}.tsv")))? {
+                        pinned.insert(abs(&it.path)?, s);
+                    }
+                }
+            }
+            let keyed: Vec<ingest::Item> = items.iter().map(|it| Ok(ingest::Item { path: abs(&it.path)?.into(), ..it.clone() })).collect::<Result<_>>()?;
+            let sets = split::assign(&keyed, &opts, &pinned)?;
+            std::fs::create_dir_all(&out_dir)?;
+            for (s, name) in split::SETS.iter().enumerate() {
+                let text: String = keyed.iter().zip(&sets).filter(|(_, &x)| x == s).map(|(it, _)| it.manifest_line(&it.path.display().to_string()) + "\n").collect();
+                std::fs::write(out_dir.join(format!("{name}.tsv")), text)?;
+            }
+            for l in split::summary(&keyed, &sets) {
+                println!("{l}");
+            }
+            // The split is only as good as its grouping columns: say how many items had any.
+            let grouped = keyed.iter().filter(|it| it.parent_id().is_some() || it.scene_id().is_some()).count();
+            println!("{grouped} of {} items carry a parent_id or scene_id; kept together: {}", keyed.len(), opts.together.iter().map(|k| k.name()).collect::<Vec<_>>().join(", "));
+            let named: Vec<(String, Vec<ingest::Item>)> = split::SETS.iter().enumerate().map(|(s, name)| (name.to_string(), keyed.iter().zip(&sets).filter(|(_, &x)| x == s).map(|(it, _)| it.clone()).collect())).collect();
+            let mut problems = split::crossings(&named, &opts.together);
+            problems.extend(split::hold_out_leaks(&named, &opts.hold_out_sources, &opts.hold_out_families));
+            anyhow::ensure!(problems.is_empty(), "the split leaks: {}", problems.join("; "));
+            Ok(())
+        }
+        Cmd::VerifySplit { sets, together, held_out_source, held_out_family } => {
+            use tintype::split;
+            let keys = split::Key::parse_list(&together)?;
+            let mut named: Vec<(String, Vec<ingest::Item>)> = Vec::new();
+            let mut hashes: Vec<(String, String, String)> = Vec::new();
+            for s in &sets {
+                let (name, file) = s.split_once('=').ok_or_else(|| anyhow::anyhow!("use --set name=file"))?;
+                let file = std::path::Path::new(file);
+                // A freeze-set record carries the hashes too; anything else is read as a manifest.
+                let items = match tintype::integrity::Frozen::read(file) {
+                    Ok(frozen) => frozen
+                        .rows
+                        .into_iter()
+                        .map(|r| {
+                            hashes.push((name.to_string(), r.sha256, r.path.clone()));
+                            ingest::Item { path: r.path.into(), label: r.label, generator: r.generator, dataset: r.dataset, extra: r.groups }
+                        })
+                        .collect(),
+                    Err(_) => ingest::read_manifest(file)?,
+                };
+                match named.iter_mut().find(|(n, _)| n == name) {
+                    Some((_, v)) => v.extend(items),
+                    None => named.push((name.to_string(), items)),
+                }
+            }
+            let mut problems = split::crossings(&named, &keys);
+            problems.extend(split::hold_out_leaks(&named, &held_out_source, &held_out_family));
+            problems.extend(split::shared_bytes(&hashes));
+            for p in &problems {
+                println!("{p}");
+            }
+            let sizes: Vec<String> = named.iter().map(|(n, v)| format!("{n} {}", v.len())).collect();
+            println!("{}: {}", sizes.join(", "), if problems.is_empty() { format!("no group crosses sets ({})", keys.iter().map(|k| k.name()).collect::<Vec<_>>().join(", ")) } else { format!("{} leaks", problems.len()) });
+            if hashes.is_empty() {
+                println!("note: identical bytes across sets are only checked between freeze-set records");
+            }
+            anyhow::ensure!(problems.is_empty(), "{} groups or files cross the sets", problems.len());
             Ok(())
         }
         Cmd::VerifyModels { root } => {
