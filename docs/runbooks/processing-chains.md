@@ -5,11 +5,14 @@ Workstream 1 of the [detection improvement research](../../reports/Tintype%20det
 label-symmetric processing chains, hold its ranking on processed files it
 has not seen, without flagging more authentic ones?
 
-**Status.** The code, the audit tooling and this runbook exist and are
-tested. **No arm has been trained.** The audit numbers at the end come
-from archived scores and CPU re-scoring of development sets; they are
-exploratory. The split that decides between the arms
-([frozen-eval.md](frozen-eval.md)) has not been built yet.
+**Status.** Arms A and B have run on the frozen split, two seeds each
+(2026-11-14): **arm B does not pass the gate.** It gains 5.8 and 7.0
+recall points on processed copies at the 1% cutoff where the gate asks for
+10, and it ranks confirmation 7 worse than arm A
+([the result](#arms-a-and-b-on-the-frozen-split-two-seeds)). Arm C (the
+offline codec stores) has not run, and item 4 of the gate cannot be
+evaluated: the split has no learned-codec copies. The other numbers at the
+end are exploratory.
 
 ## The gate, stated before anything is trained
 
@@ -85,16 +88,16 @@ every learned codec stay offline (section 5).
 ## 0. Before anything runs
 
 Run from a checkout that has `data/` (the stores) and `runs/` beside it.
-On the development machine the stores and earlier checkpoints are under
-`/Users/aaron/Code/veracity-scratch`; link `data/store` and `data/vstore`
-from there and keep `runs/` your own.
+Where the stores and earlier checkpoints live elsewhere (`$SCRATCH`
+below), link `data/store` and `data/vstore` from there and keep `runs/`
+your own.
 
 ```bash
 cargo build --release --locked --bin tintype
 ./target/release/tintype verify-models            # the released files are untouched; repeat after every step below
 
 # The phase-3 checkpoint all three arms start from.
-INIT=/Users/aaron/Code/veracity-scratch/runs/v4/step_007000.safetensors
+INIT=$SCRATCH/runs/v4/step_007000.safetensors
 shasum -a 256 "$INIT"     # 2d11bffd77f246416d85a85bb2ce06cee60f28789e76aaa3e4d6e6e739ce7197
 
 # The phase-6 manifests, in the order of the phase-6 run (arrays: the same in bash and zsh).
@@ -432,11 +435,62 @@ unchanged.
 
 ## Measured so far
 
-All exploratory: archived scores, CPU re-scoring of development sets
-with the released weights, and one development-set diagnostic of trained
-arms. Cutoffs taken on a cohort and reported on it describe that cohort.
-Nothing here is a frozen-split result, and none of it tests the gate. Hardware: Apple M6, 12 cores, 32 GB, macOS 27.2,
-shared with other jobs while these ran.
+The gate result comes first. Everything after it is exploratory:
+archived scores, CPU re-scoring of development sets with the released
+weights, and an earlier development-set diagnostic of trained arms.
+Cutoffs taken on a cohort and reported on it describe that cohort.
+Hardware: Apple M6, 12 cores, 32 GB, macOS 27.2, shared with other jobs
+while these ran.
+
+### Arms A and B on the frozen split, two seeds
+
+The section 3 commands for arm A and arm B at commit `7156565`, each with
+`--seed 1` and `--seed 2`, on all 25 phase-6 manifests (`tiny-genimage`
+and `stylegan3` were fetched again and match their manifests row for
+row), then section 4 on the [frozen split](frozen-eval.md#as-built-on-2026-11-14).
+Every table, the diagnostics, the commands and the score files:
+[processing-chain-arms-frozen](../results/processing-chain-arms-frozen/report.md).
+
+On `test`, at cutoffs fitted on `calibrate`:
+
+| | Arm A, seed 1 | Arm B, seed 1 | Arm A, seed 2 | Arm B, seed 2 |
+|---|---|---|---|---|
+| Processed recall, 1% cutoff | 82.1% | 87.9% | 81.5% | 88.5% |
+| Processed recall, 0.1% cutoff | 72.3% | 78.9% | 71.5% | 78.3% |
+| Processed authentic flagged, 1% cutoff (of 2,400) | 73 | 58 | 78 | 55 |
+| Clean recall, 1% cutoff | 95.6% | 95.2% | 95.4% | 95.7% |
+| Clean recall, 0.1% cutoff | 92.9% | 92.4% | 92.6% | 92.8% |
+| Clean authentic flagged, 1% cutoff (of 7,326) | 55 | 90 | 81 | 61 |
+
+Against the gate:
+
+1. **+10 points on processed copies at 1%: not met.** +5.83 points (95%
+   interval +4.67 to +7.25) and +7.04 (+5.75 to +8.46). The gain is heavy
+   noise first (17.5% → 61.0%, 10.0% → 55.0%), then `jpeg-qv12` and the
+   reposts; at each row's own 1% cutoff the JPEG and repost gains mostly
+   go, as on the Frontier pairs.
+2. **Recall at 0.1% not lower: met** (+6.5 and +6.8 points).
+3. **Clean recall within 1 point: met** at both cutoffs in both seeds.
+4. **Fewer learned-codec false alarms: cannot be evaluated**; the split
+   has no codec copies. On the other transform slices arm B flags fewer
+   authentic copies in total (58 and 55 against 73 and 78), fewer under
+   noise and more under reposts (6 to 9 of 200 against 1 to 5).
+
+Diagnostics, which choose nothing: on confirmation 7 arm B ranks worse
+than arm A in both seeds (recall at 1% empirical FPR 84.9% and 84.4%
+against 88.6% and 88.8%; at 0.1%, 57.9% and 57.8% against 64.6% and
+62.7%). On the NTIRE sets it ranks distorted images slightly better
+(public test AUROC 0.648 and 0.647 against 0.634 and 0.635) and clean ones
+the same; the learned-codec rows stay near chance for both. The frozen
+split's clean rows are camera originals against small PNGs and do not
+show the confirmation 7 cost.
+
+**Decision: arm B is not a ship candidate.** What the result suggests for
+a next arm: the noise operation transfers and the JPEG and repost
+operations move scores without improving ranking, so the next thing to
+find out is why, and arm C is the only arm that addresses learned codecs.
+A next arm also has to hold confirmation 7's ranking, which this split
+cannot check.
 
 ### Archived baselines, reproduced
 
@@ -629,5 +683,6 @@ renderings before spending the frozen split on it.
 
 | Date | Commit | What ran | Result |
 |---|---|---|---|
+| 2026-11-14 | `7156565` | Arms A and B with seeds 1 and 2 on all 25 phase-6 manifests (Apple M6 GPU, 55 to 85 minutes each, the longer ones sharing the GPU); each calibrated on the frozen `calibrate` set and scored on `test`; diagnostics on confirmation 7, the NTIRE sets and the Frontier pairs | [processing-chain-arms-frozen](../results/processing-chain-arms-frozen/report.md). Arm B: +5.8 and +7.0 points on processed copies at 1% against the +10 of the gate. Not a ship candidate. |
 | 2026-11-14 | `40816c8` and earlier, as stated with each result | Audit tooling on archives and on the CPU; loader timing; a zero-step initial evaluation of two candidate starting checkpoints; two 100-step smoke runs | Above. No arm trained. |
 | 2026-11-14 | `10568b1` | Arms A and B with seeds 1 and 2 on the 23 manifests present (Apple M6 GPU, about 55 minutes each); the four checkpoints and the starting one scored on the Frontier pairs under twelve transforms | [processing-chain-arms](../results/processing-chain-arms/report.md): noise +22.0 and +11.3 points at 1% FPR, strong blur +8.8 with intervals that include zero, JPEG and reposts within the seed spread, clean level. Development data; not the frozen split; arm C not run. |
