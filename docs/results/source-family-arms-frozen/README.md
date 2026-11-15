@@ -1,4 +1,4 @@
-# Source and family arms on the frozen split: arms B and C, one seed each
+# Source and family arms on the frozen split: arms B and C
 
 The gate run of [the source and family runbook](../../runbooks/source-family-matching.md):
 the current mix (the control, two seeds) against the same recipe with
@@ -39,7 +39,51 @@ runbook; the build is a different one.
   the operating point, not the ranking. The simulated repost rows, the
   only place it could have helped, are not better.
 
-Neither arm is a ship candidate. Arm B is the one worth a second seed.
+Neither arm is a ship candidate. Arm B got a second seed, below.
+
+## Arm B, second seed (added the same day)
+
+The same arm B command with `--seed 2`, pre-registered before it ran
+(the addendum in [PREREGISTRATION.md](../../PREREGISTRATION.md#source-and-family-matching-on-the-frozen-split-what-was-fixed-before-the-first-look)),
+trained at commit `fb1a56c` in 54 minutes with 0% data wait, calibrated on
+`calibrate` and looked at once on `test`. Full table: [gate-seed2.md](gate-seed2.md),
+read against the control's second seed. Raw cutoffs: 1.315 for 1%, 2.717
+for 0.1%.
+
+| On `test` | Control, seeds 1 and 2 | Arm B, seeds 1 and 2 | Arm B − control, seed by seed |
+|---|---|---|---|
+| New-family macro recall, 1% cutoff | 91.54%, 91.00% | 93.23%, 92.27% | +1.69, +1.27 |
+| New-family macro recall, 0.1% cutoff | 87.16%, 86.35% | 88.76%, 89.01% | +1.60, +2.66 |
+| Older-family macro recall, 1% cutoff | 99.71%, 99.83% | 99.92%, 99.62% | +0.21, −0.21 |
+| Processed recall, 1% cutoff | 82.08%, 81.46% | 84.54%, 81.83% | +2.46, +0.38 |
+| Processed recall, 0.1% cutoff | 72.33%, 71.50% | 74.46%, 75.08% | +2.12, +3.58 |
+| Clean authentic flagged of 7,326, 1% / 0.1% | 55 / 9, 81 / 12 | 48 / 9, 37 / 10 | |
+| Processed authentic flagged of 2,400, 1% / 0.1% | 73 / 15, 78 / 16 | 71 / 16, 60 / 17 | |
+| Recall at `test`'s own 1% / 0.1% cutoffs (ranking) | 91.49% / 85.10%, 90.61% / 82.90% | 93.22% / 86.66%, 92.48% / 86.58% | +1.73 / +1.56, +1.87 / +3.68 |
+| Confirmation 7, recall at 1% / 0.1% empirical FPR (diagnostic) | 88.58% / 64.56%, 88.83% / 62.72% | 88.48% / 67.73%, 87.56% / 62.62% | −0.10 / +3.17, −1.27 / −0.10 |
+
+What repeats and what does not:
+
+- **The new-family gain repeats** at both cutoffs (interval for seed 2 at
+  1%: +0.74 to +1.84), and so does the better ranking of `test` as a
+  whole. It is again Open-MAGVIT2 (75.2% against 69.2%) more than VAR
+  (80.2% against 79.3%).
+- **The processed gain at the 1% cutoff does not repeat** (+0.38, interval
+  −0.49 to +1.30). Seed 2's cutoff landed stricter (97 of 9,726 authentic
+  files flagged against the control's 159), and at the 0.1% cutoff the
+  gain is there in both seeds.
+- **The same condition fails by one image again**: 17 processed authentic
+  copies flagged at 0.1% against the control's 16.
+- **Older families** are 0.21 points lower at 1% in seed 2 (interval −0.44
+  to −0.04), within the one point the gate allows.
+- **Confirmation 7 does not show a gain**: seed 2 is 1.3 points lower at
+  1% and level at 0.1%, so seed 1's +3.2 at 0.1% was not the arm.
+
+Arm B still does not pass as written. It is the only arm of the day whose
+main effect repeats without a cost elsewhere on the split, and the
+condition it fails turns on one image in both seeds; whether that
+condition should carry a tolerance is a question for the maintainer
+before any further run.
 
 ## What limits this
 

@@ -834,6 +834,17 @@ shows is that the change does not help on simulated reposts.
 
 **Decision: neither arm is a ship candidate.**
 
+### Arm B, second seed
+
+Run the same day, pre-registered before it ran. The new-family gain
+repeats (+1.69 and +1.27 points at the 1% cutoff, +1.60 and +2.66 at
+0.1%), as does the better ranking of `test` as a whole; the processed
+gain at the 1% cutoff does not (+2.46, then +0.38); the condition on
+processed authentic copies at 0.1% fails by one image again (17 against
+16); and confirmation 7 shows no gain (seed 2 is 1.3 points lower at 1%).
+Arm B still does not pass as written. Tables:
+[the results folder](../results/source-family-arms-frozen/README.md#arm-b-second-seed-added-the-same-day).
+
 ## Evaluation
 
 Only on the frozen split of [frozen-eval.md](frozen-eval.md). The archived suites
@@ -956,3 +967,4 @@ On the Apple GPU, in this order. Item 1 has been run once.
 |---|---|---|---|
 | 2026-11-13/14 | `f753a48` | The audits, probes, family summary, sampling shares and review-sample draw above, on the local stores (CPU). No training, no scoring. | workstream 4 |
 | 2026-11-14 | `f59da2e` | Arm B (family-weighted) and arm C (source-matched) trained, `--seed 1`, 8,000 steps each, Apple M6 GPU. Each calibrated on the frozen `calibrate` set (1% and 0.1%), then `test` scored once with every view (18:08 and 19:05 local time), then confirmation batch 7 as a diagnostic. Control: workstream 1's two current-mix runs, not retrained. Neither arm passes the gate | workstream 4 |
+| 2026-11-14 | `fb1a56c` | Arm B with `--seed 2`, 8,000 steps, Apple M6 GPU; calibrated on the frozen `calibrate` set, `test` scored once with every view (look at 20:12), then confirmation 7 | the orchestrating session |
