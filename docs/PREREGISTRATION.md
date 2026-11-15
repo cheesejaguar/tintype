@@ -825,6 +825,106 @@ rises at a matched rate (93.40% to 97.30% at 1%), and they are excluded
 by condition (b). The rule is applied as written; the write-up reports
 both readings.
 
+## Partial edits on the frozen split: what was fixed before the first test-side composite
+
+Written on 14 November 2026, at commit `ab4808d` of
+`research/ws9-partial-edits`, before any composite was built from the
+`test` set of the frozen split and before any `test` image was scored for
+this workstream. The split, its records and its own entry are on
+`research/step0-frozen-eval` ("The frozen independent split"). `test` is
+not blind: it has been scored for the incumbent and for the two
+processing-chain arms. This workstream looks at it once.
+
+Nothing here can change what ships. No model is trained, no shipped file
+is written, and whatever the outcome no cutoff or pooling rule is proposed
+for release: a pass would only say that a supervised patch head is worth
+building ([runbook](runbooks/partial-edits.md)).
+
+**Model.** The released photo model, unchanged, as a copy under `runs/`.
+
+**Scoring rules compared.** `global (deployed)` (what `detect` reports),
+`views mean`, `views max`, `views top-2`, `grid mean`, `grid max`,
+`grid top-3`, from `tintype score-windows --stride 224 --max-windows 128`.
+On a 12-megapixel photo that grid is about 13 × 9 windows of 224 px with
+gaps of 100 to 130 px between them; the cap is a cost bound, fixed here.
+
+**Data.** Parents are authentic originals of the split (`transform` none;
+a processed copy is not a parent): from `calibrate` to set cutoffs, from
+`test` to report, never mixed. `scripts/prepare-partial-store.py --seed 1`
+shuffles them, keeps those with a shorter side of at least 448 px and a
+longer side of at most 4,800 px, and takes four chunks of 30 (25 parents
+are built from each, 100 per set) and a pool of 1,000 further originals
+that stay untouched. Donors are generated originals of the same set.
+
+**What subset is usable, and why.** A region is pasted at native
+resolution, so a donor must be at least as large as the region. Every
+authentic original is 12 megapixels or more and the generated originals
+are 256 to 1,024 px, so a region of 1% of a photo is about 350 px square
+and only the 1,024 px generators can supply it: in `calibrate`, FLUX.1-dev,
+FLUX.1-Krea and SD3 (1,200 of 4,200 generated originals). Switti (512 px),
+Janus-Pro and LlamaGen (384 px), VAR and Open-MAGVIT2 (256 px) cannot
+donate. The same rule (`--donor-min 1024`) is applied to `test`, whatever
+generators that leaves. The areas are therefore **1%, 2% and 3% of the
+image** (about 350, 490 and 600 px square), not the 2% to 25% of the
+development diagnostic: a 12% region of these photos would be larger than
+any generated image in the split. Photos with a longer side above 4,800 px
+are left out because a 3% region of them does not fit a 1,024 px donor.
+Blends: hard and feathered. Controls per parent, with the region in the
+same place: `parent`, `resave`, `self-paste`, `authentic-paste`.
+
+**Operating points.** 1% and 0.1% authentic FPR. For each rule the cutoff
+is the one that rate gives on the 1,100 untouched `calibrate` images (the
+100 parents and the pool), written by `partial-report --freeze-cutoffs`
+and applied to `test` with `--cutoffs`. Eleven and one false positives are
+allowed there, so 0.1% is resolved by a single image and is reported as
+such. The same table at `test`'s own empirical cutoffs is given beside it,
+labelled as empirical.
+
+**Degraded slices.** Every slice here other than `parent` is a transform:
+the re-save, the two authentic pastes and the generated paste at each area
+and blend, and each is reported on its own. The split's twelve processing
+operations are not composited (they would multiply the store twelvefold);
+that is left as a step.
+
+**Chosen on `calibrate`, before the look.** The local rule that stands for
+"local" in the gate: `grid max` or `grid top-3`, whichever flags more of
+the `calibrate`-side generated pastes at the 1% cutoff (`grid max` on a
+tie). Nothing else is chosen.
+
+**Reported whatever the outcome.** For every rule, at both rates: images
+flagged in every slice, by area and blend; window-level precision and
+recall against the masks; the top-window rate against chance; and the
+achieved authentic rate on `test` with its interval.
+
+**The gate** (`scripts/partial-gate.py`, over parents because a parent's
+items are not independent), at each rate:
+
+1. *Transfer.* For the global and the local rule, the two-sided 95%
+   Clopper–Pearson interval of the share of the 1,100 untouched `test`
+   images above the frozen cutoff reaches down to the target rate.
+2. *Local.* The local rule flags more of a parent's generated pastes than
+   the global score does: one-sided exact sign test over the 100 `test`
+   parents, p < 0.025.
+3. *Controls.* For `resave`, `self-paste` and `authentic-paste`
+   separately, the local rule does not flag a larger share of a parent's
+   control items than of the parent's own untouched image: one-sided exact
+   sign test, p ≥ 0.05 to pass.
+4. *Not global.* No verdict or score changes; this is the default-output
+   check of the runbook, not a measurement on the split.
+
+The gate passes at a rate when 1 to 3 hold there, and overall only when it
+passes at both rates. It cannot be evaluated at a rate the calibration
+count does not resolve.
+
+**Caveats fixed in advance.** Authentic parents are camera JPEGs and donors
+are PNGs; a composite is re-saved as JPEG at its parent's estimated
+quality, and the `resave` slice shows what that alone does. FloreView is
+36 scenes on 46 phones and CSAFE is ten units of one phone, so parents are
+fewer scenes and devices than their count. Pasted pixels are not
+inpainting: nothing here says how a model that blends in latent space
+scores. The supervised patch head, self-blended faces and every video part
+are not run.
+
 ## Note on the later speed changes
 
 The early-exit margins for photos were tightened, and early exit over frames

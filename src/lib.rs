@@ -33,3 +33,4 @@ pub mod swin;
 pub mod plans;
 pub mod pool;
 pub mod eval;
+pub mod partial;
