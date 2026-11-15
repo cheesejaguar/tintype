@@ -380,6 +380,33 @@ tintype freeze-set --suite confirm7 --out confirm7.frozen.tsv.gz
 tintype freeze-set --manifest data/store/openfake/manifest.tsv --out openfake.frozen.tsv
 ```
 
+### The frozen independent split
+
+Built on 2026-11-14 for [the frozen evaluation runbook](runbooks/frozen-eval.md)
+from sources no training store, calibration set or earlier suite uses.
+It is evaluation data only: nothing from these sources may enter a
+training manifest while the split is in use. No file is redistributed
+here; the records hold hashes, sizes, labels and grouping columns.
+
+| Set | Record | Files | Size of the files |
+|---|---|---|---|
+| `fit` | [frozen-eval-fit.frozen.tsv.gz](manifests/frozen-eval-fit.frozen.tsv.gz) | 3,759 | 8.9 GB |
+| `calibrate` | [frozen-eval-calibrate.frozen.tsv.gz](manifests/frozen-eval-calibrate.frozen.tsv.gz) | 12,457 | 40.8 GB |
+| `test` | [frozen-eval-test.frozen.tsv.gz](manifests/frozen-eval-test.frozen.tsv.gz) | 19,326 | 53.0 GB |
+
+| Source | What is used | Licence, as stated at the source on 2026-11-14 | Pin |
+|---|---|---|---|
+| [HDR+ burst photography dataset](https://hdrplusdata.org/dataset.html) (Hasinoff et al., SIGGRAPH Asia 2016) | 3,640 `final.jpg` results | CC BY-SA 4.0 | Bucket `hdrplusdata`, folder `20171106/results_20171023`; each file checked against the MD5 the bucket lists |
+| [FloreView](https://lesc.dinfo.unifi.it/FloreView/) (Baracchi, Shullani, Iuliani, Piva, IEEE Access 2023) | 4,806 natural-scene JPEGs | CC BY-SA 4.0; the authors ask to be cited | Unversioned directory, no checksums published; the frozen records are the pin |
+| [CSAFE Multi-camera Smartphone Image Database](https://doi.org/10.25380/iastate.26932084.v1) (McGuire, Renfro, Reinders, Ommen, Carriquiry, Iowa State University, 2024) | 3,996 natural-scene JPEGs of `iPhone14.zip` | CC BY 4.0 | Version 1; archive MD5 `dfc01c89b14356141f53d253b72e946c` |
+| [ARForensics](https://huggingface.co/datasets/Yanran21/ARForensics) | 10,500 generated images of its test archives (1,500 per generator); its ImageNet photos are not used | MIT | Commit `828c2ee260361574f1c7f24ea50a1698128d6baf`, SHA-256 of each archive as listed |
+| [GenImage++](https://huggingface.co/datasets/Lunahera/genimagepp) | 3,000 generated images of three archives | CC BY-NC 4.0 | Commit `4160fbc103730771d3641139d3b995a3c2dbc719`, SHA-256 of each archive as listed |
+
+The processed copies (9,600 files) are rendered here from those originals
+by FFmpeg. The share-alike and non-commercial terms above apply to the
+images, which are not distributed; this page is not legal advice on what
+they mean for other uses.
+
 ## Released model files
 
 | File | Bytes | SHA-256 |
