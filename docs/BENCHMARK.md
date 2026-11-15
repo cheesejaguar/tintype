@@ -26,8 +26,8 @@ once. Each system is at its shipped threshold.
 | | `--sensitive`: 0.955, 0.972 | SwinV2 detector: 0.896, 0.918 |
 | **Video**, batch 4: 1,156 AI and 900 real | 0.997, 0.941 | WaveRep: 0.983, 0.912 |
 | | with the second opinion: 0.997, 0.960 | |
-| **Photo throughput**, GPU, end to end | 263 images/s; 455 with `--fast` | Community Forensics: 61–67 as released, 100 through this engine; SwinV2 detector: 8.6 and 30 |
-| **Photo throughput**, CPU | 38.8 images/s; 52.6 with `--fast` | Community Forensics: 25.4 as released, 35.0 through this engine |
+| **Photo throughput**, GPU, end to end | 263 images/s; 455 with `--fast` (1,000 mixed files up to 4K, before the speed changes; 530–563 on the batch 7 sample after them) | Community Forensics: 61–67 as released, 100 through this engine; SwinV2 detector: 8.6 and 30 |
+| **Photo throughput**, CPU | 38.8 images/s; 52.6 with `--fast` (the same files; 77–78 on the batch 7 sample after the speed changes) | Community Forensics: 25.4 as released, 35.0 through this engine |
 | **Video**, time per clip | 0.09 s; 0.26 s with the second opinion | WaveRep: 4.0 s as released, 1.08 s through this engine at 16 bits |
 
 Pooled over each blind batch, the default photo profile is ahead of both

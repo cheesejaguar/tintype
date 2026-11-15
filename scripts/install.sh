@@ -33,7 +33,7 @@ main() {
         --no-models) models=code-only; shift ;;
         --help)
             printf '%s\n' 'Usage: sh install.sh [--no-models]' \
-                'TINTYPE_VERSION=v0.1.2 pins a release.' \
+                'TINTYPE_VERSION=v0.2.0 pins a release.' \
                 'TINTYPE_INSTALL_DIR sets the executable directory (default ~/.local/bin).' \
                 'TINTYPE_PLATFORM=linux-x86 installs the 32-bit build on 64-bit Linux.'
             exit 0 ;;
@@ -74,7 +74,7 @@ main() {
     fi
     case "$version" in
         v[0-9]*) ;;
-        *) fail 'TINTYPE_VERSION must be a release tag such as v0.1.2' ;;
+        *) fail 'TINTYPE_VERSION must be a release tag such as v0.2.0' ;;
     esac
     case "$version" in
         *[!a-zA-Z0-9._-]*) fail 'invalid release tag' ;;

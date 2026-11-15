@@ -25,7 +25,7 @@ tintype detect holiday.jpg clip.mp4
 
 ```
 AI-GENERATED   0.987  holiday.jpg
-likely real    0.021  clip.mp4  [looked at 0–13.1 s of 44.3 s, 8 frames]
+likely real    0.021  clip.mp4  [sampled through 13.1 s of 44.3 s, 8 frames]
 ```
 
 The number is a detection score between 0 and 1, flagged above 0.5. It is
@@ -138,8 +138,8 @@ and **28.8%** for Community Forensics. The JPEG filter was applied after
 scoring. The archived scores reproduce both comparisons.
 [Evidence and score archives](docs/EVIDENCE.md)
 
-**External image benchmarks.** After the same JPEG re-encode on 2,038
-Arena images, Tintype reached 73.1% recall at 1% false positives and
+**External image benchmarks.** After both classes of 2,038 Arena images
+were re-encoded with the same JPEG settings, Tintype reached 73.1% recall at 1% false positives and
 Community Forensics reached 23.7%. GPTTrace reached 76.7% on the same
 JPEGs. On the distorted NTIRE 2026 public
 test, Tintype reached 2.2% at that budget. At the shipped cutoff it flagged
@@ -157,8 +157,8 @@ clips at its shipped cutoff. Both systems used the same normalized clips.
   <img alt="Bar chart of photo throughput in photos per second. Apple GPU: Tintype 530–563, Tintype with second opinion 281–288, Community Forensics as released 82, Community Forensics ported to this engine 291–295. CPU: Tintype 77–78, with second opinion 39–41, Community Forensics as released 26, ported 39–42." src="docs/assets/speed-light.svg" width="820">
 </picture>
 
-Video runs at about 0.03 s per clip on the GPU (the blind batch of 2,056
-clips in 65–67 s); WaveRep as released takes 4.0 s per clip.
+Video runs at about 0.09 s per clip on the GPU on an idle machine; WaveRep
+as released takes 4.0 s per clip.
 
 ### 🧾 What the charts do not show
 
@@ -259,19 +259,20 @@ network on six views and averages the logits:
 looked at one at a time, most textured crop first, and as soon as the running
 score is far enough from the threshold the rest are skipped: about two views
 per image on average instead of six. The margins were fitted on the
-development sets, where they left pooled precision and recall within 0.002 of
-looking at everything. `--all-views` turns this off.
+development sets, where they kept pooled precision and recall within 0.001 of
+the schedule before. `--all-views` turns this off.
 
 **Video is frames, looked at the same way.** 16 frames are taken evenly across
-a clip, each gets the six views, and the clip score is the mean logit. Clips
+the first 30 seconds of a clip (`--max-seconds` changes that), each gets the six views, and the clip score is the mean logit. Clips
 stop early too: two frames from the first half of the clip, then four, then
 all eight of that half, and only then the second half, stopping as soon as
 the score is clear. That is about five frames per clip on average, decoding
 stops at the half-way mark for the four clips in five decided by then, and on
 the 6,783 development and blind clips it changed no verdict. Video has its
-own checkpoint: the photo weights trained on for two more phases on clips
-only, including the kinds of real footage the photo weights mistook for
-generated video (cartoons, animation, gameplay).
+own checkpoint: the phase-3 photo weights trained for two more phases on
+clips and three of the image stores, the clips including the kinds of real
+footage the photo weights mistook for generated video (cartoons, animation,
+gameplay).
 
 **A second opinion, if you want one.** `--second-opinion` sends the clips the
 video model is unsure about to the
@@ -295,13 +296,13 @@ between the two.
 retrained in four phases on photos, frames and clips from about 1,200
 generators – the commercial image generators of 2025–26 and the GAN families
 before them – against real photos and footage from sixteen sources. The video
-checkpoint is trained on clips from thirty video generators, from open models
+checkpoint is trained on clips from about thirty video generators, from open models
 to Sora, Veo 3.1 and Gen-3.
 
 **Trained against what happens to media in the wild.** Every training sample is
 randomly JPEG-compressed before and/or after resizing, resized with a randomly
-chosen kernel and cropped at a random scale; a quarter go through a
-messenger-style round trip (long side capped at 960–1700 px, JPEG quality
+chosen kernel and cropped at a random scale; from the second phase on, a
+quarter go through a messenger-style round trip (long side capped at 960–1700 px, JPEG quality
 55–90). Video frames are drawn from clips re-encoded with random H.264 quality
 and resolution, so bitrate cannot stand in for the label.
 
@@ -323,7 +324,7 @@ the newest blind photo batch.
 | Engine | Where | Notes |
 |---|---|---|
 | `gpu` (default on macOS) | Apple GPU, 16-bit | The whole network is compiled into one MPSGraph, driven from Rust through `objc2`. Training uses the same graph builder, with autodiff and AdamW inside the graph. |
-| `gpu-f32` | Apple GPU, 32-bit | Matches PyTorch output to five decimals. |
+| `gpu-f32` | Apple GPU, 32-bit | The same graph in single precision throughout; slower than `gpu`. |
 | `cpu` | Anywhere | An engine written for this network. The matrix products go to Accelerate on macOS and to pure-Rust kernels (NEON, AVX2 or AVX-512, chosen at run time) on Linux and Windows. |
 | `cpu-int8` | Anywhere, only when asked for | The `cpu` engine with the blocks' linear layers in eight-bit integers, on byte dot-product instructions: NEON `SDOT` on ARM64, AVX-VNNI or AVX-512 VNNI on x86-64. Same model and cutoffs as `cpu`. On the held-out split it matched `cpu`'s accuracy at its own 1% cutoff: recall 95.8% on originals and 82.3% on processed copies, 1.31% of authentic photos flagged, against 95.7%, 82.2% and 1.29%. With the pure-Rust kernels that Linux and Windows run it is about 1.5 to 2x the throughput of `cpu`. On macOS, where Accelerate is already fast, it is about 1.2x. On x86-64 without VNNI it is slower than `cpu` and prints a note. `detect` and `serve` take it; never chosen by `auto` ([results](docs/runbooks/cpu-profile-int8.md#step-6-integer-kernels-and-students-on-the-frozen-split)). |
 
@@ -375,12 +376,10 @@ from the checkout to verify their hashes.
 | Training and evaluation commands | ✅ | ❌ |
 
 Release builds cover Linux on x86-64, 32-bit x86 (i686) and ARM64, and
-Windows on x86-64 and 32-bit x86. The bundled demo image gets the same
-score to the last digit from the x86-64 and i686 builds for Linux and
-Windows, and the test suite runs on every release target. The 32-bit
-builds are slower: on one 4-core x86-64 machine the i686 Linux binary took
-2.2 times as long as the x86-64 binary on the same 40 photos. Prefer the
-64-bit build wherever the system can run it.
+Windows on x86-64 and 32-bit x86. The test suite runs on every release
+target, and each release build is installed and run on the bundled demo
+image. The 32-bit builds are slower; prefer the 64-bit build wherever the
+system can run it.
 
 To build on Windows, install Rust with the MSVC toolchain and run the same
 `cargo build` command. The executable is `target\release\tintype.exe`. It
@@ -389,11 +388,12 @@ For a 32-bit build, add `--target i686-pc-windows-msvc` on Windows or
 `--target i686-unknown-linux-gnu` on Linux (with `gcc-multilib` installed).
 
 On Linux (aarch64 Ubuntu, eight virtual cores) `detect` gave the same verdict
-as the macOS CPU engine on every one of 16,324 photos of a blind batch, at
-35 photos/s against 14–15 for Community Forensics' released pipeline on the
-same machine, and scored the blind video batch at 0.43 s per clip with the
-same precision and recall as on macOS – on the 1,756 of 2,056 clips its video
-reader can open
+as the macOS CPU engine on every one of 16,324 photos of a blind batch. On
+blind batch 7 it ran at 35.5 photos/s against 14.3 for Community Forensics'
+released pipeline on the same machine. It scored the blind video batch at
+0.43 s per clip with precision 0.997 and recall 0.942 (0.941 on the macOS
+GPU engine, the same verdicts as the macOS CPU engine), on the 1,756 of
+2,056 clips its video reader can open
 ([the Linux section of the benchmark](docs/BENCHMARK.md#five-speed-changes-before-and-after)).
 
 ## 🔍 Use
@@ -412,8 +412,8 @@ tintype detect --photo-second-opinion baselines/commfor-384.safetensors *.jpg
 tintype detect --second-opinion baselines/waverep-g4.ckpt *.mp4
 ```
 
-The WaveRep weights are its authors' and come under their licence (research
-and other non-profit use); they are downloaded from the authors' site, not
+The WaveRep weights are its authors' and come under their licence
+(informational and non-profit use only); they are downloaded from the authors' site, not
 shipped here. The Community Forensics weights are MIT.
 
 ### 📖 Reading the output
@@ -582,8 +582,8 @@ tintype evaluate confirm4 --baselines
   verdict.
 - Media that has been through a messenger or social app is much harder. On
   WhatsApp and Instagram copies of 2026 images the default profile finds
-  27–36% of the AI images (flagging under 1% of real ones); `--sensitive`
-  finds 55–59% while flagging 2–3%.
+  31–36% of the AI images (flagging 0.21% of real ones); `--sensitive`
+  finds 61–62% while flagging 2.3–3.7%.
 - Older generators are a relative weak spot of the default profile: on
   several GAN sets it finds 84–89% where a detector trained on thousands of
   such generators finds nearly all. `--photo-second-opinion` is there for

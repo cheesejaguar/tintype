@@ -267,7 +267,7 @@ code { font-family: var(--mono); }
 
 .section-rule { border-top: 1px solid var(--ink); }
 
-.benchmark, .research, .quickstart { padding-block: clamp(2.6rem, 5vw, 4.8rem); }
+.benchmark, .quickstart { padding-block: clamp(2.6rem, 5vw, 4.8rem); }
 
 .benchmark-grid, .quickstart {
   display: grid;
@@ -275,7 +275,7 @@ code { font-family: var(--mono); }
   gap: clamp(1.5rem, 4vw, 4.5rem);
 }
 
-.benchmark .section-intro h2, .research .section-intro h2 { font-size: clamp(3.25rem, 4.95vw, 5rem); }
+.benchmark .section-intro h2 { font-size: clamp(3.25rem, 4.95vw, 5rem); }
 
 .section-intro > p {
   max-width: 36ch;
@@ -347,39 +347,6 @@ code { font-family: var(--mono); }
   font-size: .87rem;
 }
 
-.split-result { min-width: 0; }
-.split-result > p { margin-block: .3rem 1rem; font-size: .95rem; line-height: 1.45; max-width: 60ch; }
-
-.results-list {
-  margin: 2rem 0 0;
-  padding: 0;
-  list-style: none;
-  border-top: 1px solid var(--rule);
-}
-
-.results-list li {
-  display: grid;
-  grid-template-columns: minmax(12rem, .82fr) minmax(0, 1.9fr) 7.5rem;
-  align-items: baseline;
-  gap: .3rem 1.4rem;
-  padding-block: .85rem;
-  border-bottom: 1px solid var(--rule);
-}
-
-.results-list h3 { font-size: 1rem; }
-.results-list h3 a { text-decoration: none; }
-.results-list h3 a:hover { text-decoration: underline; }
-.results-list p { font-size: .92rem; line-height: 1.45; max-width: 70ch; }
-
-.verdict {
-  justify-self: end;
-  color: var(--secondary);
-  font: 600 .8rem/1.4 var(--mono);
-  white-space: nowrap;
-}
-
-.verdict-kept { color: var(--accent); }
-
 .workflow {
   display: grid;
   grid-template-columns: minmax(10rem, .78fr) minmax(0, 1.22fr);
@@ -432,8 +399,6 @@ code { font-family: var(--mono); }
 @media (max-width: 51rem) {
   .page-width { width: calc(100% - 3rem); }
   .hero, .benchmark-grid, .quickstart { grid-template-columns: minmax(0, 1fr); }
-  .results-list li { grid-template-columns: minmax(0, 1fr) auto; }
-  .results-list p { grid-column: 1 / -1; grid-row: 2; }
   .hero { gap: 1.8rem; }
   .hero-description { margin-block: 1rem 1.3rem; }
   h1 { max-width: 12ch; font-size: clamp(3.8rem, 10.6vw, 6.5rem); }
