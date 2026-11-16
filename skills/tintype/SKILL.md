@@ -47,6 +47,15 @@ early. If the user asks about a long clip as a whole, use
 Even a full-length run samples frames, so a short edited segment can fall
 between them.
 
+For a large folder of photos on a Linux or Windows machine, add `--turbo`.
+It scores photos with the 8-bit CPU engine: the same model and cutoffs, at
+about 1.5 to 2 times the throughput. Do not use it on Apple silicon, where
+the default GPU engine is faster.
+
+```sh
+tintype batch --turbo --json -- "/path/to/folder"
+```
+
 Treat flags as leads for review. Mention any input-specific limitation that
 affects interpretation, such as heavy recompression, face swaps, or short
 generated sections between samples. Use the original media where available.

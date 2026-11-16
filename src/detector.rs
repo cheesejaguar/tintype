@@ -845,6 +845,7 @@ impl Stages<'_> {
 
 pub struct Detector {
     engine: Engine,
+    device: Device,
     pub batch: usize,
     pub spec: ModelSpec,
     /// Whether identical views of one image are scored once.
@@ -860,6 +861,11 @@ pub struct Timing {
 }
 
 impl Detector {
+    /// The engine this detector was loaded on.
+    pub fn device(&self) -> Device {
+        self.device
+    }
+
     pub fn new(w: &Weights, spec: ModelSpec, batch: usize, device: Device) -> Result<Self> {
         #[cfg(target_os = "macos")]
         if spec.arch == "swinv2_large_w16_256" {
@@ -869,7 +875,7 @@ impl Detector {
             let inp = g.placeholder_native(&[batch as isize, 3, s, s]);
             let out = g.cast_out(&crate::swin::build_swin(&g, w, &crate::swin::SwinConfig::large_w16_256(), &inp, batch)?);
             let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
-            return Ok(Self { engine: Engine::Mps { g, inp, out, pixels }, batch, spec, reuse: ViewReuse::from_env() });
+            return Ok(Self { engine: Engine::Mps { g, inp, out, pixels }, device, batch, spec, reuse: ViewReuse::from_env() });
         }
         let cfg = VitConfig::by_name(&spec.arch, spec.img).ok_or_else(|| anyhow::anyhow!("unknown architecture `{}`", spec.arch))?;
         let engine = match device {
@@ -895,7 +901,7 @@ impl Detector {
                 Engine::Cpu { vit }
             }
         };
-        Ok(Self { engine, batch, spec, reuse: ViewReuse::from_env() })
+        Ok(Self { engine, device, batch, spec, reuse: ViewReuse::from_env() })
     }
 
     pub fn load(weights: &Path, spec: Option<ModelSpec>, batch: usize, device: Device) -> Result<Self> {

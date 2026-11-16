@@ -1293,3 +1293,34 @@ fn the_int8_simulation_is_opt_in_takes_what_cpu_takes_and_leaves_cpu_alone() {
     assert!(!unknown.status.success() && String::from_utf8_lossy(&unknown.stderr).contains("cpu-int8"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn turbo_scores_photos_on_the_eight_bit_engine_and_says_so() {
+    let dir = common::scratch("cli-turbo");
+    let png = dir.join("fixture.png");
+    common::write_fixture(&png);
+    let weights = common::photo_weights();
+    let clip = common::repo().join("tests/fixtures/video.mp4");
+    let run = |extra: &[&str]| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        c.args(["detect", "--json", "--weights", weights.to_str().unwrap()]).args(extra).arg(&png).arg(&clip);
+        c.current_dir(common::repo()).env_remove("TINTYPE_INT8").env_remove("TINTYPE_INT8_SIMULATE");
+        c.output().expect("running the tintype binary")
+    };
+    let turbo = run(&["--turbo"]);
+    assert!(turbo.status.success(), "{}", String::from_utf8_lossy(&turbo.stderr));
+    let int8 = run(&["--device", "cpu-int8"]);
+    let (turbo, int8) = (json_lines(&turbo), json_lines(&int8));
+    // The photo: the eight-bit engine's scores, marked as turbo; nothing else differs.
+    assert_eq!(turbo[0]["mode"], "turbo", "{}", turbo[0]);
+    let mut unmarked = turbo[0].clone();
+    unmarked.as_object_mut().unwrap().remove("mode");
+    assert_eq!(unmarked, int8[0]);
+    // The clip: the standard engine, unmarked.
+    assert_eq!(turbo[1]["kind"], "video");
+    assert!(turbo[1].get("mode").is_none(), "{}", turbo[1]);
+    // Turbo chooses the engine, so it does not combine with --device.
+    let both = run(&["--turbo", "--device", "cpu"]);
+    assert!(!both.status.success() && String::from_utf8_lossy(&both.stderr).contains("--turbo"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

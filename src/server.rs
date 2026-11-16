@@ -4,7 +4,7 @@ use crate::{image_io, video};
 use anyhow::{bail, ensure, Context, Result};
 use axum::{
     extract::{multipart::MultipartRejection, DefaultBodyLimit, Multipart, Request, State},
-    http::{header, StatusCode},
+    http::{header, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -26,6 +26,11 @@ pub struct ServeArgs {
     video_weights: Option<PathBuf>,
     #[arg(long, default_value = "auto")]
     device: String,
+    /// Score photos in turbo mode (the eight-bit CPU engine, `cpu-int8`)
+    /// unless a request asks for `?mode=standard`. Without it, requests
+    /// opt in with `?mode=turbo`. Videos always use the standard engine.
+    #[arg(long, conflicts_with = "device")]
+    turbo: bool,
     #[command(flatten)]
     review: ReviewArgs,
 }
@@ -84,21 +89,65 @@ struct AppState {
     token: Option<Arc<str>>,
     active: Arc<Semaphore>,
     jobs: mpsc::Sender<Job>,
+    /// Whether a request without `mode` is scored in turbo mode (`serve --turbo`).
+    turbo_default: bool,
 }
 
 struct Job {
     files: Vec<Upload>,
+    /// Score the photos with the eight-bit engine.
+    turbo: bool,
     response: oneshot::Sender<Vec<Value>>,
     _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl Job {
     fn execute(self, photo: &Detector, clip: &Detector, frames: usize, bands: Bands) {
-        if let Some(rows) = score_uploads(photo, clip, frames, bands, self.files, || {
+        if let Some(mut rows) = score_uploads(photo, clip, frames, bands, self.files, || {
             self.response.is_closed()
         }) {
+            if self.turbo {
+                // Photos scored in turbo mode say so; clips use the standard engine.
+                for row in rows.iter_mut().filter(|r| r["kind"] == "image") {
+                    row["mode"] = "turbo".into();
+                }
+            }
             let _ = self.response.send(rows);
         }
+    }
+}
+
+/// The photo detectors of the worker: the standard one, and the eight-bit
+/// one for turbo mode, loaded on the first turbo request (or at start with
+/// `serve --turbo`). When the server's own engine is `cpu-int8`, both are
+/// the same detector.
+struct Photos {
+    weights: PathBuf,
+    standard: Detector,
+    turbo: Option<Detector>,
+}
+
+impl Photos {
+    fn new(weights: PathBuf, device: Device, preload_turbo: bool) -> Result<Self> {
+        let standard = Detector::load(&weights, None, 32, device)?;
+        let mut photos = Self { weights, standard, turbo: None };
+        if preload_turbo {
+            photos.get(true)?;
+        }
+        Ok(photos)
+    }
+
+    fn get(&mut self, turbo: bool) -> Result<&Detector> {
+        if !turbo || matches!(self.standard.device(), Device::CpuInt8) {
+            return Ok(&self.standard);
+        }
+        if self.turbo.is_none() {
+            if !self.standard.device().is_cpu() {
+                eprintln!("note: turbo mode scores photos on the eight-bit CPU engine; on this Mac the GPU engine (mode=standard) is faster");
+            }
+            self.turbo = Some(Detector::load(&self.weights, None, 32, Device::CpuInt8)?);
+        }
+        Ok(self.turbo.as_ref().unwrap())
     }
 }
 
@@ -160,9 +209,13 @@ pub fn run(
     let (jobs, mut receive) = mpsc::channel::<Job>(MAX_ACTIVE);
     let (ready, startup) = oneshot::channel();
     let review = args.review;
+    let turbo_default = args.turbo;
+    // Videos stay on the standard engine in turbo mode, so `--turbo` keeps
+    // the best engine here for clips and loads the eight-bit one for photos.
     let worker = std::thread::spawn(move || {
         let setup = (|| -> Result<_> {
-            let photo = Detector::load(&photo, None, 32, device)?;
+            let photos = Photos::new(photo, device, turbo_default)?;
+            let photo = &photos.standard;
             let mut clip = Detector::load(&clip, None, 64, device)?;
             let frames = clip.use_video_profile();
             ensure!(
@@ -178,9 +231,9 @@ pub fn run(
                 photo: review.resolve(photo.spec.review),
                 clip: review.resolve(clip.spec.video.as_ref().and_then(|v| v.review)),
             };
-            Ok((photo, clip, frames, bands))
+            Ok((photos, clip, frames, bands))
         })();
-        let (photo, clip, frames, bands) = match setup {
+        let (mut photos, clip, frames, bands) = match setup {
             Ok(models) => {
                 let _ = ready.send(Ok(()));
                 models
@@ -191,7 +244,11 @@ pub fn run(
             }
         };
         while let Some(job) = receive.blocking_recv() {
-            job.execute(&photo, &clip, frames, bands);
+            match photos.get(job.turbo) {
+                Ok(photo) => job.execute(photo, &clip, frames, bands),
+                // Dropping the job answers 503: the eight-bit engine could not load.
+                Err(error) => eprintln!("turbo mode unavailable: {error:#}"),
+            }
         }
     });
     let result = runtime.block_on(async {
@@ -200,6 +257,7 @@ pub fn run(
             token: token.map(Arc::from),
             active: Arc::new(Semaphore::new(MAX_ACTIVE)),
             jobs,
+            turbo_default,
         };
         let listener = tokio::net::TcpListener::bind(args.bind).await?;
         eprintln!("Tintype HTTP listening on {}", listener.local_addr()?);
@@ -283,9 +341,10 @@ async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 
 async fn detect(
     State(state): State<AppState>,
+    uri: Uri,
     multipart: std::result::Result<Multipart, MultipartRejection>,
 ) -> ApiResult<impl IntoResponse> {
-    let mut results = submit(state, multipart, 1).await?;
+    let mut results = submit(state, &uri, multipart, 1).await?;
     let result = results.remove(0);
     let status = if result.get("error").is_some() {
         StatusCode::UNPROCESSABLE_ENTITY
@@ -297,17 +356,36 @@ async fn detect(
 
 async fn batch(
     State(state): State<AppState>,
+    uri: Uri,
     multipart: std::result::Result<Multipart, MultipartRejection>,
 ) -> ApiResult<Json<Value>> {
-    let results = submit(state, multipart, MAX_FILES).await?;
+    let results = submit(state, &uri, multipart, MAX_FILES).await?;
     Ok(Json(json!({"results": results})))
+}
+
+/// `?mode=turbo` or `?mode=standard`; without it, the server's default.
+fn turbo_requested(uri: &Uri, default: bool) -> ApiResult<bool> {
+    let mut turbo = default;
+    for pair in uri.query().unwrap_or("").split('&').filter(|p| !p.is_empty()) {
+        match pair {
+            "mode=turbo" => turbo = true,
+            "mode=standard" => turbo = false,
+            _ if pair.starts_with("mode=") || pair == "mode" => {
+                return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mode", "mode must be standard or turbo"))
+            }
+            _ => {}
+        }
+    }
+    Ok(turbo)
 }
 
 async fn submit(
     state: AppState,
+    uri: &Uri,
     multipart: std::result::Result<Multipart, MultipartRejection>,
     count: usize,
 ) -> ApiResult<Vec<Value>> {
+    let turbo = turbo_requested(uri, state.turbo_default)?;
     let multipart =
         multipart.map_err(|_| bad_request("expected multipart/form-data with a boundary"))?;
     let slot = state
@@ -328,6 +406,7 @@ async fn submit(
         .jobs
         .try_send(Job {
             files,
+            turbo,
             response,
             _slot: slot,
         })
@@ -626,6 +705,7 @@ mod tests {
                     token: Some(Arc::from("secret")),
                     active: active.clone(),
                     jobs,
+                    turbo_default: false,
                 });
 
                 let health = app
@@ -702,13 +782,7 @@ mod tests {
         let model_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("models");
         let (jobs, mut receive) = mpsc::channel::<Job>(MAX_ACTIVE);
         let worker = std::thread::spawn(move || {
-            let photo = Detector::load(
-                &model_dir.join("tintype.safetensors"),
-                None,
-                32,
-                Device::Cpu,
-            )
-            .unwrap();
+            let mut photos = Photos::new(model_dir.join("tintype.safetensors"), Device::Cpu, false).unwrap();
             let mut clip = Detector::load(
                 &model_dir.join("tintype-video.safetensors"),
                 None,
@@ -718,7 +792,8 @@ mod tests {
             .unwrap();
             let frames = clip.use_video_profile();
             while let Some(job) = receive.blocking_recv() {
-                job.execute(&photo, &clip, frames, Bands::default());
+                let photo = photos.get(job.turbo).unwrap();
+                job.execute(photo, &clip, frames, Bands::default());
             }
         });
         let photo = image::RgbImage::from_pixel(224, 224, image::Rgb([47, 127, 211]));
@@ -736,6 +811,7 @@ mod tests {
                     token: None,
                     active: Arc::new(Semaphore::new(MAX_ACTIVE)),
                     jobs,
+                    turbo_default: false,
                 });
                 let batch = app
                     .clone()
@@ -770,6 +846,44 @@ mod tests {
                 assert!(
                     results[2]["logit"].is_number() && results[2]["threshold_logit"].is_number()
                 );
+                // The standard engine unless asked: no `mode` field.
+                assert!(results.iter().all(|r| r.get("mode").is_none()), "{result}");
+
+                // Turbo: photos on the eight-bit engine, marked; clips as before.
+                let turbo = app
+                    .clone()
+                    .oneshot(request(
+                        "POST",
+                        "/v1/batch?mode=turbo",
+                        None,
+                        &[("clip.mp4", mp4), ("photo.png", &png)],
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(turbo.status(), StatusCode::OK);
+                let turbo = json(turbo).await;
+                let turbo = turbo["results"].as_array().unwrap();
+                assert_eq!(turbo[0]["kind"], "video");
+                assert!(turbo[0].get("mode").is_none(), "{}", turbo[0]);
+                assert_eq!(turbo[0]["score"], results[0]["score"]);
+                assert_eq!(turbo[1]["mode"], "turbo", "{}", turbo[1]);
+                assert_eq!(turbo[1]["threshold_logit"], results[2]["threshold_logit"]);
+                let (a, b) = (turbo[1]["logit"].as_f64().unwrap(), results[2]["logit"].as_f64().unwrap());
+                assert!((a - b).abs() < 1.0, "turbo logit {a} against {b}");
+
+                let standard = app
+                    .clone()
+                    .oneshot(request("POST", "/v1/detect?mode=standard", None, &[("photo.png", &png)]))
+                    .await
+                    .unwrap();
+                assert_eq!(json(standard).await, results[2]);
+                let unknown = app
+                    .clone()
+                    .oneshot(request("POST", "/v1/detect?mode=fastest", None, &[("photo.png", &png)]))
+                    .await
+                    .unwrap();
+                assert_eq!(unknown.status(), StatusCode::BAD_REQUEST);
+                assert_eq!(json(unknown).await["error"]["code"], "invalid_mode");
 
                 let bad = app
                     .oneshot(request(
@@ -784,6 +898,19 @@ mod tests {
                 assert_eq!(json(bad).await["error"]["code"], "unreadable_media");
             });
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn the_mode_comes_from_the_query_or_the_server_default() {
+        let uri = |q: &str| q.parse::<Uri>().unwrap();
+        assert!(!turbo_requested(&uri("/v1/detect"), false).ok().unwrap());
+        assert!(turbo_requested(&uri("/v1/detect"), true).ok().unwrap());
+        assert!(turbo_requested(&uri("/v1/detect?mode=turbo"), false).ok().unwrap());
+        assert!(!turbo_requested(&uri("/v1/detect?mode=standard"), true).ok().unwrap());
+        assert!(turbo_requested(&uri("/v1/batch?x=1&mode=turbo"), false).ok().unwrap());
+        for bad in ["/v1/detect?mode=fast", "/v1/detect?mode=", "/v1/detect?mode"] {
+            assert!(turbo_requested(&uri(bad), false).is_err(), "{bad}");
+        }
     }
 
     #[test]
