@@ -360,6 +360,19 @@ fallback that also runs on Linux and Windows (an MP4/MOV parser written for
 this project feeding the `rust_h264` and `rust_h265` decoders). The YCbCr→RGB conversion
 is done in Rust either way.
 
+The GPU engine compiles the photo network ahead of time. It compiles one
+network for the job's batch size, plus batches of 16 and 32 views for runs
+that don't fill a batch. The smaller sizes share one copy of the weights,
+and each is kept only after a probe shows it gives the full batch's logits
+bit for bit on this machine. A network thread runs one batch while the next
+is gathered. The compiled networks are cached in
+`~/Library/Caches/tintype/gpu`, at about 41 MB per batch size with at most
+five kept, so a later run starts without reading the weights or compiling.
+On an Apple M6 that took a single photo from 0.17 s to 0.06 s and 214 small
+photos from 0.61 s to 0.38 s, with every score unchanged
+([measurements](docs/runbooks/gpu-engine-speed.md)). `TINTYPE_GPU_CACHE=0`
+turns the cache off; any other value is the directory to use.
+
 Some views of an image are the same pixels: below 224 pixels the centre crop
 and the four textured crops are one upscaled crop, an image with few crop
 positions repeats them, and at a shorter side of exactly 256 pixels the

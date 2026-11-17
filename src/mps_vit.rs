@@ -12,6 +12,12 @@ use anyhow::Result;
 /// undo that when exporting.
 pub trait ParamSource {
     fn param(&mut self, g: &Graph, name: &str, data: &[f32], shape: &[isize], linear: bool) -> T;
+
+    /// A tensor made for `name` before, if this source reuses them (then
+    /// its data need not be prepared again).
+    fn made(&self, _name: &str) -> Option<T> {
+        None
+    }
 }
 
 /// Inference: every parameter is a frozen constant.
@@ -19,6 +25,22 @@ pub struct Frozen;
 impl ParamSource for Frozen {
     fn param(&mut self, g: &Graph, _: &str, data: &[f32], shape: &[isize], _: bool) -> T {
         g.constant(data, shape)
+    }
+}
+
+/// Inference with frozen constants made once per name, so that several
+/// copies of the network in one graph (one per batch size) share them.
+#[derive(Default)]
+pub struct Shared {
+    made: std::collections::HashMap<String, T>,
+}
+impl ParamSource for Shared {
+    fn param(&mut self, g: &Graph, name: &str, data: &[f32], shape: &[isize], _: bool) -> T {
+        self.made.entry(name.to_string()).or_insert_with(|| g.constant(data, shape)).clone()
+    }
+
+    fn made(&self, name: &str) -> Option<T> {
+        self.made.get(name).cloned()
     }
 }
 
@@ -30,6 +52,9 @@ struct Ctx<'a, P: ParamSource> {
 
 impl<P: ParamSource> Ctx<'_, P> {
     fn raw(&mut self, name: &str) -> Result<T> {
+        if let Some(t) = self.p.made(name) {
+            return Ok(t);
+        }
         let (d, s) = self.w.get(name)?;
         let shape: Vec<isize> = s.iter().map(|&x| x as isize).collect();
         Ok(self.p.param(self.g, name, d, &shape, false))
@@ -37,9 +62,15 @@ impl<P: ParamSource> Ctx<'_, P> {
 
     /// `y = x W^T + b` with `W` stored `[out, in]` on disk.
     fn linear(&mut self, x: &T, name: &str) -> Result<T> {
-        let (d, s) = self.w.get(&format!("{name}.weight"))?;
-        let (o, i) = (s[0], s[1..].iter().product::<usize>());
-        let wt = self.p.param(self.g, &format!("{name}.weight"), &transpose2(d, o, i), &[i as isize, o as isize], true);
+        let key = format!("{name}.weight");
+        let wt = match self.p.made(&key) {
+            Some(t) => t,
+            None => {
+                let (d, s) = self.w.get(&key)?;
+                let (o, i) = (s[0], s[1..].iter().product::<usize>());
+                self.p.param(self.g, &key, &transpose2(d, o, i), &[i as isize, o as isize], true)
+            }
+        };
         let b = self.raw(&format!("{name}.bias"))?;
         Ok(self.g.add(&self.g.matmul(x, &wt), &b))
     }
@@ -89,6 +120,11 @@ pub fn build_vit_tokens(g: &Graph, w: &Weights, cfg: &VitConfig, x: &T, batch: u
 /// which gives the same class embedding. `tokens` then holds only that token.
 pub fn build_vit_cls(g: &Graph, w: &Weights, cfg: &VitConfig, x: &T, batch: usize) -> Result<VitOut> {
     Ok(build(g, w, &mut Frozen, cfg, x, batch, true, &[])?.0)
+}
+
+/// As [`build_vit_cls`], taking parameters from `p` (see [`Shared`]).
+pub fn build_vit_cls_with<P: ParamSource>(g: &Graph, w: &Weights, p: &mut P, cfg: &VitConfig, x: &T, batch: usize) -> Result<VitOut> {
+    Ok(build(g, w, p, cfg, x, batch, true, &[])?.0)
 }
 
 #[allow(clippy::too_many_arguments)]

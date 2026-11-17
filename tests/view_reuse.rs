@@ -218,6 +218,8 @@ fn reused_scores_follow_the_stopping_rule_computed_from_every_view() {
 #[ignore]
 fn the_gpu_engine_gives_a_view_the_same_logit_in_every_slot_and_with_reuse() {
     let dir = common::scratch("reuse-gpu");
+    // The only test here on the GPU engine, so the only one that reads this.
+    std::env::set_var("TINTYPE_GPU_CACHE", dir.join("gpu-cache"));
     let paths = write_pictures(&dir);
     let weights = common::photo_weights();
     let spec = ModelSpec::load_for(&weights).unwrap();
