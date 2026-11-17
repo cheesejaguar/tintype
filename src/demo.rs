@@ -65,14 +65,20 @@ impl Limits {
         Ok(())
     }
 
-    /// The sentences the site, the terms and the API docs must contain.
+    /// The sentences the site, the terms and the API docs must contain:
+    /// what one visitor may send.
     pub fn statements(&self) -> Vec<String> {
         vec![
             format!("{} photos per {} minutes", self.short, self.short_window_s / 60),
             format!("{} photos per day", self.daily_per_ip),
-            format!("{} photos per day across all visitors", thousands(self.daily_total)),
             format!("{} MB", self.max_bytes / 1_000_000),
         ]
+    }
+
+    /// The daily capacity, stated in the API docs. The website does not
+    /// state it; it explains it when it is reached.
+    pub fn capacity_statement(&self) -> String {
+        format!("{} photos per day across all visitors", thousands(self.daily_total))
     }
 }
 
@@ -201,8 +207,7 @@ impl Status {
                 duration(wait)
             ),
             Limit::GlobalDaily => format!(
-                "The demo is at capacity for today: it has scored the {} photos it allows per day across all visitors. It starts again at midnight UTC, in {}. You can install Tintype and run it on your own computer without limits: {INSTALL_URL}",
-                thousands(blocked.quota),
+                "The demo is at capacity for today. To stay within its hosting budget, it scores a fixed number of photos per day across all visitors, and today's are used up. It starts again at midnight UTC, in {}. You can install Tintype and run it on your own computer without limits: {INSTALL_URL}",
                 duration(wait)
             ),
         };
@@ -603,11 +608,11 @@ mod tests {
         let headers: HashMap<_, _> = status.headers().into_iter().collect();
         assert_eq!(
             headers["ratelimit-policy"],
-            "\"ip-short\";q=5;w=600, \"ip-daily\";q=20;w=86400, \"global-daily\";q=2000;w=86400"
+            format!("\"ip-short\";q=5;w=600, \"ip-daily\";q=20;w=86400, \"global-daily\";q={};w=86400", LIMITS.daily_total)
         );
         assert_eq!(
             headers["ratelimit"],
-            "\"ip-short\";r=4;t=600, \"ip-daily\";r=19;t=43200, \"global-daily\";r=1999;t=43200"
+            format!("\"ip-short\";r=4;t=600, \"ip-daily\";r=19;t=43200, \"global-daily\";r={};t=43200", LIMITS.daily_total - 1)
         );
         assert_eq!(headers["ratelimit-limit"], "5");
         assert_eq!(headers["ratelimit-remaining"], "4");
@@ -733,6 +738,8 @@ mod tests {
             for statement in LIMITS.statements() {
                 assert!(text.contains(&statement), "{page} must say \"{statement}\"");
             }
+            let capacity = LIMITS.capacity_statement();
+            assert_eq!(text.contains(&capacity), page == "docs/API.md", "only the API docs state \"{capacity}\"");
         }
     }
 }

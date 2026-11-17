@@ -190,7 +190,7 @@ if (demo?.dataset.endpoint) {
       say('');
     } else if (response.status === 429 && data?.error?.limit === 'global_daily') {
       const wait = Number(response.headers.get('Retry-After')) || 0;
-      say(`The demo is at capacity for today. It starts again at midnight UTC (${localTime(wait)} your time). To keep going,`, 'install Tintype and run it on your own computer.');
+      say(`The demo is at capacity for today. It runs on a small hosting budget, so it scores a fixed number of photos per day across all visitors, and today's are used up. It starts again at midnight UTC (${localTime(wait)} your time). To keep going,`, 'install Tintype and run it on your own computer.');
     } else if (data?.error?.message) {
       say(data.error.message.charAt(0).toUpperCase() + data.error.message.slice(1).replace(/([^.])$/, '$1.'));
     } else {

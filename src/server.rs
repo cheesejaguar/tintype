@@ -1367,7 +1367,7 @@ mod tests {
                 assert_eq!(header(&ok, "cache-control"), "no-store");
                 assert_eq!(header(&ok, "ratelimit-remaining"), (4 - i).to_string());
                 assert!(header(&ok, "ratelimit").starts_with(&format!("\"ip-short\";r={};t=", 4 - i)), "{}", header(&ok, "ratelimit"));
-                assert_eq!(header(&ok, "ratelimit-policy"), "\"ip-short\";q=5;w=600, \"ip-daily\";q=20;w=86400, \"global-daily\";q=2000;w=86400");
+                assert_eq!(header(&ok, "ratelimit-policy"), format!("\"ip-short\";q=5;w=600, \"ip-daily\";q=20;w=86400, \"global-daily\";q={};w=86400", demo::LIMITS.daily_total));
                 assert!(ok.headers().get(header::RETRY_AFTER).is_none());
                 assert_eq!(json(ok).await["verdict"], "likely-real");
                 // The caller's file name never reaches the worker: a video name cannot route a photo to the video path.
@@ -1389,7 +1389,7 @@ mod tests {
             let other = send(SITE, "203.0.113.2", vec![("b.jpg", png.clone())]).await;
             assert_eq!(other.status(), StatusCode::OK);
             assert_eq!(header(&other, "ratelimit-remaining"), "4");
-            assert!(header(&other, "ratelimit").contains("\"global-daily\";r=1994;t="), "{}", header(&other, "ratelimit"));
+            assert!(header(&other, "ratelimit").contains(&format!("\"global-daily\";r={};t=", demo::LIMITS.daily_total - 6)), "{}", header(&other, "ratelimit"));
             seen.try_recv().unwrap();
 
             // Refused uploads are not counted: too large, not a photo, more than one.
