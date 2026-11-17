@@ -11,7 +11,7 @@ curl --fail-with-body http://127.0.0.1:8080/healthz
 
 The address defaults to `127.0.0.1:8080`. When the model worker is ready, `GET /healthz` returns JSON with `status` set to `"ok"` and `version` set to the running Tintype version. `HEAD /healthz` returns the same status and headers with an empty body. Health requests need no credentials.
 
-`--device auto` uses Apple Metal when available and the CPU elsewhere. Use `--device cpu` to select the CPU explicitly. `--weights` and `--video-weights` select model files. The server refuses to start with experimental weights whose spec lists an `uncalibrated` profile (written by `tintype interpolate`): their scores are not at any false-positive target, and a response has nowhere to say so. `tintype detect` scores such weights with a warning on standard error. The [distribution guide](DISTRIBUTION.md) covers containers, model discovery, and the licences for bundled and separately supplied weights.
+`--device auto` uses Apple Metal when available and the CPU elsewhere. Use `--device cpu` to select the CPU explicitly. `--turbo` scores photos in [turbo mode](#turbo-mode) unless a request asks otherwise. `--weights` and `--video-weights` select model files. The server refuses to start with experimental weights whose spec lists an `uncalibrated` profile (written by `tintype interpolate`): their scores are not at any false-positive target, and a response has nowhere to say so. `tintype detect` scores such weights with a warning on standard error. The [distribution guide](DISTRIBUTION.md) covers containers, model discovery, and the licences for bundled and separately supplied weights.
 
 Set `TINTYPE_API_TOKEN` to require a bearer token for inference. A token is required when binding outside loopback. For a remote deployment, terminate TLS at a reverse proxy, keep the backend on a private interface, and restrict access and request rates at the proxy.
 
@@ -50,6 +50,52 @@ The detector flags scores above `0.5` and reports `likely-real` otherwise. Succe
 `score` is a detector score, not a probability that the file is AI-generated. The calibration places `0.5` at a false-positive target on held-out authentic media and fits the slope with both classes weighted equally. The share of flags that are correct depends on how common AI-generated files are among your inputs: `precision = recall·π / (recall·π + FPR·(1 − π))` for a share π. At the rates of the newest blind photo batch (89.7% recall, 1.21% of authentic photos flagged) and π = 1%, about 43% of flags would be correct, if those rates transferred. Reaching 90% at 90% recall takes a false-positive rate of about 0.10%.
 
 For video, `profile` is `video`. The response reports `frames`, `frames_expected`, `duration_s`, `analysed_until_s`, and `complete`. `analysed_until_s` is the latest sampling target represented in the score. The decoder can use the nearest frame to each target. Both timestamps may be `null` if the information is unavailable. `complete` means the model obtained the evidence its sampling and early-exit profile required. A decodable clip with insufficient coverage receives the `inconclusive` verdict. The server samples at most the first 30 seconds of each clip.
+
+## Turbo mode
+
+Turbo mode scores photos with the 8-bit CPU engine (`cpu-int8`), using the
+same model, cutoffs and profile. On Linux and Windows hosts with an 8-bit
+dot-product instruction it gives about 1.5 to 2 times the photo throughput
+of the standard CPU engine:
+
+- ARM64;
+- x86-64 with AVX-VNNI or AVX-512 VNNI.
+
+On the held-out split its accuracy matched the standard engine
+([results](runbooks/cpu-profile-int8.md#step-6-integer-kernels-and-students-on-the-frozen-split)).
+
+Ask for it per request with the `mode` query parameter, on `/v1/detect` or
+`/v1/batch`:
+
+```sh
+curl --fail-with-body -F 'file=@photo.jpg' 'http://127.0.0.1:8080/v1/detect?mode=turbo'
+```
+
+Start the server with `--turbo` to make turbo the default. A request can
+then ask for `?mode=standard`.
+
+```sh
+tintype serve --turbo
+```
+
+| `mode` | Photos scored with |
+| --- | --- |
+| absent | The server's default: the standard engine, or turbo under `serve --turbo` |
+| `turbo` | The 8-bit CPU engine |
+| `standard` | The engine chosen by `--device` |
+
+**Response.** A photo scored in turbo mode carries `"mode": "turbo"`. No
+other field changes meaning, and photos scored by the standard engine have
+no `mode` field.
+
+**Videos** always use the standard engine and carry no `mode` field.
+
+**Loading.** The 8-bit engine loads on the first turbo request, or at
+startup with `--turbo`.
+
+**Slower hosts.** On x86-64 without VNNI, and on Apple silicon with the
+GPU, turbo is slower than the standard engine. The server says so on
+standard error when the engine loads.
 
 ## Review fields (opt-in)
 
@@ -143,6 +189,7 @@ Inference errors use an `error` object with `code` and `message`. For HTTP 422 o
 | HTTP status | Code | Meaning |
 | --- | --- | --- |
 | 400 | `invalid_upload` | Invalid multipart data, field, filename, or file count |
+| 400 | `invalid_mode` | The `mode` query parameter is neither `standard` nor `turbo` |
 | 401 | `unauthorized` | Bearer credentials missing or invalid |
 | 408 | `upload_timeout` | Upload deadline exceeded |
 | 413 | `upload_too_large` | Request exceeds 64 MiB |

@@ -1,0 +1,203 @@
+runs/fast/incumbent-cpu/model.safetensors: stored schedule, order [2, 0, 1, 3, 4, 5], margins after N views (raw logits) 1: 6, 2: 3, 3: 2, 4: 1.5, 5: 1
+fitted on 3759 items, pooled precision and recall within 0.001 of every view at photo, strict: margins after N views 1: 5.75, 2: 3.5, 3: 2.5, 4: 1, 5: 0.5
+  on the fit items, photo (threshold 0.991): 1.57 views per item; precision 0.9923 against 0.9923, recall 0.9233 against 0.9229
+  on the fit items, strict (threshold 2.973): 1.53 views per item; precision 0.9979 against 0.9973, recall 0.8848 against 0.8857
+
+## photo, threshold 0.991 (raw logit), stored schedule
+
+12457 items (6600 AI, 5857 real); 1.70 views looked at per item of 6
+decided after 1..6 views: 7079 / 3892 / 630 / 277 / 207 / 372
+verdicts that differ from every view: 48 (25 more flagged, 23 fewer)
+
+| Pooled | Real items flagged | FPR | Recall | Precision |
+|---|---|---|---|---|
+| every view | 59 of 5857 | 1.01% | 87.53% | 0.9899 |
+| early exit | 57 of 5857 | 0.97% | 87.59% | 0.9902 |
+| difference | -2 | -0.03 points | +0.06 points | +0.0003 |
+
+| Real source | Items | FPR, every view | FPR, early exit | Flagged, early exit | Against the target |
+|---|---|---|---|---|---|
+| real:floreview | 3393 | 0.97% | 0.85% | 29 of 3393 | within |
+| real:hdrplus | 2464 | 1.06% | 1.14% | 28 of 2464 | over |
+
+Mean over real sources with at least 100 items: 1.01% with every view, 1.00% under early exit; the calibration target is 1.00% (early exit is within it).
+
+| Generated items from | Items | Recall, every view | Recall, early exit |
+|---|---|---|---|
+| arforensics | 3000 | 90.73% | 90.70% |
+| arforensics-blur-s1.0 | 143 | 90.91% | 90.91% |
+| arforensics-blur-s3.0 | 143 | 92.31% | 92.31% |
+| arforensics-jpeg-qv12 | 143 | 68.53% | 68.53% |
+| arforensics-jpeg-qv4 | 143 | 73.43% | 73.43% |
+| arforensics-noise-a10 | 143 | 82.52% | 82.52% |
+| arforensics-noise-a40 | 143 | 9.79% | 11.89% |
+| arforensics-repost-720-qv9x1 | 143 | 69.23% | 69.23% |
+| arforensics-repost-960-qv12x1 | 143 | 68.53% | 68.53% |
+| arforensics-repost-960-qv7x4 | 143 | 69.93% | 70.63% |
+| arforensics-resize-0.25-bicubic | 143 | 85.31% | 85.31% |
+| arforensics-resize-0.5-bicubic | 143 | 94.41% | 94.41% |
+| arforensics-sharpen-a1.0 | 143 | 85.31% | 85.31% |
+| genimagepp | 1200 | 99.83% | 99.33% |
+| genimagepp-blur-s1.0 | 57 | 98.25% | 100.00% |
+| genimagepp-blur-s3.0 | 57 | 100.00% | 100.00% |
+| genimagepp-jpeg-qv12 | 57 | 85.96% | 85.96% |
+| genimagepp-jpeg-qv4 | 57 | 94.74% | 96.49% |
+| genimagepp-noise-a10 | 57 | 98.25% | 96.49% |
+| genimagepp-noise-a40 | 57 | 8.77% | 21.05% |
+| genimagepp-repost-720-qv9x1 | 57 | 87.72% | 87.72% |
+| genimagepp-repost-960-qv12x1 | 57 | 82.46% | 82.46% |
+| genimagepp-repost-960-qv7x4 | 57 | 89.47% | 89.47% |
+| genimagepp-resize-0.25-bicubic | 57 | 91.23% | 91.23% |
+| genimagepp-resize-0.5-bicubic | 57 | 89.47% | 87.72% |
+| genimagepp-sharpen-a1.0 | 57 | 98.25% | 98.25% |
+
+## photo, threshold 0.991 (raw logit), fitted schedule
+
+12457 items (6600 AI, 5857 real); 1.69 views looked at per item of 6
+decided after 1..6 views: 7398 / 3263 / 654 / 726 / 236 / 180
+verdicts that differ from every view: 54 (26 more flagged, 28 fewer)
+
+| Pooled | Real items flagged | FPR | Recall | Precision |
+|---|---|---|---|---|
+| every view | 59 of 5857 | 1.01% | 87.53% | 0.9899 |
+| early exit | 58 of 5857 | 0.99% | 87.52% | 0.9901 |
+| difference | -1 | -0.02 points | -0.02 points | +0.0002 |
+
+| Real source | Items | FPR, every view | FPR, early exit | Flagged, early exit | Against the target |
+|---|---|---|---|---|---|
+| real:floreview | 3393 | 0.97% | 0.85% | 29 of 3393 | within |
+| real:hdrplus | 2464 | 1.06% | 1.18% | 29 of 2464 | over |
+
+Mean over real sources with at least 100 items: 1.01% with every view, 1.02% under early exit; the calibration target is 1.00% (early exit is over it).
+
+| Generated items from | Items | Recall, every view | Recall, early exit |
+|---|---|---|---|
+| arforensics | 3000 | 90.73% | 90.63% |
+| arforensics-blur-s1.0 | 143 | 90.91% | 90.91% |
+| arforensics-blur-s3.0 | 143 | 92.31% | 92.31% |
+| arforensics-jpeg-qv12 | 143 | 68.53% | 67.83% |
+| arforensics-jpeg-qv4 | 143 | 73.43% | 73.43% |
+| arforensics-noise-a10 | 143 | 82.52% | 82.52% |
+| arforensics-noise-a40 | 143 | 9.79% | 10.49% |
+| arforensics-repost-720-qv9x1 | 143 | 69.23% | 69.23% |
+| arforensics-repost-960-qv12x1 | 143 | 68.53% | 67.83% |
+| arforensics-repost-960-qv7x4 | 143 | 69.93% | 70.63% |
+| arforensics-resize-0.25-bicubic | 143 | 85.31% | 85.31% |
+| arforensics-resize-0.5-bicubic | 143 | 94.41% | 94.41% |
+| arforensics-sharpen-a1.0 | 143 | 85.31% | 85.31% |
+| genimagepp | 1200 | 99.83% | 99.50% |
+| genimagepp-blur-s1.0 | 57 | 98.25% | 100.00% |
+| genimagepp-blur-s3.0 | 57 | 100.00% | 100.00% |
+| genimagepp-jpeg-qv12 | 57 | 85.96% | 85.96% |
+| genimagepp-jpeg-qv4 | 57 | 94.74% | 94.74% |
+| genimagepp-noise-a10 | 57 | 98.25% | 96.49% |
+| genimagepp-noise-a40 | 57 | 8.77% | 21.05% |
+| genimagepp-repost-720-qv9x1 | 57 | 87.72% | 87.72% |
+| genimagepp-repost-960-qv12x1 | 57 | 82.46% | 84.21% |
+| genimagepp-repost-960-qv7x4 | 57 | 89.47% | 87.72% |
+| genimagepp-resize-0.25-bicubic | 57 | 91.23% | 91.23% |
+| genimagepp-resize-0.5-bicubic | 57 | 89.47% | 87.72% |
+| genimagepp-sharpen-a1.0 | 57 | 98.25% | 98.25% |
+
+## strict, threshold 2.973 (raw logit), stored schedule
+
+12457 items (6600 AI, 5857 real); 1.64 views looked at per item of 6
+decided after 1..6 views: 7751 / 3229 / 610 / 293 / 195 / 379
+verdicts that differ from every view: 50 (22 more flagged, 28 fewer)
+
+| Pooled | Real items flagged | FPR | Recall | Precision |
+|---|---|---|---|---|
+| every view | 5 of 5857 | 0.09% | 81.92% | 0.9991 |
+| early exit | 3 of 5857 | 0.05% | 81.86% | 0.9994 |
+| difference | -2 | -0.03 points | -0.06 points | +0.0004 |
+
+| Real source | Items | FPR, every view | FPR, early exit | Flagged, early exit | Against the target |
+|---|---|---|---|---|---|
+| real:floreview | 3393 | 0.06% | 0.03% | 1 of 3393 | within |
+| real:hdrplus | 2464 | 0.12% | 0.08% | 2 of 2464 | within |
+
+Mean over real sources with at least 100 items: 0.09% with every view, 0.06% under early exit; the calibration target is 0.10% (early exit is within it).
+
+| Generated items from | Items | Recall, every view | Recall, early exit |
+|---|---|---|---|
+| arforensics | 3000 | 86.33% | 86.30% |
+| arforensics-blur-s1.0 | 143 | 86.71% | 86.71% |
+| arforensics-blur-s3.0 | 143 | 85.31% | 85.31% |
+| arforensics-jpeg-qv12 | 143 | 53.85% | 54.55% |
+| arforensics-jpeg-qv4 | 143 | 66.43% | 65.73% |
+| arforensics-noise-a10 | 143 | 73.43% | 72.73% |
+| arforensics-noise-a40 | 143 | 2.80% | 3.50% |
+| arforensics-repost-720-qv9x1 | 143 | 56.64% | 57.34% |
+| arforensics-repost-960-qv12x1 | 143 | 53.85% | 54.55% |
+| arforensics-repost-960-qv7x4 | 143 | 58.04% | 58.04% |
+| arforensics-resize-0.25-bicubic | 143 | 74.83% | 74.83% |
+| arforensics-resize-0.5-bicubic | 143 | 89.51% | 89.51% |
+| arforensics-sharpen-a1.0 | 143 | 78.32% | 78.32% |
+| genimagepp | 1200 | 98.67% | 97.42% |
+| genimagepp-blur-s1.0 | 57 | 96.49% | 92.98% |
+| genimagepp-blur-s3.0 | 57 | 96.49% | 96.49% |
+| genimagepp-jpeg-qv12 | 57 | 66.67% | 70.18% |
+| genimagepp-jpeg-qv4 | 57 | 80.70% | 80.70% |
+| genimagepp-noise-a10 | 57 | 82.46% | 87.72% |
+| genimagepp-noise-a40 | 57 | 1.75% | 7.02% |
+| genimagepp-repost-720-qv9x1 | 57 | 68.42% | 73.68% |
+| genimagepp-repost-960-qv12x1 | 57 | 66.67% | 70.18% |
+| genimagepp-repost-960-qv7x4 | 57 | 78.95% | 78.95% |
+| genimagepp-resize-0.25-bicubic | 57 | 91.23% | 91.23% |
+| genimagepp-resize-0.5-bicubic | 57 | 84.21% | 84.21% |
+| genimagepp-sharpen-a1.0 | 57 | 94.74% | 92.98% |
+
+## strict, threshold 2.973 (raw logit), fitted schedule
+
+12457 items (6600 AI, 5857 real); 1.63 views looked at per item of 6
+decided after 1..6 views: 8060 / 2639 / 640 / 682 / 245 / 191
+verdicts that differ from every view: 60 (29 more flagged, 31 fewer)
+
+| Pooled | Real items flagged | FPR | Recall | Precision |
+|---|---|---|---|---|
+| every view | 5 of 5857 | 0.09% | 81.92% | 0.9991 |
+| early exit | 4 of 5857 | 0.07% | 81.91% | 0.9993 |
+| difference | -1 | -0.02 points | -0.02 points | +0.0002 |
+
+| Real source | Items | FPR, every view | FPR, early exit | Flagged, early exit | Against the target |
+|---|---|---|---|---|---|
+| real:floreview | 3393 | 0.06% | 0.03% | 1 of 3393 | within |
+| real:hdrplus | 2464 | 0.12% | 0.12% | 3 of 2464 | over |
+
+Mean over real sources with at least 100 items: 0.09% with every view, 0.08% under early exit; the calibration target is 0.10% (early exit is within it).
+
+| Generated items from | Items | Recall, every view | Recall, early exit |
+|---|---|---|---|
+| arforensics | 3000 | 86.33% | 86.27% |
+| arforensics-blur-s1.0 | 143 | 86.71% | 86.71% |
+| arforensics-blur-s3.0 | 143 | 85.31% | 85.31% |
+| arforensics-jpeg-qv12 | 143 | 53.85% | 54.55% |
+| arforensics-jpeg-qv4 | 143 | 66.43% | 65.73% |
+| arforensics-noise-a10 | 143 | 73.43% | 74.13% |
+| arforensics-noise-a40 | 143 | 2.80% | 3.50% |
+| arforensics-repost-720-qv9x1 | 143 | 56.64% | 58.04% |
+| arforensics-repost-960-qv12x1 | 143 | 53.85% | 54.55% |
+| arforensics-repost-960-qv7x4 | 143 | 58.04% | 58.74% |
+| arforensics-resize-0.25-bicubic | 143 | 74.83% | 74.83% |
+| arforensics-resize-0.5-bicubic | 143 | 89.51% | 89.51% |
+| arforensics-sharpen-a1.0 | 143 | 78.32% | 78.32% |
+| genimagepp | 1200 | 98.67% | 97.42% |
+| genimagepp-blur-s1.0 | 57 | 96.49% | 94.74% |
+| genimagepp-blur-s3.0 | 57 | 96.49% | 96.49% |
+| genimagepp-jpeg-qv12 | 57 | 66.67% | 68.42% |
+| genimagepp-jpeg-qv4 | 57 | 80.70% | 80.70% |
+| genimagepp-noise-a10 | 57 | 82.46% | 89.47% |
+| genimagepp-noise-a40 | 57 | 1.75% | 5.26% |
+| genimagepp-repost-720-qv9x1 | 57 | 68.42% | 71.93% |
+| genimagepp-repost-960-qv12x1 | 57 | 66.67% | 70.18% |
+| genimagepp-repost-960-qv7x4 | 57 | 78.95% | 78.95% |
+| genimagepp-resize-0.25-bicubic | 57 | 91.23% | 91.23% |
+| genimagepp-resize-0.5-bicubic | 57 | 84.21% | 84.21% |
+| genimagepp-sharpen-a1.0 | 57 | 94.74% | 94.74% |
+
+photo second-opinion band (-7, 0.5) in calibrated logits is (-11.500, 1.883) in raw logits around the threshold 0.991.
+  routed from every view: 5833 of 5857 real (99.59%), 973 of 6600 AI (14.74%)
+  routed from the early-exit views: 5819 of 5857 real (99.35%), 927 of 6600 AI (14.05%)
+  The band and its rule were not refitted: that takes second-stage scores on calibration data.
+
+wrote the fitted schedule to runs/fast/incumbent-cpu/model.json

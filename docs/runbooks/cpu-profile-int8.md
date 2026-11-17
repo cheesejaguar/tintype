@@ -16,10 +16,11 @@ exit rule is chosen.
 | 3. Agreement of INT8 with FP32 on 3,148 labelled store images | measured (training data: a parity check, not an evaluation) | `scripts/int8-agreement.py` |
 | The same on the frozen split | **run: the gate fails at 0.1% FPR and holds at 1%** | [Frozen split](#frozen-split) |
 | The same on the archived suites | **not run**: their files are not on this machine | |
-| 4. An integer kernel timed against the FP32 products | benchmarked on ARM64, test-only, **not wired into scoring**; no x86-64 kernel | `src/cpu_vit/int8_gemm.rs` |
+| 4. An integer kernel timed against the FP32 products | built and **wired into `--device cpu-int8`**: ARM64 `SDOT`, x86-64 AVX-VNNI and AVX-512 VNNI (`VPDPBUSD`), AVX2 | `src/cpu_vit/int8_gemm.rs` |
 | 5a. What 6, 7 and 8 blocks would cost to run | timed with the released weights cut short (timing only) | `vit_small_patch16_d<N>` in a spec |
 | 5b. Exits part-way with the weights as shipped | measured with a fitted linear read-out | `tintype probe-exits`, `src/exit_probe.rs` |
-| 5c. Training a student | code and commands, **no training run** | `train --blocks`, `--init-blocks`, `--distill`; `src/distill.rs` |
+| 5c. Training a student | 8, 7 and 6 blocks trained and evaluated: **none ships** | [Step 6](#step-6-integer-kernels-and-students-on-the-frozen-split) |
+| 6. Integer kernels and students on the frozen split | **INT8 passes the floor, and the speed gate with the pure-Rust kernels; ships as an option** | [Step 6](#step-6-integer-kernels-and-students-on-the-frozen-split) |
 
 ## The gate
 
@@ -1142,6 +1143,108 @@ most files, in single precision. Each needs its own pre-registered look.
 |---|---|---|
 | 2026-11-14 | `score` on all 19,326 rows with `cpu` and with `cpu-int8` (`all`), default profile, once each; the table above computed once | this workstream |
 | 2026-11-14 | 300 rows read for timing (labels not used) | this workstream |
+| 2026-11-15 | Step 6: `score` on all rows once per candidate (default profile and `--strict`): INT8 kernels and `cpu` incumbent on the CPU, incumbent and three students on the GPU; 300 rows drawn with seed 8 for timing | this workstream |
+
+## Step 6: integer kernels and students on the frozen split
+
+Pre-registered as [Fast options on the frozen split](../PREREGISTRATION.md#fast-options-on-the-frozen-split-int8-kernels-and-distilled-students-what-was-fixed-before-the-look)
+after the owner asked for faster options that may cost some accuracy.
+Raw output, scripts and tables: [`docs/results/fast-options-frozen/`](../results/fast-options-frozen/).
+
+**What changed since step 4.** The `all` variant of `--device cpu-int8`
+now runs on the integer kernels instead of the simulation
+(`TINTYPE_INT8_SIMULATE=1` keeps the simulation). Any kernel gives exactly
+the integer sums of the definition, so scores do not depend on which one
+ran:
+
+- ARM64 runs `SDOT`, four rows by four.
+- x86-64 with AVX-VNNI or AVX-512 VNNI runs `VPDPBUSD`, three rows by four.
+  Its first operand is unsigned, so the input's top bit is flipped and 128
+  times each weight row's sum is taken off.
+- x86-64 with only AVX2 runs `VPMADDWD` on weights widened to sixteen bits.
+- Anything else runs the plain loop.
+
+`TINTYPE_INT8_KERNEL=avx2` or `scalar` forces a slower kernel for
+comparison. Every kernel the processor has is checked against the
+definition by `the_integer_product_matches_the_definition`. The hosted
+x86-64 runners have both VNNI kinds, so the CI runs all of them there.
+
+**Accuracy.** Each candidate had its own 1% and 0.1% cutoffs fitted on
+`calibrate` and its own exit margins refitted on `fit`, and was scored on
+`test` once. INT8 passes the floor:
+
+| | Clean recall | Processed recall | Authentic flagged |
+|---|---|---|---|
+| INT8 | 95.79% | 82.33% | 1.31% |
+| `cpu` incumbent | 95.69% | 82.21% | 1.29% |
+| GPU incumbent | 95.71% | 82.08% | 1.29% |
+
+At 0.1%, INT8 flags 22 authentic rows against 21 for `cpu`, with recall
+92.88% / 72.88% against 92.71% / 72.75%. The failure the simulation showed
+in [the verdict above](#verdict) does not recur with refitted margins and
+cutoffs. Verdicts differ between `cpu` and `cpu-int8` on 56 rows at 1% and
+78 at 0.1%, of 19,326.
+
+**Speed on this Mac.** 300 `test` rows, best of three, idle machine:
+
+| Build | `cpu-int8` against `cpu` | Gate (≥1.3x or ≥25% lower p95) |
+|---|---|---|
+| Pure-Rust kernels (`portable-cpu`, what Linux and Windows run) | 1.93x throughput, p95 147.8 → 106.7 ms (−28%) | passes |
+| Accelerate | 1.23x, p95 102.8 → 96.8 ms (−6%) | fails |
+
+Accelerate's single-precision products are already close to the integer
+kernel, and decoding takes the rest.
+
+**Speed on hosted runners.** Two demo images repeated, so outside the
+pre-registered cohort:
+
+| Runner | Kernel | Throughput | p95 latency |
+|---|---|---|---|
+| Linux ARM64 | `SDOT` | 1.96x | 450 → 286 ms |
+| Linux x86-64, AMD EPYC | AVX-VNNI | 1.54x | 439 → 339 ms |
+| Windows x86-64, AMD | AVX-512 VNNI | 1.48x | 371 → 303 ms |
+
+On the same runners the AVX2 kernel is **slower** than `cpu`: p95 508
+against 439 ms, and 427 against 371 ms. Widening to sixteen bits gives
+back the gain, and the input still has to be rounded. `cpu-int8` prints a
+note on such processors, and on any where it falls back to the simulation.
+
+**How it ships.** The cutoffs INT8 fitted for itself are within 0.02 raw
+logits of `cpu`'s: 0.991 against 0.991 at 1%, and 2.993 against 2.973 at
+0.1%. So `--device cpu-int8` uses the released model and spec unchanged:
+no new model file, and the released profiles' stricter cutoffs and stored
+early-exit schedule.
+
+That configuration was checked on `fit` and `calibrate`, not on `test`
+again. Over 16,216 items, 7,516 of them authentic:
+
+| Profile | INT8 | `cpu` |
+|---|---|---|
+| Default | 36 authentic flagged, recall 87.38% | 32 flagged, recall 87.17% |
+| Strict | 5 flagged, recall 82.34% | 4 flagged, recall 81.98% |
+
+Early exit stays within 0.1 point of scoring every view, and 64 default
+verdicts differ (0.39%).
+
+`auto` never picks `cpu-int8`, and defaults are unchanged. It is the
+faster CPU engine on Linux and Windows with a dot-product instruction,
+and not worth it on macOS, where `gpu` is the default anyway.
+
+**Students.** All three fail the recall clauses by a wide margin. At their
+own 1% cutoffs, clean and processed recall:
+
+| Blocks | Clean recall | Processed recall |
+|---|---|---|
+| 8 | 78.49% | 51.04% |
+| 7 | 65.03% | 39.96% |
+| 6 | 28.60% | 19.71% |
+
+The incumbent's are 95.71% and 82.08%. They are not faster where they
+would run either. On the GPU the 8-block student gives 189 against 172
+files/s and the same p95: decoding dominates, and a less confident model
+looks at more views before exiting (2.0 per file against 1.5). 8,000
+distillation steps on the released stores are not enough to keep what the
+cut blocks did. Nothing in this entry says a longer run would.
 
 ## Ready to run elsewhere
 
@@ -1219,7 +1322,7 @@ are restored, can be compared the same way or with
 `scripts/int8-agreement.py` on a cohort made from their manifests; they
 are diagnostics, not the decision.
 
-### An x86-64 integer kernel (not written)
+### An x86-64 integer kernel (written since: see [step 6](#step-6-integer-kernels-and-students-on-the-frozen-split))
 
 `src/cpu_vit/int8_gemm.rs` has a scalar loop where an x86-64 kernel would
 go. On such a machine: add the kernel beside `gemm_i8_dotprod` behind
@@ -1240,8 +1343,8 @@ into `1 / (1 - f + f / k)`: at or above 1.3 clears the speed clause there.
 ### A student
 
 The training commands, their controls and what to check are under
-[Training a student](#training-a-student-commands-not-run). They need the
-Apple GPU and the training stores; nothing was started here.
+[Training a student](#training-a-student-commands-not-run). Three students
+have since been trained and evaluated: see [step 6](#step-6-integer-kernels-and-students-on-the-frozen-split).
 
 ## Seen on the way, not changed
 

@@ -19,7 +19,7 @@ pub struct DemoOptions {
     /// Use the more sensitive photo profile.
     #[arg(long)]
     sensitive: bool,
-    /// Inference engine (auto, gpu, gpu-f32, or cpu; cpu-int8 simulates eight-bit linear layers).
+    /// Inference engine (auto, gpu, gpu-f32, or cpu; cpu-int8 runs the block linear layers in eight-bit integers).
     #[arg(long, default_value = "auto")]
     device: String,
 }
@@ -112,9 +112,15 @@ pub struct ScanOptions {
     /// Write one JSON object per file.
     #[arg(long)]
     json: bool,
-    /// Inference engine (auto, gpu, gpu-f32, or cpu; cpu-int8 simulates eight-bit linear layers).
+    /// Inference engine (auto, gpu, gpu-f32, or cpu; cpu-int8 runs the block linear layers in eight-bit integers).
     #[arg(long, default_value = "auto")]
     device: String,
+    /// Turbo mode: score photos with the eight-bit CPU engine (`cpu-int8`),
+    /// same model and cutoffs. About 1.5 to 2 times the throughput of `cpu`
+    /// on processors with an eight-bit dot product (ARM64, x86-64 with
+    /// VNNI). Videos keep the standard engine.
+    #[arg(long, conflicts_with = "device")]
+    turbo: bool,
     #[command(flatten)]
     review: ReviewArgs,
 }
@@ -197,6 +203,8 @@ struct Scan {
     options: ScanOptions,
     profile: Profile,
     device: Device,
+    /// The photo engine: `device`, or `cpu-int8` in turbo mode.
+    photo_device: Device,
     threads: usize,
     photo: Option<Detector>,
     video: Option<Detector>,
@@ -234,11 +242,16 @@ impl Scan {
             "--coverage reports the primary model window by window and cannot be combined with --second-opinion"
         );
         let device = super::parse_device(&options.device)?;
+        let photo_device = if options.turbo { Device::CpuInt8 } else { device };
+        if options.turbo && !device.is_cpu() {
+            eprintln!("note: turbo runs photos on the eight-bit CPU engine; on this Mac the default GPU engine is faster");
+        }
         let threads = std::thread::available_parallelism().map_or(4, usize::from);
         Ok(Self {
             options,
             profile,
             device,
+            photo_device,
             threads,
             photo: None,
             video: None,
@@ -279,7 +292,7 @@ impl Scan {
             } else {
                 64.min(paths.len().saturating_mul(spec.views.len()))
             };
-            self.photo = Some(Detector::load(&weights, Some(spec), batch, self.device)?);
+            self.photo = Some(Detector::load(&weights, Some(spec), batch, self.photo_device)?);
         }
         let det = self.photo.as_ref().unwrap();
         let threshold = det.threshold_logit();
@@ -290,7 +303,7 @@ impl Scan {
         let (logits, _) = match exit {
             Some(e)
                 if !warm
-                    && !self.device.is_cpu()
+                    && !self.photo_device.is_cpu()
                     && paths.len() <= 64 / det.spec.views.len() =>
             {
                 let (all, timing) = det.score_files(paths, threads);
@@ -308,6 +321,7 @@ impl Scan {
             .zip(&logits)
             .map(|(path, result)| {
                 let mut row = Row::empty(path, "image", self.profile.name());
+                row.turbo = self.options.turbo;
                 if let Some(values) = result {
                     row.set_score(det.probability(values), mean(values), det.threshold_logit());
                     row.calibrated = det.calibrated_logit(values);
@@ -755,6 +769,8 @@ struct Row {
     threshold_logit: Option<f32>,
     profile: &'static str,
     second_opinion: bool,
+    /// Scored in turbo mode (adds `"mode": "turbo"` to JSON output).
+    turbo: bool,
     views: Option<usize>,
     coverage: Option<video::Coverage>,
     covered: Option<Covered>,
@@ -778,6 +794,7 @@ impl Row {
             threshold_logit: None,
             profile,
             second_opinion: false,
+            turbo: false,
             views: None,
             coverage: None,
             covered: None,
@@ -832,6 +849,9 @@ impl Row {
             });
             if let Some(label) = self.fixture_label {
                 object["fixture_label"] = label.into();
+            }
+            if self.turbo {
+                object["mode"] = "turbo".into();
             }
             if let Some(views) = self.views {
                 object["views"] = views.into();

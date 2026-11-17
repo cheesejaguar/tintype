@@ -319,6 +319,31 @@ the newest blind photo batch.
 | `--sensitive` | up to 6 | 5% | 0.963 / 0.960 | Triage, where a missed fake costs more than a false alarm |
 | `--fast` | 2 | 0.5% | 0.995 / 0.767 | Bulk scanning at the highest throughput |
 
+### ⚡ Turbo mode
+
+`--turbo` scores photos with the 8-bit CPU engine, `cpu-int8`. The model,
+cutoffs and profiles are the same, so it combines with every flag above.
+
+- **Speed.** On Linux and Windows CPUs with an 8-bit dot-product
+  instruction (ARM64, or x86-64 with AVX-VNNI or AVX-512 VNNI), turbo gives
+  about 1.5 to 2 times the throughput of the standard CPU engine.
+- **Accuracy.** On the held-out split it matched the standard engine. At a
+  1% false-positive cutoff:
+  - recall on originals was 95.8% against 95.7%;
+  - recall on processed copies was 82.3% against 82.2%;
+  - authentic photos flagged were 1.31% against 1.29%.
+- **Videos** keep the standard engine.
+- **On Apple silicon** the default GPU engine is faster than turbo, and
+  turbo says so.
+
+The HTTP API takes `?mode=turbo` per request, or `tintype serve --turbo`
+for every request ([API](docs/API.md#turbo-mode)).
+
+```bash
+tintype batch --turbo --json ./media > detections.jsonl
+tintype serve --turbo
+```
+
 ## ⚙️ Engines
 
 | Engine | Where | Notes |
@@ -326,7 +351,7 @@ the newest blind photo batch.
 | `gpu` (default on macOS) | Apple GPU, 16-bit | The whole network is compiled into one MPSGraph, driven from Rust through `objc2`. Training uses the same graph builder, with autodiff and AdamW inside the graph. |
 | `gpu-f32` | Apple GPU, 32-bit | The same graph in single precision throughout; slower than `gpu`. |
 | `cpu` | Anywhere | An engine written for this network. The matrix products go to Accelerate on macOS and to pure-Rust kernels (NEON, AVX2 or AVX-512, chosen at run time) on Linux and Windows. |
-| `cpu-int8` | Anywhere, only when asked for | Not an engine to use: the `cpu` engine with the weights and inputs of the blocks' linear layers rounded to eight bits, to measure what an INT8 kernel would do to the scores before one is written. Slower than `cpu`, never chosen by `auto`, not offered by `serve`. `TINTYPE_INT8` picks what is rounded ([variants and results](docs/runbooks/cpu-profile-int8.md)). |
+| `cpu-int8` | Anywhere, only when asked for | The `cpu` engine with the blocks' linear layers in eight-bit integers, on byte dot-product instructions: NEON `SDOT` on ARM64, AVX-VNNI or AVX-512 VNNI on x86-64. Same model and cutoffs as `cpu`. On the held-out split it matched `cpu`'s accuracy at its own 1% cutoff: recall 95.8% on originals and 82.3% on processed copies, 1.31% of authentic photos flagged, against 95.7%, 82.2% and 1.29%. With the pure-Rust kernels that Linux and Windows run it is about 1.5 to 2x the throughput of `cpu`. On macOS, where Accelerate is already fast, it is about 1.2x. On x86-64 without VNNI it is slower than `cpu` and prints a note. This is the engine behind [turbo mode](#-turbo-mode) (`--turbo`); never chosen by `auto` ([results](docs/runbooks/cpu-profile-int8.md#step-6-integer-kernels-and-students-on-the-frozen-split)). |
 
 Images are decoded and resized in Rust (`image`, `zune-jpeg`,
 `fast_image_resize`) on all cores and fed to the engine through a bounded
@@ -405,6 +430,7 @@ tintype detect --json suspicious.png       # one JSON object per file
 tintype detect --sensitive inbox/*.webp    # looser threshold
 tintype detect --strict evidence.jpg       # tighter threshold
 tintype detect --fast --device cpu a.jpg   # two views, CPU engine
+tintype detect --turbo photos/*.jpg        # 8-bit CPU engine for photos
 tintype detect --review-margin 1 inbox/*   # also mark results close to the threshold as needing review
 
 tintype data baselines                     # fetches the reference detectors' weights, once

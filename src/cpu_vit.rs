@@ -9,10 +9,12 @@
 //! crate (NEON, AVX2 or AVX-512 kernels picked at run time) everywhere else;
 //! the `portable-cpu` feature selects the latter on macOS too.
 //!
-//! [`Int8`] is a simulation, not a faster engine: the same pass with the
-//! weights and inputs of the blocks' linear layers rounded to the values an
-//! eight-bit kernel would hold, to find out what such a kernel would do to
-//! the scores before anyone writes it.
+//! With [`Int8`] the blocks' linear layers work in eight bits. Its `all`
+//! variant (every block linear layer, a range per token, eight bits) runs on
+//! integer kernels where the processor has one ([`int8_gemm`]); every other
+//! variant, and `all` with `TINTYPE_INT8_SIMULATE=1`, is a simulation: the
+//! same pass with the weights and inputs rounded to the values an eight-bit
+//! kernel would hold, multiplied in single precision.
 
 use crate::stats::{ATTENTION_TIME, FC1_TIME, FC2_TIME, FORWARD_TIME, GATHER_TIME, GELU_TIME, HEAD_TIME, NORM_TIME, PATCH_TIME, PROJ_TIME, QKV_TIME, RESIDUAL_TIME, SOFTMAX_TIME};
 use crate::vit::VitConfig;
@@ -78,6 +80,11 @@ mod kernels {
         f()
     }
 
+    /// Whether the caller asked for its products to stay on its thread.
+    pub fn on_one_thread_now() -> bool {
+        false
+    }
+
     pub fn exp_inplace(x: &mut [f32]) {
         let n = x.len() as i32;
         unsafe { vvexpf(x.as_mut_ptr(), x.as_ptr(), &n) }
@@ -107,6 +114,11 @@ mod kernels {
         r
     }
 
+    /// Whether the caller asked for its products to stay on its thread.
+    pub fn on_one_thread_now() -> bool {
+        ONE_THREAD.get()
+    }
+
     /// `c[m, n] = a[m, k] * b + beta * c` where `b` is `[n, k]` (`b_trans`) or `[k, n]`.
     pub fn gemm(a: &[f32], b: &[f32], c: &mut [f32], m: usize, n: usize, k: usize, b_trans: bool, beta: f32) {
         assert!(a.len() >= m * k && b.len() >= n * k && c.len() >= m * n);
@@ -134,7 +146,7 @@ mod kernels {
     }
 }
 
-use kernels::{exp_inplace, gemm, on_one_thread, ONE_VIEW_PER_THREAD};
+use kernels::{exp_inplace, gemm, on_one_thread, on_one_thread_now, ONE_VIEW_PER_THREAD};
 
 /// Whether a view's logit depends on what [`CpuVit::forward`] is given with
 /// it. With Accelerate it does: every linear layer is one product over all
@@ -246,6 +258,15 @@ impl Int8 {
         }
     }
 
+    /// Whether this variant runs on the integer kernels: `all`, a range per
+    /// token, eight bits each, on a processor that has a kernel, unless
+    /// `TINTYPE_INT8_SIMULATE=1` asks for the simulation.
+    pub fn runs_on_kernels(&self) -> bool {
+        *self == Self { weights: [true; 4], inputs: [true; 4], ranges: Ranges::Token, input_bits: 8, weight_bits: 8 }
+            && int8_gemm::has_kernel()
+            && std::env::var("TINTYPE_INT8_SIMULATE").map_or(true, |v| v != "1")
+    }
+
     /// Steps between the smallest and the largest value of a rounded input.
     fn input_steps(&self) -> f32 {
         ((1u32 << self.input_bits) - 1) as f32
@@ -295,17 +316,32 @@ struct Lin {
     b: Vec<f32>,
     out: usize,
     inp: usize,
+    /// The layer in eight bits, when the integer kernels run it instead.
+    q: Option<int8_gemm::LinI8>,
 }
 
 impl Lin {
     fn load(w: &Weights, name: &str) -> Result<Self> {
         let (wd, ws) = w.get(&format!("{name}.weight"))?;
         let (bd, _) = w.get(&format!("{name}.bias"))?;
-        Ok(Self { w: wd.clone(), b: bd.clone(), out: ws[0], inp: ws[1..].iter().product() })
+        Ok(Self { w: wd.clone(), b: bd.clone(), out: ws[0], inp: ws[1..].iter().product(), q: None })
     }
 
     /// `y[rows, out] = x[rows, in] W^T + b`
     fn apply(&self, x: &[f32], y: &mut [f32], rows: usize) {
+        if let Some(q) = &self.q {
+            // Runs of tokens, one task each; a multiple of the kernels' four
+            // rows. A token's result does not depend on the run it is in.
+            const RUN: usize = 16;
+            if on_one_thread_now() {
+                int8_gemm::SCRATCH.with_borrow_mut(|s| q.apply(x, y, rows, s));
+            } else {
+                y.par_chunks_mut(RUN * self.out).zip(x.par_chunks(RUN * self.inp)).for_each(|(y, x)| {
+                    int8_gemm::SCRATCH.with_borrow_mut(|s| q.apply(x, y, x.len() / self.inp, s));
+                });
+            }
+            return;
+        }
         y.par_chunks_mut(self.out).for_each(|r| r.copy_from_slice(&self.b));
         gemm(x, &self.w, y, rows, self.out, self.inp, true, 1.0);
     }
@@ -381,8 +417,11 @@ pub struct CpuVit {
     blocks: Vec<Block>,
     norm: Norm,
     head: Lin,
-    /// What is rounded to eight bits on the way; nothing, for the engine proper.
+    /// What is rounded to eight bits on the way, when it is simulated;
+    /// nothing, for the engine proper and for the integer kernels.
     int8: Option<Int8>,
+    /// Whether the blocks' linear layers run on the integer kernels.
+    kernels: bool,
 }
 
 impl CpuVit {
@@ -393,7 +432,24 @@ impl CpuVit {
     /// The same network with the weights `int8` names rounded now and the
     /// inputs it names rounded in every pass (see [`Int8`]).
     pub fn with_int8(w: &Weights, cfg: VitConfig, int8: Option<Int8>) -> Result<Self> {
+        Self::build(w, cfg, int8, int8.is_some_and(|q| q.runs_on_kernels()))
+    }
+
+    /// [`CpuVit::with_int8`], with the choice between the integer kernels and
+    /// the simulation made by the caller.
+    fn build(w: &Weights, cfg: VitConfig, int8: Option<Int8>, kernels: bool) -> Result<Self> {
         let mut vit = Self::load(w, cfg)?;
+        if kernels {
+            for blk in &mut vit.blocks {
+                for lin in [&mut blk.qkv, &mut blk.proj, &mut blk.fc1, &mut blk.fc2] {
+                    lin.q = Some(int8_gemm::LinI8::new(lin));
+                    // The single-precision weights are not used again.
+                    lin.w = Vec::new();
+                }
+            }
+            vit.kernels = true;
+            return Ok(vit);
+        }
         if let Some(q) = int8 {
             for blk in &mut vit.blocks {
                 for (layer, lin) in [(Layer::Qkv, &mut blk.qkv), (Layer::Proj, &mut blk.proj), (Layer::Fc1, &mut blk.fc1), (Layer::Fc2, &mut blk.fc2)] {
@@ -431,7 +487,27 @@ impl CpuVit {
             norm: Norm::load(w, "norm")?,
             head: Lin::load(w, "head")?,
             int8: None,
+            kernels: false,
         })
+    }
+
+    /// Whether the blocks' linear layers run on integer kernels (rather than
+    /// in single precision, or simulated).
+    pub fn on_int8_kernels(&self) -> bool {
+        self.kernels
+    }
+
+    /// One line for standard error when `--device cpu-int8` would be slower
+    /// than `--device cpu` here: no byte dot-product instruction (ARM64 dot
+    /// product, AVX-VNNI or AVX-512 VNNI), or the simulation was asked for.
+    pub fn int8_speed_warning(&self) -> Option<&'static str> {
+        if self.kernels && int8_gemm::has_fast_kernel() {
+            None
+        } else if self.kernels {
+            Some("note: this processor has no eight-bit dot-product instruction (AVX-VNNI or AVX-512 VNNI); `--device cpu-int8` runs, with the same scores as on other processors, but is slower here than `--device cpu`")
+        } else {
+            Some("note: `--device cpu-int8` is simulating eight-bit layers in single precision here (no integer kernel, a research variant, or TINTYPE_INT8_SIMULATE=1); it is slower than `--device cpu`")
+        }
     }
 
     /// Round the input of `layer` in place where the simulation asks for it:
@@ -753,7 +829,6 @@ pub(crate) fn small_network() -> (Weights, VitConfig) {
     (w, cfg)
 }
 
-#[cfg(test)]
 mod int8_gemm;
 
 #[cfg(test)]
@@ -938,6 +1013,26 @@ mod tests {
         for bad in ["", "everything", "all:row", "all:token:1", "all:token:x", "all:token:8:1", "all:token:8:8:8"] {
             assert!(Int8::parse(bad).is_err(), "`{bad}` should not parse");
         }
+    }
+
+    #[test]
+    fn the_integer_kernels_give_the_simulations_logits() {
+        let (w, cfg) = small_network();
+        let views = views(5, &cfg);
+        let all = Some(Int8::parse("all").unwrap());
+        let simulated = CpuVit::build(&w, cfg, all, false).unwrap();
+        let kernels = CpuVit::build(&w, cfg, all, true).unwrap();
+        assert!(kernels.on_int8_kernels() && !simulated.on_int8_kernels());
+        let (a, b) = (simulated.forward(&views), kernels.forward(&views));
+        let plain = CpuVit::new(&w, cfg).unwrap().forward(&views);
+        for ((s, k), p) in a.iter().zip(&b).zip(&plain) {
+            // The same rounding; only the order of the sums differs.
+            assert!((s - k).abs() < 1e-3, "simulated {s}, kernels {k}");
+            assert!((k - p).abs() > 0.0, "the kernels should not reproduce single precision exactly");
+        }
+        // A view's logit does not depend on the views it is run with.
+        let one = kernels.forward(&views[..views.len() / 5]);
+        assert_eq!(one[0], b[0]);
     }
 
     #[test]

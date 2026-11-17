@@ -1,0 +1,8 @@
+  real:floreview               n=3393  false positives at threshold 0.97%
+  real:hdrplus                 n=2464  false positives at threshold 1.01%
+photo: 5857 real / 6600 AI items; logit threshold 0.991 for a 1.00% target; recall on these AI items 0.8753
+  flagged at the threshold: 58 of 5857 real items, taken as independent; one-sided 95% Clopper–Pearson upper bound on the false-positive rate 1.231%
+  real:floreview               n=3393  false positives at threshold 0.06%
+  real:hdrplus                 n=2464  false positives at threshold 0.12%
+strict: 5857 real / 6600 AI items; logit threshold 2.973 for a 0.10% target; recall on these AI items 0.8192
+  flagged at the threshold: 5 of 5857 real items, taken as independent; one-sided 95% Clopper–Pearson upper bound on the false-positive rate 0.179%

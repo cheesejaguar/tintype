@@ -845,6 +845,7 @@ impl Stages<'_> {
 
 pub struct Detector {
     engine: Engine,
+    device: Device,
     pub batch: usize,
     pub spec: ModelSpec,
     /// Whether identical views of one image are scored once.
@@ -860,6 +861,11 @@ pub struct Timing {
 }
 
 impl Detector {
+    /// The engine this detector was loaded on.
+    pub fn device(&self) -> Device {
+        self.device
+    }
+
     pub fn new(w: &Weights, spec: ModelSpec, batch: usize, device: Device) -> Result<Self> {
         #[cfg(target_os = "macos")]
         if spec.arch == "swinv2_large_w16_256" {
@@ -869,7 +875,7 @@ impl Detector {
             let inp = g.placeholder_native(&[batch as isize, 3, s, s]);
             let out = g.cast_out(&crate::swin::build_swin(&g, w, &crate::swin::SwinConfig::large_w16_256(), &inp, batch)?);
             let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
-            return Ok(Self { engine: Engine::Mps { g, inp, out, pixels }, batch, spec, reuse: ViewReuse::from_env() });
+            return Ok(Self { engine: Engine::Mps { g, inp, out, pixels }, device, batch, spec, reuse: ViewReuse::from_env() });
         }
         let cfg = VitConfig::by_name(&spec.arch, spec.img).ok_or_else(|| anyhow::anyhow!("unknown architecture `{}`", spec.arch))?;
         let engine = match device {
@@ -886,9 +892,16 @@ impl Detector {
             #[cfg(not(target_os = "macos"))]
             Device::Gpu | Device::GpuF32 => anyhow::bail!("the GPU engine is only available on macOS; use the CPU engine"),
             Device::Cpu => Engine::Cpu { vit: crate::cpu_vit::CpuVit::new(w, cfg)? },
-            Device::CpuInt8 => Engine::Cpu { vit: crate::cpu_vit::CpuVit::with_int8(w, cfg, Some(crate::cpu_vit::Int8::from_env()?))? },
+            Device::CpuInt8 => {
+                let vit = crate::cpu_vit::CpuVit::with_int8(w, cfg, Some(crate::cpu_vit::Int8::from_env()?))?;
+                if let Some(note) = vit.int8_speed_warning() {
+                    static ONCE: std::sync::Once = std::sync::Once::new();
+                    ONCE.call_once(|| eprintln!("{note}"));
+                }
+                Engine::Cpu { vit }
+            }
         };
-        Ok(Self { engine, batch, spec, reuse: ViewReuse::from_env() })
+        Ok(Self { engine, device, batch, spec, reuse: ViewReuse::from_env() })
     }
 
     pub fn load(weights: &Path, spec: Option<ModelSpec>, batch: usize, device: Device) -> Result<Self> {
