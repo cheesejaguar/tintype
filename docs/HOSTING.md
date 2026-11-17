@@ -130,12 +130,14 @@ so no upload is ever written to disk.
 ```sh
 gcloud run deploy tintype-demo --image "$IMAGE" --region "$REGION" \
   --service-account "tintype-demo@$PROJECT.iam.gserviceaccount.com" \
-  --args=serve,--bind,0.0.0.0:8080,--turbo,--demo,--demo-origin,"$SITE_ORIGIN",--client-address,last-forwarded-for \
+  --args=serve,--bind,0.0.0.0:8080,--device,cpu,--demo,--demo-origin,"$SITE_ORIGIN",--client-address,last-forwarded-for \
   --cpu=2 --memory=1Gi --concurrency=4 --max-instances=1 --min-instances=0 \
   --timeout=60 --execution-environment=gen2 --allow-unauthenticated
 ```
 
-`--turbo` is used here because the instances measured in us-central1 ran turbo's VNNI kernel; check yours first ([Turbo on Cloud Run](#turbo-on-cloud-run)).
+The demo runs in standard mode, so its scores match `tintype detect` and the
+numbers on the website. Turbo was tried and turned off:
+[Turbo on Cloud Run](#turbo-on-cloud-run) explains why.
 
 `--max-instances=1` is the hard ceiling on cost. It also keeps the rate limits
 in a single process, so they apply across all visitors.
@@ -262,18 +264,18 @@ set from the $25 monthly budget. The arithmetic, with Tier 1 request-based
 prices:
 
 - **Time per photo.** Measured from a client on 2026-11-16, network
-  included, a 2 vCPU, 1 GiB instance spends about 0.6 to 0.9 s on each photo
-  in turbo mode on a VNNI CPU, and about 1.1 s in standard mode.
-- **The slowest CPU.** Cloud Run sometimes places an instance on a CPU
-  without VNNI. Turbo there is about 15% slower than standard, so about
-  1.27 s per photo. The cap is sized for that case.
+  included, a 2 vCPU instance spends about 1.1 s on each photo in standard
+  mode, the mode the demo runs in.
+- **The figure the cap uses.** The cap is costed at 1.27 s per photo. That
+  is 15% above the measured time, which covers turbo on a CPU without VNNI,
+  the slowest case seen.
 - **Cost per photo.** 1.27 s × (2 × $0.000024 + $0.0000025), plus $0.0000004
   for the request, is about $0.000065.
 - **What $25 buys.** $25 a month at that cost is about 387,000 photos, or
   about 12,700 a day.
-- **The cap.** The cap is 12,000 a day. On VNNI CPUs, a full day at the cap
-  costs nearer $16 a month, which leaves room for cold starts, refused
-  requests and slow uploads.
+- **The cap.** The cap is 12,000 a day. In standard mode, a full month at
+  the cap costs nearer $21, which leaves room for cold starts, refused
+  requests, slow uploads and large photos.
 - **The free allowance.** The calculation ignores Cloud Run's free monthly
   allowance. That allowance is shared across the billing account, so it is
   extra margin rather than part of the budget.
@@ -295,10 +297,17 @@ read the service's logs.
 | AVX-VNNI or AVX-512 VNNI | The instance's CPU has VNNI | Turbo is faster. On 2026-11-16 in us-central1: about 0.82 s against 1.10 s per photo, file to verdict, from a client |
 | AVX2 | No VNNI; the server also prints a note | Turbo is slower than standard. Leave it off |
 
-Cloud Run doesn't promise one CPU model. On 2026-11-16, three instances in
-us-central1 got AVX-512 VNNI, AVX-VNNI and AVX2 respectively. Turbo is on
-because most instances got VNNI, and the daily cap is sized for the AVX2
-case.
+Cloud Run doesn't promise one CPU model. On 2026-11-16, six instance starts
+in us-central1 got:
+
+- AVX-512 VNNI twice;
+- AVX-VNNI once;
+- AVX2 three times.
+
+Both services therefore run in standard mode. Turbo would be faster on
+some instances and slower on others. Its scores also differ slightly from
+standard: the site's sample photo scores 0.407 in turbo and 0.298 in
+standard. The API still accepts `?mode=turbo` per request.
 
 ## Remove it
 
