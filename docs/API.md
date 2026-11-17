@@ -179,7 +179,7 @@ curl --fail-with-body \
 | --- | --- |
 | Request body | 64 MiB including multipart metadata |
 | Filename | 1–255 UTF-8 bytes |
-| Images | JPEG, PNG, WebP, GIF, BMP, TIFF. Up to 12 million pixels, 8,192 pixels per side, and a 32:1 aspect ratio |
+| Images | JPEG, PNG, WebP, GIF, BMP, TIFF. Up to 50 million pixels, 16,384 pixels per side, and a 32:1 aspect ratio. Images are scored at full resolution, never downscaled |
 | Videos | Progressive MP4/MOV/M4V with one H.264 or HEVC video track in 4:2:0. Up to 2.2 million pixels per frame, 4,096 pixels per side, and a 32:1 aspect ratio. Container index up to 4 MiB, with up to 8,192 samples of up to 8 MiB each |
 | Concurrent inference requests | Four across uploading, waiting, and scoring. One model worker processes jobs sequentially and batches work within each request |
 | Deadlines | 20 seconds for upload and 90 seconds for queueing plus inference |
@@ -219,7 +219,7 @@ tintype serve --demo --demo-origin https://example.org --bind 0.0.0.0:8080 --dev
 | Limit | Value |
 | --- | --- |
 | Files | One per request. JPEG, PNG or WebP, judged by the file's bytes, not its name. No video |
-| Size | 10 MB per photo (10,000,000 bytes), and at most 12 megapixels and 8,192 pixels a side, as for the API |
+| Size | 10 MB per photo (10,000,000 bytes), and at most 50 megapixels and 16,384 pixels a side, as for the API |
 | Per network, short window | 5 photos per 10 minutes. The window starts with the first photo in it |
 | Per network, per day | 20 photos per day. Counts start again at midnight UTC |
 | Everyone, per day | 12,000 photos per day across all visitors, the hosted demo's budget. Counts start again at midnight UTC. The website does not state this number; it explains the cap when it is reached |
@@ -252,7 +252,7 @@ A request over a limit gets HTTP 429 with `Retry-After`, before its upload is re
 | 403 | `origin_not_allowed` | The request's `Origin` is not `--demo-origin` |
 | 413 | `photo_too_large` | The photo exceeds 10 MB |
 | 415 | `unsupported_media` | Not a JPEG, PNG or WebP photo |
-| 422 | `photo_too_many_pixels` | More than 12 megapixels or 8,192 pixels a side. Not counted |
+| 422 | `photo_too_many_pixels` | More than 50 megapixels or 16,384 pixels a side. Not counted |
 | 429 | `rate_limited` | A limit is spent; see `limit` and `Retry-After` |
 
 Other errors are as for the API. Photos are decoded from memory and never written to disk. The server logs no addresses, filenames or contents: its only demo log line is an hourly count of photos scored and requests refused. `GET /healthz` adds `demo.scored` and `demo.refused`, counted since the process started.

@@ -65,9 +65,11 @@ struct Bands {
 const MAX_REQUEST: usize = 64 * 1024 * 1024;
 const MAX_FILES: usize = 16;
 const MAX_ACTIVE: usize = 4;
-/// The most pixels an uploaded image may have, and the longest side.
-pub const MAX_PIXELS: u64 = 12_000_000;
-const MAX_SIDE: u32 = 8192;
+/// The most pixels an uploaded image may have, and the longest side. The
+/// detector reads native-resolution crops, so images are never downscaled
+/// to fit: this is a memory guard, sized for 48 MP phone photos.
+pub const MAX_PIXELS: u64 = 50_000_000;
+const MAX_SIDE: u32 = 16_384;
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
@@ -895,7 +897,9 @@ fn decode_image(bytes: &[u8]) -> Result<image_io::Rgb> {
         let mut limits = image::Limits::default();
         limits.max_image_width = Some(MAX_SIDE);
         limits.max_image_height = Some(MAX_SIDE);
-        limits.max_alloc = Some(128 * 1024 * 1024);
+        // A 50 MP image is 150 MB as 8-bit RGB, and twice that while a
+        // decoder holds 16-bit or alpha samples.
+        limits.max_alloc = Some(512 * 1024 * 1024);
         reader.limits(limits);
         Ok::<_, std::io::Error>(reader)
     };
@@ -1308,6 +1312,39 @@ mod tests {
         assert_eq!(checks.load(Ordering::Relaxed), 3);
     }
 
+/// Just a PNG's signature and header, declaring `w` by `h`: enough to be
+    /// sized without allocating the pixels.
+    fn png_header(w: u32, h: u32) -> Vec<u8> {
+        let chunk = |png: &mut Vec<u8>, kind: &[u8], data: &[u8]| {
+            png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let mut crc = flate2::Crc::new();
+            crc.update(kind);
+            crc.update(data);
+            png.extend_from_slice(kind);
+            png.extend_from_slice(data);
+            png.extend_from_slice(&crc.sum().to_be_bytes());
+        };
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        let ihdr = [&w.to_be_bytes()[..], &h.to_be_bytes(), &[8, 2, 0, 0, 0]].concat();
+        chunk(&mut png, b"IHDR", &ihdr);
+        chunk(&mut png, b"IDAT", &[]);
+        chunk(&mut png, b"IEND", &[]);
+        png
+    }
+
+    #[test]
+    fn phone_photos_over_twelve_megapixels_decode_at_full_size() {
+        // 4032 by 3024: a 12 MP phone photo, just over the old 12,000,000 pixel guard.
+        let mut jpeg = Vec::new();
+        image::RgbImage::from_fn(4032, 3024, |x, y| image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x ^ y) % 239) as u8]))
+            .write_to(&mut Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+            .unwrap();
+        let image = decode_image(&jpeg).unwrap();
+        assert_eq!((image.w, image.h), (4032, 3024), "decoded at full resolution, not resized");
+        let refused = decode_image(&png_header(9000, 6000)).err().expect("54 MP is over the guard");
+        assert!(format!("{refused:#}").contains("too large"), "{refused:#}");
+    }
+
     fn png() -> Vec<u8> {
         let photo = image::RgbImage::from_pixel(64, 48, image::Rgb([47, 127, 211]));
         let mut png = Vec::new();
@@ -1437,16 +1474,12 @@ mod tests {
                 assert_eq!(header(&refused, "ratelimit-remaining"), "5");
                 assert_eq!(json(refused).await["error"]["code"], "unsupported_media");
             }
-            let mut huge = Vec::new();
-            image::RgbImage::from_pixel(4032, 3024, image::Rgb([9, 9, 9]))
-                .write_to(&mut Cursor::new(&mut huge), image::ImageFormat::Png)
-                .unwrap();
-            let refused = send(SITE, "203.0.113.3", vec![("huge.png", huge)]).await;
+            let refused = send(SITE, "203.0.113.3", vec![("huge.png", png_header(9000, 6000))]).await;
             assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
             assert_eq!(header(&refused, "ratelimit-remaining"), "5");
             let body = json(refused).await;
             assert_eq!(body["error"]["code"], "photo_too_many_pixels");
-            assert!(body["error"]["message"].as_str().unwrap().starts_with("this photo is 4032 by 3024 pixels"), "{body}");
+            assert!(body["error"]["message"].as_str().unwrap().starts_with("this photo is 9000 by 6000 pixels; the demo accepts photos of up to 50 megapixels"), "{body}");
             let two = send(SITE, "203.0.113.3", vec![("a.png", png.clone()), ("b.png", png.clone())]).await;
             assert_eq!(two.status(), StatusCode::BAD_REQUEST);
             assert_eq!(json(two).await["error"]["message"], "send one photo per request");
