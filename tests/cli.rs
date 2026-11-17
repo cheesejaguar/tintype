@@ -5,8 +5,16 @@ mod common;
 use std::path::Path;
 use std::process::{Command, Output};
 
+/// The binary, with the GPU engine's compiled-network cache in a scratch
+/// directory rather than the user's own.
+fn bin() -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_tintype"));
+    c.env("TINTYPE_GPU_CACHE", std::env::temp_dir().join("tintype-tests-gpu-cache"));
+    c
+}
+
 fn tintype(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_tintype")).args(args).current_dir(common::repo()).output().expect("running the tintype binary")
+    bin().args(args).current_dir(common::repo()).output().expect("running the tintype binary")
 }
 
 fn detect(files: &[&Path], extra: &[&str]) -> Output {
@@ -199,7 +207,7 @@ fn mixed_detection_preserves_input_order_and_describes_video_coverage() {
 fn an_empty_model_dir_variable_counts_as_unset() {
     // PowerShell can leave a variable defined but empty; the lookup must then
     // fall through to the checkout's models/ directory instead of failing.
-    let o = Command::new(env!("CARGO_BIN_EXE_tintype"))
+    let o = bin()
         .args(["demo", "--device", "cpu", "--json"])
         .env("TINTYPE_MODEL_DIR", "")
         .current_dir(common::repo())
@@ -376,7 +384,7 @@ fn latency_runs_on_the_cpu_engine_and_reports_p95() {
     assert_eq!(out.lines().count(), 1, "without --photo-second-opinion there is no second line: {out}");
     // Each image's own time is printed only with the diagnostic counters.
     assert!(!String::from_utf8_lossy(&o.stderr).contains("latency_ms"));
-    let o = Command::new(env!("CARGO_BIN_EXE_tintype"))
+    let o = bin()
         .args(["latency", "--weights", weights.to_str().unwrap(), "--manifest", dir.join("manifest.tsv").to_str().unwrap(), "--n", "3", "--device", "cpu"])
         .env("TINTYPE_STATS", "1")
         .current_dir(common::repo())
@@ -1165,7 +1173,7 @@ fn work_counters_go_to_standard_error_only_when_asked_for() {
     let weights = common::photo_weights();
     let args = ["detect", "--device", "cpu", "--all-views", "--json", "--weights", weights.to_str().unwrap(), png.to_str().unwrap()];
     let run = |stats: Option<&str>| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        let mut c = bin();
         c.args(args).current_dir(common::repo()).env_remove("TINTYPE_STATS");
         if let Some(v) = stats {
             c.env("TINTYPE_STATS", v);
@@ -1201,7 +1209,7 @@ fn a_photo_below_the_crop_size_is_scored_once_per_distinct_view_with_the_same_ou
     image::imageops::resize(&common::fixture_pixels(), 120, 96, image::imageops::FilterType::Triangle).save(&png).unwrap();
     let weights = common::photo_weights();
     let run = |reuse: Option<&str>, extra: &[&str]| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        let mut c = bin();
         c.args(["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap()]).args(extra).arg(&png).current_dir(common::repo());
         c.env("TINTYPE_STATS", "1").env_remove("TINTYPE_VIEW_REUSE");
         if let Some(v) = reuse {
@@ -1248,7 +1256,7 @@ fn the_int8_simulation_is_opt_in_takes_what_cpu_takes_and_leaves_cpu_alone() {
     let clip = common::repo().join("tests/fixtures/video.mp4");
     // The photo, and the clip too when no variant is named.
     let run = |device: &str, variant: Option<&str>| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        let mut c = bin();
         c.args(["detect", "--device", device, "--all-views", "--json", "--weights", weights.to_str().unwrap(), png.to_str().unwrap()]);
         if variant.is_none() {
             c.arg(&clip);
@@ -1302,7 +1310,7 @@ fn turbo_scores_photos_on_the_eight_bit_engine_and_says_so() {
     let weights = common::photo_weights();
     let clip = common::repo().join("tests/fixtures/video.mp4");
     let run = |extra: &[&str]| {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        let mut c = bin();
         c.args(["detect", "--json", "--weights", weights.to_str().unwrap()]).args(extra).arg(&png).arg(&clip);
         c.current_dir(common::repo()).env_remove("TINTYPE_INT8").env_remove("TINTYPE_INT8_SIMULATE");
         c.output().expect("running the tintype binary")
@@ -1329,7 +1337,7 @@ fn turbo_scores_photos_on_the_eight_bit_engine_and_says_so() {
 fn demo_mode_cannot_start_without_its_origin_or_beside_a_token() {
     let weights = common::photo_weights();
     let serve = |extra: &[&str], token: Option<&str>| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        let mut command = bin();
         command.args(["serve", "--device", "cpu", "--weights", weights.to_str().unwrap()]).args(extra).current_dir(common::repo());
         command.env_remove("TINTYPE_API_TOKEN");
         if let Some(token) = token {
@@ -1352,7 +1360,7 @@ fn demo_mode_cannot_start_without_its_origin_or_beside_a_token() {
 fn the_demo_scores_one_real_photo_and_reports_its_limits() {
     use std::io::{BufRead, BufReader};
     let weights = common::photo_weights();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_tintype"))
+    let mut child = bin()
         .args(["serve", "--device", "cpu", "--weights", weights.to_str().unwrap(), "--bind", "127.0.0.1:0", "--demo", "--demo-origin", "http://localhost:8000"])
         .env_remove("TINTYPE_API_TOKEN")
         .current_dir(common::repo())

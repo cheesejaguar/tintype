@@ -13,10 +13,11 @@ use objc2::rc::{autoreleasepool, Retained};
 use objc2::runtime::ProtocolObject;
 use objc2::AnyThread;
 use objc2_foundation::{NSArray, NSData, NSDictionary, NSNumber};
-use objc2_metal::{MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice};
+use objc2_metal::{MTLBuffer, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice, MTLResourceOptions};
 use objc2_metal_performance_shaders::MPSDataType;
 use objc2_metal_performance_shaders_graph::{
-    MPSGraph, MPSGraphDevice, MPSGraphOperation, MPSGraphTensor, MPSGraphTensorData,
+    MPSGraph, MPSGraphCompilationDescriptor, MPSGraphDevice, MPSGraphExecutable, MPSGraphOperation, MPSGraphShapedType, MPSGraphTensor,
+    MPSGraphTensorData,
 };
 
 pub type T = Retained<MPSGraphTensor>;
@@ -39,6 +40,8 @@ impl Precision {
 
 pub struct Graph {
     pub g: Retained<MPSGraph>,
+    gpu: String,
+    mtl: Retained<ProtocolObject<dyn MTLDevice>>,
     dev: Retained<MPSGraphDevice>,
     queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     /// Precision used for parameters and activations.
@@ -58,9 +61,8 @@ impl Graph {
     pub fn new(prec: Precision) -> anyhow::Result<Self> {
         let mtl = MTLCreateSystemDefaultDevice().ok_or_else(|| anyhow::anyhow!("no Metal device"))?;
         let queue = mtl.newCommandQueue().ok_or_else(|| anyhow::anyhow!("no Metal command queue"))?;
-        unsafe {
-            Ok(Self { g: MPSGraph::new(), dev: MPSGraphDevice::deviceWithMTLDevice(&mtl), queue, prec })
-        }
+        let gpu = mtl.name().to_string();
+        unsafe { Ok(Self { g: MPSGraph::new(), gpu, dev: MPSGraphDevice::deviceWithMTLDevice(&mtl), mtl, queue, prec }) }
     }
 
     // ---- leaves -----------------------------------------------------------
@@ -264,5 +266,98 @@ impl Graph {
                 })
                 .collect()
         })
+    }
+
+    /// Compile the graph ahead of time for one feed of a fixed shape in the
+    /// working precision (see [`Graph::placeholder_native`]) and the given
+    /// Float32 targets. Running the result skips the graph's implicit,
+    /// per-run lookup and compilation.
+    pub fn compile_native(&self, feed: &T, shape: &[isize], targets: &[T]) -> Executable {
+        autoreleasepool(|_| unsafe {
+            let ty = MPSGraphShapedType::initWithShape_dataType(MPSGraphShapedType::alloc(), Some(&ints(shape)), self.prec.mps());
+            let feeds = NSDictionary::from_retained_objects(&[&**feed], &[ty]);
+            let tgt = NSArray::from_retained_slice(targets);
+            let desc = MPSGraphCompilationDescriptor::new();
+            let exe = self.g.compileWithDevice_feeds_targetTensors_targetOperations_compilationDescriptor(Some(&self.dev), &feeds, &tgt, None, Some(&desc));
+            Executable { exe, shape: shape.to_vec(), ty: self.prec.mps(), outputs: targets.len(), input: Default::default() }
+        })
+    }
+
+    /// The name of the GPU this graph runs on.
+    pub fn gpu_name(&self) -> &str {
+        &self.gpu
+    }
+
+    /// Run a compiled executable on bytes already in its feed's precision.
+    /// The bytes are copied once, into a buffer the GPU reads directly that
+    /// the executable keeps from run to run (a run here waits for the GPU,
+    /// so the next run's bytes never overwrite what a run is still reading).
+    pub fn run_executable(&self, exe: &Executable, data: &[u8]) -> Vec<Vec<f32>> {
+        autoreleasepool(|_| unsafe {
+            let (buf, input) = exe.input.get_or_init(|| {
+                let buf = self.mtl.newBufferWithLength_options(data.len(), MTLResourceOptions::StorageModeShared).expect("a GPU input buffer");
+                let td = MPSGraphTensorData::initWithMTLBuffer_shape_dataType(MPSGraphTensorData::alloc(), &buf, &ints(&exe.shape), exe.ty);
+                (buf, td)
+            });
+            assert_eq!(buf.length(), data.len(), "feed size for {:?}", exe.shape);
+            std::ptr::copy_nonoverlapping(data.as_ptr(), buf.contents().as_ptr() as *mut u8, data.len());
+            let inputs = NSArray::from_slice(&[&**input]);
+            let out = exe.exe.runWithMTLCommandQueue_inputsArray_resultsArray_executionDescriptor(&self.queue, &inputs, None, None);
+            (0..exe.outputs).map(|i| read_f32(&out.objectAtIndex(i))).collect()
+        })
+    }
+}
+
+fn read_f32(td: &MPSGraphTensorData) -> Vec<f32> {
+    unsafe {
+        let n: usize = td.shape().iter().map(|d| d.as_usize()).product();
+        let mut buf = vec![0f32; n];
+        td.mpsndarray().readBytes_strideBytes(NonNull::new(buf.as_mut_ptr() as *mut c_void).unwrap(), std::ptr::null_mut());
+        buf
+    }
+}
+
+/// A graph compiled for one fixed feed shape ([`Graph::compile_native`]).
+pub struct Executable {
+    exe: Retained<MPSGraphExecutable>,
+    shape: Vec<isize>,
+    ty: MPSDataType,
+    outputs: usize,
+    /// The input buffer, made on the first run.
+    input: std::cell::OnceCell<(Buffer, Retained<MPSGraphTensorData>)>,
+}
+
+type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
+
+impl Executable {
+    /// Write this executable as an MPSGraph package (a directory) at `path`.
+    /// The package holds the compiled program and its constants (the
+    /// weights), so loading it needs neither the weights file nor the graph.
+    pub fn save(&self, path: &std::path::Path) {
+        autoreleasepool(|_| unsafe {
+            let url = objc2_foundation::NSURL::fileURLWithPath(&objc2_foundation::NSString::from_str(&path.to_string_lossy()));
+            let desc = objc2_metal_performance_shaders_graph::MPSGraphExecutableSerializationDescriptor::new();
+            self.exe.serializeToMPSGraphPackageAtURL_descriptor(&url, Some(&desc));
+        })
+    }
+
+    /// Load a package written by [`Executable::save`].
+    pub fn load(path: &std::path::Path, shape: &[isize], prec: Precision, outputs: usize) -> Self {
+        autoreleasepool(|_| unsafe {
+            let url = objc2_foundation::NSURL::fileURLWithPath(&objc2_foundation::NSString::from_str(&path.to_string_lossy()));
+            let desc = MPSGraphCompilationDescriptor::new();
+            let exe = MPSGraphExecutable::initWithMPSGraphPackageAtURL_compilationDescriptor(MPSGraphExecutable::alloc(), &url, Some(&desc));
+            Executable { exe, shape: shape.to_vec(), ty: prec.mps(), outputs, input: Default::default() }
+        })
+    }
+
+    /// The feed shape this executable was compiled for.
+    pub fn shape(&self) -> &[isize] {
+        &self.shape
+    }
+
+    /// The batch size (first dimension of the feed) it was compiled for.
+    pub fn batch(&self) -> usize {
+        self.shape[0] as usize
     }
 }

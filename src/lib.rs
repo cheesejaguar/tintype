@@ -1,5 +1,6 @@
 pub mod vit;
 pub mod mps;
+pub mod gpu_cache;
 pub mod mps_vit;
 pub mod weights;
 pub mod image_io;

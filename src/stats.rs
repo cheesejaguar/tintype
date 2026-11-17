@@ -58,6 +58,8 @@ counters! {
     SCORED_VIEWS => "views_scored",
     /// Views whose score was taken from an identical view of the same image.
     REUSED_VIEWS => "views_reused",
+    /// Network runs; on the GPU engine each holds up to one batch of views.
+    NETWORK_RUNS => "network_runs",
     /// Clips opened a second time to decode their second half.
     REOPENED_CLIPS => "clips_reopened",
     /// Nanoseconds decoding image files and video frames (not converting them).
@@ -132,7 +134,7 @@ mod tests {
         let l = line();
         assert!(l.starts_with("stats: frames_decoded="));
         let names: Vec<&str> = l.split_whitespace().skip(1).map(|f| f.split('=').next().unwrap()).collect();
-        assert_eq!(names, ["frames_decoded", "frames_converted", "views_materialised", "views_scored", "views_reused", "clips_reopened", "decode_ms", "convert_ms", "views_ms", "model_ms", "forward_ms", "patch_ms", "norm_ms", "qkv_ms", "attention_ms", "softmax_ms", "gather_ms", "proj_ms", "fc1_ms", "gelu_ms", "fc2_ms", "head_ms", "residual_ms"]);
+        assert_eq!(names, ["frames_decoded", "frames_converted", "views_materialised", "views_scored", "views_reused", "network_runs", "clips_reopened", "decode_ms", "convert_ms", "views_ms", "model_ms", "forward_ms", "patch_ms", "norm_ms", "qkv_ms", "attention_ms", "softmax_ms", "gather_ms", "proj_ms", "fc1_ms", "gelu_ms", "fc2_ms", "head_ms", "residual_ms"]);
         // Counting moves a counter by exactly what was added (other tests may add too).
         let before = REOPENED_CLIPS.get();
         REOPENED_CLIPS.add(3);

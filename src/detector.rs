@@ -3,9 +3,9 @@
 use crate::image_io::{self, Pixels, Rgb, View};
 use crate::metrics::sigmoid;
 #[cfg(target_os = "macos")]
-use crate::mps::{Graph, Precision, T};
+use crate::mps::{Executable, Graph, Precision};
 #[cfg(target_os = "macos")]
-use crate::mps_vit::{build_head, build_vit_cls, Frozen};
+use crate::mps_vit::{build_head, build_vit_cls_with, Shared};
 use crate::vit::VitConfig;
 use crate::weights::Weights;
 use anyhow::{Context, Result};
@@ -593,7 +593,10 @@ impl Device {
 
 enum Engine {
     #[cfg(target_os = "macos")]
-    Mps { g: Graph, inp: T, out: T, pixels: std::sync::Arc<PixelFeed> },
+    /// `runs` are the network compiled for one or more batch sizes, smallest
+    /// first; the largest is the detector's batch. A run of fewer views goes
+    /// through the smallest that holds them (see [`gpu_runs`]).
+    Mps { g: Graph, runs: Vec<Executable>, pixels: std::sync::Arc<PixelFeed> },
     /// The engine in `cpu_vit`: Accelerate on macOS, pure Rust elsewhere.
     Cpu { vit: crate::cpu_vit::CpuVit },
 }
@@ -843,6 +846,100 @@ impl Stages<'_> {
     }
 }
 
+/// Batch sizes compiled besides the full one, for runs with fewer views.
+#[cfg(target_os = "macos")]
+const SHORT_RUNS: [usize; 2] = [16, 32];
+
+/// The ViT detector network compiled for `batch` views, and for the sizes
+/// in [`SHORT_RUNS`] below it that give the same logits bit for bit, all
+/// sharing one copy of the weights; smallest first. Which sizes those are
+/// depends on the kernels the GPU picks for each shape, so each is checked
+/// here, on this machine, against the full batch on probe views (on an M6,
+/// batches of nine views and more agree with a batch of 64; eight and fewer
+/// do not).
+#[cfg(target_os = "macos")]
+fn gpu_runs(g: &Graph, w: &Weights, cfg: &VitConfig, batch: usize) -> Result<Vec<Executable>> {
+    let mut sizes: Vec<usize> = SHORT_RUNS.iter().copied().filter(|&b| b < batch).collect();
+    sizes.push(batch);
+    let s = cfg.img as isize;
+    let mut p = Shared::default();
+    let mut runs = Vec::with_capacity(sizes.len());
+    for &b in &sizes {
+        let shape = [b as isize, 3, s, s];
+        let inp = g.placeholder_native(&shape);
+        let v = build_vit_cls_with(g, w, &mut p, cfg, &inp, b)?;
+        let out = g.cast_out(&build_head(g, w, &mut p, &v.cls)?);
+        runs.push(g.compile_native(&inp, &shape, &[out]));
+    }
+    let full = runs.pop().expect("the full batch is always compiled");
+    if runs.is_empty() {
+        return Ok(vec![full]);
+    }
+    // Probe views: fixed pseudo-random values in the working precision, in
+    // the full batch's first slots and the rest padding.
+    let fl = 3 * cfg.img * cfg.img * if g.prec == Precision::F16 { 2 } else { 4 };
+    let probe_views = runs.last().unwrap().batch();
+    let mut probe = vec![0u8; batch * fl];
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    let mut value = || {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((state >> 40) as f32 / (1u64 << 24) as f32) * 4.0 - 2.0
+    };
+    for chunk in probe[..probe_views * fl].chunks_exact_mut(if g.prec == Precision::F16 { 2 } else { 4 }) {
+        let v = value();
+        if g.prec == Precision::F16 {
+            chunk.copy_from_slice(&half::f16::from_f32(v).to_bits().to_ne_bytes());
+        } else {
+            chunk.copy_from_slice(&v.to_ne_bytes());
+        }
+    }
+    let want: Vec<u32> = g.run_executable(&full, &probe).remove(0).iter().map(|x| x.to_bits()).collect();
+    let mut kept: Vec<Executable> = runs
+        .into_iter()
+        .filter(|e| {
+            let got = g.run_executable(e, &probe[..e.batch() * fl]).remove(0);
+            got.iter().zip(&want).all(|(a, b)| a.to_bits() == *b)
+        })
+        .collect();
+    kept.push(full);
+    Ok(kept)
+}
+
+/// Logits for the views in `x` (`fl` bytes each, any number of them):
+/// runs of the largest batch, then one run of the smallest batch size that
+/// holds what is left, padded.
+#[cfg(target_os = "macos")]
+fn gpu_run(g: &Graph, runs: &[Executable], x: &[u8], fl: usize) -> Vec<f32> {
+    let n = x.len() / fl;
+    let largest = runs.last().expect("at least one batch size").batch();
+    let mut out = Vec::with_capacity(n);
+    let mut padded = Vec::new();
+    for chunk in x[..n * fl].chunks(largest * fl) {
+        let k = chunk.len() / fl;
+        let exe = runs.iter().find(|e| e.batch() >= k).expect("the largest batch holds every chunk");
+        let feed = if k == exe.batch() {
+            chunk
+        } else {
+            padded.clear();
+            padded.extend_from_slice(chunk);
+            padded.resize(exe.batch() * fl, 0);
+            &padded[..]
+        };
+        crate::stats::NETWORK_RUNS.add(1);
+        out.extend_from_slice(&g.run_executable(exe, feed).remove(0)[..k]);
+    }
+    out
+}
+
+/// A detector lent to one other thread, which alone uses its engine until
+/// it gives it back. The GPU engine's Objective-C objects are not marked
+/// `Send` or `Sync`, but Metal and MPSGraph allow an object to be used from
+/// any thread so long as no two threads use it at once; the network thread
+/// of [`Detector::score_staged_frames`] is the only user of the engine
+/// while it runs, and the rest of the detector it reads is plain data.
+struct OneThreadAtATime<'a>(&'a Detector);
+unsafe impl Send for OneThreadAtATime<'_> {}
+
 pub struct Detector {
     engine: Engine,
     device: Device,
@@ -880,22 +977,21 @@ impl Detector {
             anyhow::ensure!(!device.is_cpu(), "the SwinV2 reference network runs on the GPU engine only");
             let g = Graph::new(if device == Device::Gpu { Precision::F16 } else { Precision::F32 })?;
             let s = spec.img as isize;
-            let inp = g.placeholder_native(&[batch as isize, 3, s, s]);
+            let shape = [batch as isize, 3, s, s];
+            let inp = g.placeholder_native(&shape);
             let out = g.cast_out(&crate::swin::build_swin(&g, w, &crate::swin::SwinConfig::large_w16_256(), &inp, batch)?);
+            let runs = vec![g.compile_native(&inp, &shape, &[out])];
             let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
-            return Ok(Self { engine: Engine::Mps { g, inp, out, pixels }, device, batch, spec, reuse: ViewReuse::from_env() });
+            return Ok(Self { engine: Engine::Mps { g, runs, pixels }, device, batch, spec, reuse: ViewReuse::from_env() });
         }
         let cfg = VitConfig::by_name(&spec.arch, spec.img).ok_or_else(|| anyhow::anyhow!("unknown architecture `{}`", spec.arch))?;
         let engine = match device {
             #[cfg(target_os = "macos")]
             Device::Gpu | Device::GpuF32 => {
                 let g = Graph::new(if device == Device::Gpu { Precision::F16 } else { Precision::F32 })?;
-                let s = spec.img as isize;
-                let inp = g.placeholder_native(&[batch as isize, 3, s, s]);
-                let v = build_vit_cls(&g, w, &cfg, &inp, batch)?;
-                let out = g.cast_out(&build_head(&g, w, &mut Frozen, &v.cls)?);
+                let runs = gpu_runs(&g, w, &cfg, batch)?;
                 let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
-                Engine::Mps { g, inp, out, pixels }
+                Engine::Mps { g, runs, pixels }
             }
             #[cfg(not(target_os = "macos"))]
             Device::Gpu | Device::GpuF32 => anyhow::bail!("the GPU engine is only available on macOS; use the CPU engine"),
@@ -918,18 +1014,47 @@ impl Detector {
             None => ModelSpec::load_for(weights)?,
         };
         let is_torch = weights.extension().and_then(|e| e.to_str()).is_some_and(|e| e == "ckpt" || e == "pth" || e == "pt");
+        #[cfg(target_os = "macos")]
+        if matches!(device, Device::Gpu | Device::GpuF32) && !is_torch && spec.arch != "swinv2_large_w16_256" && VitConfig::by_name(&spec.arch, spec.img).is_some() {
+            return Self::load_cached(weights, spec, batch, device);
+        }
         let w = if is_torch { Weights::load_torch(weights, &spec.prefix)? } else { Weights::load(weights, &spec.prefix)? };
         Self::new(&w, spec, batch, device)
+    }
+
+    /// [`Detector::load`] on the GPU engine through [`crate::gpu_cache`]:
+    /// the compiled network comes from the cache when it is there, and goes
+    /// into it when it is built.
+    #[cfg(target_os = "macos")]
+    fn load_cached(weights: &Path, spec: ModelSpec, batch: usize, device: Device) -> Result<Self> {
+        let g = Graph::new(if device == Device::Gpu { Precision::F16 } else { Precision::F32 })?;
+        let build = crate::gpu_cache::Build { arch: &spec.arch, img: spec.img, prefix: &spec.prefix, prec: g.prec, batch, gpu: g.gpu_name() };
+        let entry = crate::gpu_cache::Entry::new(weights, &build);
+        let (runs, store) = match entry.as_ref().and_then(|e| e.load()) {
+            Some(runs) => (runs, false),
+            None => {
+                let w = Weights::load(weights, &spec.prefix)?;
+                let cfg = VitConfig::by_name(&spec.arch, spec.img).ok_or_else(|| anyhow::anyhow!("unknown architecture `{}`", spec.arch))?;
+                (gpu_runs(&g, &w, &cfg, batch)?, true)
+            }
+        };
+        if let (true, Some(e)) = (store, &entry) {
+            e.store(&runs);
+        }
+        let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
+        Ok(Self { engine: Engine::Mps { g, runs, pixels }, device, batch, spec, reuse: ViewReuse::from_env() })
     }
 
     fn view_len(&self) -> usize {
         3 * self.spec.img * self.spec.img
     }
 
-    /// Whether a view's logit depends on what is run with it. The GPU graph
-    /// has a fixed batch (short runs are padded), and a view's logit there is
-    /// the same in every slot and beside any neighbours (measured bit for
-    /// bit in both precisions); the CPU engine says for itself.
+    /// Whether a view's logit depends on what is run with it. On the GPU a
+    /// view's logit is the same in every slot of a batch and beside any
+    /// neighbours (measured bit for bit in both precisions), and the smaller
+    /// batch sizes kept for short runs are only those that give the full
+    /// batch's logits bit for bit ([`gpu_runs`]); the CPU engine says for
+    /// itself.
     fn run_size_changes_logits(&self) -> bool {
         match &self.engine {
             #[cfg(target_os = "macos")]
@@ -976,11 +1101,14 @@ impl Detector {
     fn run(&self, x: &[u8]) -> Vec<f32> {
         match &self.engine {
             #[cfg(target_os = "macos")]
-            Engine::Mps { g, inp, out, .. } => {
-                let s = self.spec.img as isize;
-                g.run_native((inp, x, &[self.batch as isize, 3, s, s]), &[out.clone()]).remove(0)
+            Engine::Mps { g, runs, pixels } => {
+                let fl = self.view_len() * pixels.width();
+                gpu_run(g, runs, x, fl)
             }
-            Engine::Cpu { vit } => vit.forward(x),
+            Engine::Cpu { vit } => {
+                crate::stats::NETWORK_RUNS.add(1);
+                vit.forward(x)
+            }
         }
     }
 
@@ -1041,21 +1169,8 @@ impl Detector {
         let mut out = Vec::with_capacity(n);
         match &self.engine {
             #[cfg(target_os = "macos")]
-            Engine::Mps { .. } => {
-                // The graph has a fixed batch: pad the last one.
-                let mut buf = Vec::new();
-                for chunk in x[..n * fl].chunks(self.batch * fl) {
-                    let k = chunk.len() / fl;
-                    let l = if k == self.batch {
-                        self.logits_fed(chunk)
-                    } else {
-                        buf.resize(self.batch * fl, 0u8);
-                        buf[..chunk.len()].copy_from_slice(chunk);
-                        self.logits_fed(&buf)
-                    };
-                    out.extend_from_slice(&l[..k]);
-                }
-            }
+            // Any number of views: the engine picks batch sizes and pads.
+            Engine::Mps { .. } => out.extend(self.logits_fed(&x[..n * fl])),
             Engine::Cpu { .. } => {
                 for chunk in x[..n * fl].chunks(self.batch * fl) {
                     out.extend(self.logits_fed(chunk));
@@ -1107,9 +1222,7 @@ impl Detector {
                     #[cfg(target_os = "macos")]
                     Engine::Mps { .. } => {
                         crate::stats::SCORED_VIEWS.add(n);
-                        let mut padded = buf.clone();
-                        padded.resize(self.batch.max(n).div_ceil(self.batch) * self.batch * vl, 0);
-                        padded.chunks(self.batch * vl).flat_map(|c| self.logits(c)).take(n).collect::<Vec<f32>>()
+                        self.logits(&buf[..n * vl])
                     }
                     Engine::Cpu { .. } => self.logits_n(&buf, n, vl),
                 };
@@ -1317,53 +1430,113 @@ impl Detector {
             let mut waiting: Vec<VecDeque<usize>> = vec![VecDeque::new(); stages.checkpoints.len()];
             // Views the waiting items have to put through the network.
             let mut pending = 0;
-            let mut buf = vec![0u8; self.batch * vl];
             let mut open = true;
+            // On the GPU engine a thread of its own runs the network, so that
+            // while it runs one batch this thread hands out the logits of the
+            // one before and gathers the next. What a batch holds then
+            // differs from running them one at a time, which changes no
+            // logit there (see `run_size_changes_logits`). On the CPU engine
+            // every batch is run and handed out before the next is gathered.
+            #[cfg(target_os = "macos")]
+            let pipelined = matches!(self.engine, Engine::Mps { .. }) && !self.run_size_changes_logits();
+            #[cfg(not(target_os = "macos"))]
+            let pipelined = false;
+            let (job_tx, job_rx) = crossbeam_channel::bounded::<(Vec<u8>, usize)>(1);
+            let (done_tx, done_rx) = crossbeam_channel::bounded::<(Vec<f32>, Vec<u8>, f64)>(1);
+            if pipelined {
+                let engine = OneThreadAtATime(self);
+                s.spawn(move || {
+                    let det = engine;
+                    for (buf, n) in job_rx {
+                        let t = std::time::Instant::now();
+                        let logits = det.0.logits_n(&buf, n, vl);
+                        if done_tx.send((logits, buf, t.elapsed().as_secs_f64())).is_err() {
+                            break;
+                        }
+                    }
+                });
+            } else {
+                drop((job_rx, done_tx));
+            }
+            // The batch the network is running: its items, in slot order.
+            let mut running: Option<Vec<usize>> = None;
+            let mut spare: Vec<Vec<u8>> = vec![Vec::new(), Vec::new()];
             loop {
-                if pending < self.batch && open && items.len() < in_flight_cap {
-                    match rx.recv() {
-                        Ok((i, it)) => {
+                // Gather items; while the network runs, only those already waiting.
+                while pending < self.batch && open && items.len() < in_flight_cap {
+                    let got = if running.is_some() {
+                        match rx.try_recv() {
+                            Ok(x) => Some(x),
+                            Err(crossbeam_channel::TryRecvError::Empty) => break,
+                            Err(crossbeam_channel::TryRecvError::Disconnected) => None,
+                        }
+                    } else {
+                        rx.recv().ok()
+                    };
+                    match got {
+                        Some((i, it)) => {
                             pending += it.todo.len();
                             waiting[0].push_back(i);
                             items.insert(i, it);
                         }
-                        Err(_) => open = false,
+                        None => open = false,
                     }
-                    continue;
                 }
-                if pending == 0 {
-                    break;
-                }
-                // One batch, filled from every stage: later stages first, to
-                // finish items and free what they hold.
-                let mut plan: Vec<usize> = Vec::new();
-                let mut n = 0;
-                for k in (0..waiting.len()).rev() {
-                    while let Some(&i) = waiting[k].front() {
-                        let per = items[&i].todo.len();
-                        if !(n + per <= self.batch.max(per) && (n == 0 || n + per <= self.batch)) {
-                            break;
+                // The next batch, once it is full or nothing more is coming
+                // (or the network is idle and the loop above has waited).
+                let ready = pending > 0 && (running.is_none() || pending >= self.batch || !open || items.len() >= in_flight_cap);
+                let next = ready.then(|| {
+                    // One batch, filled from every stage: later stages first,
+                    // to finish items and free what they hold.
+                    let mut plan: Vec<usize> = Vec::new();
+                    let mut n = 0;
+                    for k in (0..waiting.len()).rev() {
+                        while let Some(&i) = waiting[k].front() {
+                            let per = items[&i].todo.len();
+                            if !(n + per <= self.batch.max(per) && (n == 0 || n + per <= self.batch)) {
+                                break;
+                            }
+                            waiting[k].pop_front();
+                            plan.push(i);
+                            n += per;
                         }
-                        waiting[k].pop_front();
-                        plan.push(i);
-                        n += per;
                     }
-                }
-                if buf.len() < n * vl {
+                    let mut buf = spare.pop().unwrap_or_default();
                     buf.resize(n * vl, 0);
-                }
-                let mut slot = 0;
-                for i in &plan {
-                    let it = items.get_mut(i).unwrap();
-                    for &u in &it.todo {
-                        buf[slot * vl..(slot + 1) * vl].copy_from_slice(&it.fed[u].take().expect("a view is prepared until it is scored"));
-                        slot += 1;
+                    let mut slot = 0;
+                    for i in &plan {
+                        let it = items.get_mut(i).unwrap();
+                        for &u in &it.todo {
+                            buf[slot * vl..(slot + 1) * vl].copy_from_slice(&it.fed[u].take().expect("a view is prepared until it is scored"));
+                            slot += 1;
+                        }
                     }
-                }
-                let t = std::time::Instant::now();
-                let logits = self.logits_n(&buf, n, vl);
-                model_s += t.elapsed().as_secs_f64();
-                pending -= n;
+                    pending -= n;
+                    (plan, buf, n)
+                });
+                let (plan, logits) = if let Some(plan) = running.take() {
+                    let (logits, buf, secs) = done_rx.recv().expect("the network thread runs every batch it is given");
+                    model_s += secs;
+                    spare.push(buf);
+                    if let Some((next_plan, buf, n)) = next {
+                        job_tx.send((buf, n)).expect("the network thread is running");
+                        running = Some(next_plan);
+                    }
+                    (plan, logits)
+                } else if let Some((plan, buf, n)) = next {
+                    if pipelined {
+                        job_tx.send((buf, n)).expect("the network thread is running");
+                        running = Some(plan);
+                        continue;
+                    }
+                    let t = std::time::Instant::now();
+                    let logits = self.logits_n(&buf, n, vl);
+                    model_s += t.elapsed().as_secs_f64();
+                    spare.push(buf);
+                    (plan, logits)
+                } else {
+                    break;
+                };
                 // Hand each item its logits, then move the items on. Getting
                 // an item's next stage ready can mean converting frames and
                 // resizing, so several items do it side by side.
@@ -1399,6 +1572,7 @@ impl Detector {
                     }
                 }
             }
+            drop(job_tx);
         });
         (results, Timing { images: n_items, wall_s: start.elapsed().as_secs_f64(), model_s })
     }
