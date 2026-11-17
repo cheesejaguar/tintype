@@ -43,7 +43,7 @@
     <h2>Your network address</h2>
     <ul>
       <li>Your IP address reaches our server because that is how the response gets back to you. The server also uses it to enforce the demo's limits.</li>
-      <li>For that, it keeps a keyed hash of the address (for IPv6, of its first 64 bits), not the address itself. The key is random, made when the server starts and never stored, so the hash can't be matched to an address later.</li>
+      <li>For that, it keeps a keyed hash of the address (for IPv6, of its first 64 bits), not the address itself. The key is random, made when the server starts and never stored, so once the server stops, nobody can match the hash to an address.</li>
       <li>The hash is held only in memory. Once a new UTC day starts (and your 10-minute window, if it runs past midnight, has ended), the hash is dropped the next time the server runs. Everything it holds is lost when the server stops, which it does by itself within about 15 minutes of its last visitor.</li>
       <li>The server does not write your address, your browser's details, the photo, its contents, its metadata or any fingerprint of it to its logs. Its only log line about the demo is an hourly count of photos scored and requests refused.</li>
     </ul>
