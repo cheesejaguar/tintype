@@ -201,6 +201,61 @@ Images are decoded from memory. Videos are written to a randomly named temporary
 
 Media decoding runs in-process. When an HTTP request times out or disconnects, the worker stops taking on remaining files as it reaches the next cancellation check. Decoder and inference calls already in progress can finish. For deployments that accept external uploads, run the service with OS or container CPU and memory limits and use a process supervisor. The [distribution guide](DISTRIBUTION.md) includes a non-root container setup.
 
+## Public demo mode
+
+`tintype serve --demo` runs a public demo: anyone may call it without a token, and limits that cannot be turned off protect the host. It is how the [website demo](https://cheesejaguar.github.io/tintype/#try) runs; the [hosting guide](HOSTING.md) covers its deployment on Cloud Run.
+
+```sh
+tintype serve --demo --demo-origin https://example.org --bind 0.0.0.0:8080 --device cpu
+```
+
+- `--demo-origin` is required: the one origin whose pages may call the demo. Responses carry `Access-Control-Allow-Origin` for it alone, and a request that names any other `Origin` gets 403 `origin_not_allowed` before its body is read. Scripts that send no `Origin` header may call it.
+- `--client-address` says where the caller's address comes from: `peer` (the TCP connection, the default) or `last-forwarded-for` (the last `X-Forwarded-For` entry). Use `last-forwarded-for` only behind a front end that appends the real address, such as Cloud Run's. Entries before the last one are the caller's own and are ignored, so they cannot be used to forge a fresh allowance.
+- The demo refuses to start with `TINTYPE_API_TOKEN` set: run the token-protected API as a separate service.
+- It does not load the video model, has only `GET /healthz` and `POST /v1/detect`, and ignores `mode`.
+
+### What the demo accepts
+
+| Limit | Value |
+| --- | --- |
+| Files | One per request. JPEG, PNG or WebP, judged by the file's bytes, not its name. No video |
+| Size | 10 MB per photo (10,000,000 bytes) |
+| Per network, short window | 5 photos per 10 minutes. The window starts with the first photo in it |
+| Per network, per day | 20 photos per day. Counts start again at midnight UTC |
+| Everyone, per day | 2,000 photos per day across all visitors. Counts start again at midnight UTC |
+
+A network is one IPv4 address, or one IPv6 /64. A photo counts once it is known to be a JPEG, PNG or WebP within the size cap, whether or not it can be decoded. Requests refused before that (too large, another type, more than one file, wrong origin, server busy) do not count. The limits are counted in memory by each server process: they start again when the process restarts, so the instance cap of the deployment is the hard ceiling on cost. The response's `name` is always `photo.jpg`, `photo.png` or `photo.webp`; the uploaded filename is not used.
+
+### Where the caller stands
+
+Every response to `POST /v1/detect` carries the IETF [RateLimit header fields](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/), one item per limit, and the older single-limit fields for the limit closest to running out. `t` and `RateLimit-Reset` are seconds until that count starts again.
+
+```http
+RateLimit-Policy: "ip-short";q=5;w=600, "ip-daily";q=20;w=86400, "global-daily";q=2000;w=86400
+RateLimit: "ip-short";r=4;t=600, "ip-daily";r=19;t=43200, "global-daily";r=1999;t=43200
+RateLimit-Limit: 5
+RateLimit-Remaining: 4
+RateLimit-Reset: 600
+Cache-Control: no-store
+Access-Control-Expose-Headers: RateLimit, RateLimit-Policy, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After
+```
+
+A request over a limit gets HTTP 429 with `Retry-After`, before its upload is read. `limit` is `ip_short`, `ip_daily` or `global_daily`; when more than one is spent, it names the one with the longest wait.
+
+```json
+{"error":{"code":"rate_limited","limit":"ip_short","message":"You have used the 5 photos allowed per 10 minutes from your network. Try again in 7 minutes, at 12:10 UTC.","retry_after_s":420,"reset_at":"2026-11-16T12:10:00Z"}}
+```
+
+| HTTP status | Code | Meaning |
+| --- | --- | --- |
+| 400 | `invalid_upload` | Not one multipart field named `file`, or more than one photo |
+| 403 | `origin_not_allowed` | The request's `Origin` is not `--demo-origin` |
+| 413 | `photo_too_large` | The photo exceeds 10 MB |
+| 415 | `unsupported_media` | Not a JPEG, PNG or WebP photo |
+| 429 | `rate_limited` | A limit is spent; see `limit` and `Retry-After` |
+
+Other errors are as for the API. Photos are decoded from memory and never written to disk. The server logs no addresses, filenames or contents: its only demo log line is an hourly count of photos scored and requests refused. `GET /healthz` adds `demo.scored` and `demo.refused`, counted since the process started.
+
 ## Measure a local deployment
 
 Run the loopback benchmark from a source checkout after building the binary. It uses the shipped demo PNG and two one-second clips, then verifies overload and clean shutdown.

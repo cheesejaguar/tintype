@@ -1,10 +1,11 @@
+use crate::demo::{self, ClientAddress, Limiter, Origin};
 use crate::detector::{Detector, Device};
 use crate::review::{self, Review, ReviewArgs};
 use crate::{image_io, video};
 use anyhow::{bail, ensure, Context, Result};
 use axum::{
-    extract::{multipart::MultipartRejection, DefaultBodyLimit, Multipart, Request, State},
-    http::{header, StatusCode, Uri},
+    extract::{multipart::MultipartRejection, ConnectInfo, DefaultBodyLimit, Multipart, Request, State},
+    http::{header, HeaderValue, Method, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -12,6 +13,8 @@ use axum::{
 };
 use clap::Args;
 use serde_json::{json, Value};
+use std::borrow::Cow;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, oneshot, Semaphore};
@@ -33,6 +36,22 @@ pub struct ServeArgs {
     turbo: bool,
     #[command(flatten)]
     review: ReviewArgs,
+    /// Run the public demo: no token, one photo per request, and rate
+    /// limits that cannot be turned off (see the API documentation). Needs
+    /// `--demo-origin`. Videos are not accepted and the video model is not
+    /// loaded.
+    #[arg(long, requires = "demo_origin")]
+    demo: bool,
+    /// The website origin whose pages may call the demo, such as
+    /// https://example.org. Requests from other origins are refused.
+    #[arg(long, requires = "demo")]
+    demo_origin: Option<String>,
+    /// Where the demo reads the caller's address for its rate limits:
+    /// `peer` (the TCP connection) or `last-forwarded-for` (the last
+    /// X-Forwarded-For entry, appended by a trusted front end such as
+    /// Cloud Run's).
+    #[arg(long, value_enum, default_value = "peer", requires = "demo")]
+    client_address: ClientAddress,
 }
 
 /// The review bands in use, for photos and for clips. `None` leaves the
@@ -49,7 +68,7 @@ const MAX_ACTIVE: usize = 4;
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
-struct ApiError(StatusCode, &'static str, &'static str);
+struct ApiError(StatusCode, &'static str, Cow<'static, str>);
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
@@ -73,14 +92,14 @@ impl IntoResponse for ApiError {
 }
 
 fn bad_request(message: &'static str) -> ApiError {
-    ApiError(StatusCode::BAD_REQUEST, "invalid_upload", message)
+    ApiError(StatusCode::BAD_REQUEST, "invalid_upload", message.into())
 }
 
 fn unavailable() -> ApiError {
     ApiError(
         StatusCode::SERVICE_UNAVAILABLE,
         "busy",
-        "inference is busy or unavailable",
+        "inference is busy or unavailable".into(),
     )
 }
 
@@ -91,7 +110,71 @@ struct AppState {
     jobs: mpsc::Sender<Job>,
     /// Whether a request without `mode` is scored in turbo mode (`serve --turbo`).
     turbo_default: bool,
+    /// The public demo (`serve --demo`), or `None` for the API.
+    demo: Option<Arc<Demo>>,
 }
+
+/// The public demo's state: its limiter, the one origin it serves, and
+/// aggregate counts since the process started (no per-caller data).
+struct Demo {
+    limiter: Limiter,
+    origin: Origin,
+    address: ClientAddress,
+    scored: AtomicU64,
+    refused: [AtomicU64; 3],
+}
+
+impl Demo {
+    fn new(origin: &str, address: ClientAddress) -> Result<Self> {
+        Ok(Self {
+            // `LIMITS` only: there is no way to start the demo without them.
+            limiter: Limiter::new(demo::LIMITS)?,
+            origin: Origin::parse(origin)?,
+            address,
+            scored: AtomicU64::new(0),
+            refused: Default::default(),
+        })
+    }
+
+    /// The largest request body: one photo at the cap, plus the multipart framing.
+    fn body_limit(&self) -> usize {
+        self.limiter.limits().max_bytes + 64 * 1024
+    }
+
+    fn counts(&self) -> (u64, [u64; 3]) {
+        (
+            self.scored.load(Ordering::Relaxed),
+            self.refused.each_ref().map(|c| c.load(Ordering::Relaxed)),
+        )
+    }
+
+    /// A 429 that says which limit, with the rate-limit fields and `Retry-After`.
+    fn refuse(&self, status: demo::Status) -> Response {
+        if let Some(blocked) = status.blocked() {
+            let index = blocked.limit as usize;
+            self.refused[index].fetch_add(1, Ordering::Relaxed);
+        }
+        let mut response = (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(status.refusal().unwrap_or_else(|| json!({"error": {"code": "rate_limited"}}))),
+        )
+            .into_response();
+        if let Some(wait) = status.retry_after() {
+            response.headers_mut().insert(header::RETRY_AFTER, wait.into());
+        }
+        response
+    }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// The demo caller's limiter key, from `demo_gate` to `demo_detect`.
+#[derive(Clone, Copy)]
+struct Caller(demo::Key);
 
 struct Job {
     files: Vec<Upload>,
@@ -102,7 +185,7 @@ struct Job {
 }
 
 impl Job {
-    fn execute(self, photo: &Detector, clip: &Detector, frames: usize, bands: Bands) {
+    fn execute(self, photo: &Detector, clip: Option<&Detector>, frames: usize, bands: Bands) {
         if let Some(mut rows) = score_uploads(photo, clip, frames, bands, self.files, || {
             self.response.is_closed()
         }) {
@@ -177,8 +260,19 @@ pub fn run(
             "TINTYPE_API_TOKEN must be a bearer token of 1 to 512 ASCII bytes"
         );
     }
+    let demo = match (args.demo, &args.demo_origin) {
+        (true, Some(origin)) => {
+            ensure!(
+                token.is_none(),
+                "demo mode is public: unset TINTYPE_API_TOKEN, and run the API as a separate service"
+            );
+            Some(Arc::new(Demo::new(origin, args.client_address)?))
+        }
+        (true, None) => bail!("demo mode needs --demo-origin"),
+        (false, _) => None,
+    };
     ensure!(
-        args.bind.ip().is_loopback() || token.is_some(),
+        args.bind.ip().is_loopback() || token.is_some() || demo.is_some(),
         "set TINTYPE_API_TOKEN when binding outside loopback"
     );
     let device = match args.device.as_str() {
@@ -210,26 +304,34 @@ pub fn run(
     let (ready, startup) = oneshot::channel();
     let review = args.review;
     let turbo_default = args.turbo;
+    // The demo takes photos only: its video model is never loaded, so the
+    // video path, which writes the upload to a temporary file, cannot run.
+    let photos_only = demo.is_some();
     // Videos stay on the standard engine in turbo mode, so `--turbo` keeps
     // the best engine here for clips and loads the eight-bit one for photos.
     let worker = std::thread::spawn(move || {
         let setup = (|| -> Result<_> {
             let photos = Photos::new(photo, device, turbo_default)?;
             let photo = &photos.standard;
-            let mut clip = Detector::load(&clip, None, 64, device)?;
-            let frames = clip.use_video_profile();
-            ensure!(
-                !photo.spec.views.is_empty() && !clip.spec.views.is_empty(),
-                "model must declare at least one view"
-            );
-            ensure!(
-                (1..=32).contains(&frames),
-                "video model must sample 1 to 32 frames"
-            );
+            ensure!(!photo.spec.views.is_empty(), "model must declare at least one view");
+            let (clip, frames) = if photos_only {
+                (None, 0)
+            } else {
+                let mut clip = Detector::load(&clip, None, 64, device)?;
+                let frames = clip.use_video_profile();
+                ensure!(!clip.spec.views.is_empty(), "model must declare at least one view");
+                ensure!(
+                    (1..=32).contains(&frames),
+                    "video model must sample 1 to 32 frames"
+                );
+                (Some(clip), frames)
+            };
             // Flags first, then the band stored with each model.
             let bands = Bands {
                 photo: review.resolve(photo.spec.review),
-                clip: review.resolve(clip.spec.video.as_ref().and_then(|v| v.review)),
+                clip: clip
+                    .as_ref()
+                    .and_then(|c| review.resolve(c.spec.video.as_ref().and_then(|v| v.review))),
             };
             Ok((photos, clip, frames, bands))
         })();
@@ -245,7 +347,7 @@ pub fn run(
         };
         while let Some(job) = receive.blocking_recv() {
             match photos.get(job.turbo) {
-                Ok(photo) => job.execute(photo, &clip, frames, bands),
+                Ok(photo) => job.execute(photo, clip.as_ref(), frames, bands),
                 // Dropping the job answers 503: the eight-bit engine could not load.
                 Err(error) => eprintln!("turbo mode unavailable: {error:#}"),
             }
@@ -258,10 +360,29 @@ pub fn run(
             active: Arc::new(Semaphore::new(MAX_ACTIVE)),
             jobs,
             turbo_default,
+            demo: demo.clone(),
         };
         let listener = tokio::net::TcpListener::bind(args.bind).await?;
-        eprintln!("Tintype HTTP listening on {}", listener.local_addr()?);
-        axum::serve(listener, app(state))
+        if let Some(demo) = demo {
+            let l = demo.limiter.limits();
+            eprintln!(
+                "Tintype demo listening on {}: photos only, {} per {} s and {} per day per network, {} per day in total, {} bytes at most",
+                listener.local_addr()?, l.short, l.short_window_s, l.daily_per_ip, l.daily_total, l.max_bytes
+            );
+            tokio::spawn(hourly_summary(demo.clone()));
+            // Where the host only gives CPU during requests (Cloud Run), this
+            // runs when the server next runs; an idle instance is stopped anyway.
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(Duration::from_secs(60));
+                loop {
+                    tick.tick().await;
+                    demo.limiter.expire(unix_now());
+                }
+            });
+        } else {
+            eprintln!("Tintype HTTP listening on {}", listener.local_addr()?);
+        }
+        axum::serve(listener, app(state).into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(shutdown())
             .await?;
         Ok(())
@@ -272,7 +393,37 @@ pub fn run(
     result
 }
 
+/// One aggregate line an hour when the demo did anything: counts only.
+async fn hourly_summary(demo: Arc<Demo>) {
+    let mut tick = tokio::time::interval(Duration::from_secs(3600));
+    tick.tick().await;
+    let mut last = demo.counts();
+    loop {
+        tick.tick().await;
+        let now = demo.counts();
+        let refused: [u64; 3] = std::array::from_fn(|i| now.1[i] - last.1[i]);
+        if now != last {
+            eprintln!(
+                "demo, last hour: scored {} photos; refused {} over the short-window limit, {} over the daily limit per network, {} over the daily cap",
+                now.0 - last.0, refused[0], refused[1], refused[2]
+            );
+        }
+        last = now;
+    }
+}
+
 fn app(state: AppState) -> Router {
+    if let Some(demo) = state.demo.clone() {
+        return Router::new()
+            .route("/healthz", get(health))
+            .route(
+                "/v1/detect",
+                post(demo_detect).route_layer(middleware::from_fn_with_state(state.clone(), demo_gate)),
+            )
+            .layer(DefaultBodyLimit::max(demo.body_limit()))
+            .layer(middleware::from_fn_with_state(demo, demo_cors))
+            .with_state(state);
+    }
     let inference = Router::new()
         .route("/v1/detect", post(detect))
         .route("/v1/batch", post(batch))
@@ -314,7 +465,7 @@ async fn authorize_upload(State(state): State<AppState>, request: Request, next:
             return ApiError(
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
-                "supply the configured bearer token",
+                "supply the configured bearer token".into(),
             )
             .into_response();
         }
@@ -330,13 +481,140 @@ async fn authorize_upload(State(state): State<AppState>, request: Request, next:
     next.run(request).await
 }
 
+/// Every demo response: the one origin allowed to read it, the headers that
+/// page may read, and no caching anywhere. A request from any other origin
+/// is refused before it is read.
+async fn demo_cors(State(demo): State<Arc<Demo>>, request: Request, next: Next) -> Response {
+    let mut response = if !demo.origin.allows(request.headers()) {
+        ApiError(
+            StatusCode::FORBIDDEN,
+            "origin_not_allowed",
+            "this demo answers its own website and scripts that send no Origin".into(),
+        )
+        .into_response()
+    } else if request.method() == Method::OPTIONS {
+        let mut preflight = StatusCode::NO_CONTENT.into_response();
+        let headers = preflight.headers_mut();
+        headers.insert(header::ACCESS_CONTROL_ALLOW_METHODS, HeaderValue::from_static("POST"));
+        headers.insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("content-type"));
+        headers.insert(header::ACCESS_CONTROL_MAX_AGE, HeaderValue::from_static("600"));
+        preflight
+    } else {
+        next.run(request).await
+    };
+    let headers = response.headers_mut();
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, demo.origin.value().clone());
+    headers.insert(header::ACCESS_CONTROL_EXPOSE_HEADERS, HeaderValue::from_static(demo::EXPOSED));
+    headers.append(header::VARY, HeaderValue::from_static("Origin"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    response
+}
+
+/// The demo's rate limits around `POST /v1/detect`: refuse a caller over a
+/// limit before reading the upload, and tell every caller where they stand.
+async fn demo_gate(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+    let demo = state.demo.clone().expect("the demo gate runs in demo mode only");
+    let peer = request.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0);
+    // No address at all only happens off the network (tests); such callers share one key.
+    let ip = demo
+        .address
+        .resolve(request.headers(), peer)
+        .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED.into());
+    let key = demo.limiter.key(ip);
+    let status = demo.limiter.status(key, unix_now());
+    let mut response = if status.blocked().is_some() {
+        demo.refuse(status)
+    } else {
+        let length = request
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok());
+        if length.is_some_and(|length| length > demo.body_limit() as u64) {
+            photo_too_large().into_response()
+        } else {
+            request.extensions_mut().insert(Caller(key));
+            next.run(request).await
+        }
+    };
+    for (name, value) in demo.limiter.status(key, unix_now()).headers() {
+        if let Ok(value) = HeaderValue::from_str(&value) {
+            response.headers_mut().insert(name, value);
+        }
+    }
+    response
+}
+
+fn photo_too_large() -> ApiError {
+    ApiError(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "photo_too_large",
+        format!("the demo accepts one photo of up to {} MB", demo::LIMITS.max_bytes / 1_000_000).into(),
+    )
+}
+
+/// One photo, counted against the caller's limits once it is known to be a
+/// photo the demo accepts.
+async fn demo_detect(
+    State(state): State<AppState>,
+    axum::Extension(Caller(key)): axum::Extension<Caller>,
+    multipart: std::result::Result<Multipart, MultipartRejection>,
+) -> ApiResult<Response> {
+    let demo = state.demo.clone().expect("demo mode");
+    let multipart =
+        multipart.map_err(|_| bad_request("expected multipart/form-data with a boundary"))?;
+    let slot = state.active.clone().try_acquire_owned().map_err(|_| unavailable())?;
+    let mut files = tokio::time::timeout(
+        Duration::from_secs(20),
+        parse_upload(multipart, 1, "send one photo per request"),
+    )
+    .await
+    .map_err(|_| ApiError(StatusCode::REQUEST_TIMEOUT, "upload_timeout", "upload timed out".into()))?
+    .map_err(|error| if error.0 == StatusCode::PAYLOAD_TOO_LARGE { photo_too_large() } else { error })?;
+    let file = &mut files[0];
+    if file.bytes.len() > demo.limiter.limits().max_bytes {
+        return Err(photo_too_large());
+    }
+    // Photos only, by their bytes. The name is replaced, so nothing the
+    // caller calls the file can route it anywhere else.
+    file.name = match image::guess_format(&file.bytes) {
+        Ok(image::ImageFormat::Jpeg) => "photo.jpg",
+        Ok(image::ImageFormat::Png) => "photo.png",
+        Ok(image::ImageFormat::WebP) => "photo.webp",
+        _ => {
+            return Err(ApiError(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media",
+                "the demo accepts one JPEG, PNG or WebP photo; videos and other files are not accepted".into(),
+            ))
+        }
+    }
+    .to_owned();
+    if let Err(status) = demo.limiter.take(key, unix_now()) {
+        return Ok(demo.refuse(status));
+    }
+    demo.scored.fetch_add(1, Ordering::Relaxed);
+    let mut results = queue(&state, files, state.turbo_default, slot).await?;
+    let result = results.remove(0);
+    let status = if result.get("error").is_some() {
+        StatusCode::UNPROCESSABLE_ENTITY
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(result)).into_response())
+}
+
 async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
     if state.jobs.is_closed() {
         return Err(unavailable());
     }
-    Ok(Json(
-        json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")}),
-    ))
+    let mut body = json!({"status": "ok", "version": env!("CARGO_PKG_VERSION")});
+    if let Some(demo) = &state.demo {
+        let (scored, refused) = demo.counts();
+        body["demo"] = json!({"scored": scored, "refused": refused.iter().sum::<u64>()});
+    }
+    Ok(Json(body))
 }
 
 async fn detect(
@@ -371,7 +649,7 @@ fn turbo_requested(uri: &Uri, default: bool) -> ApiResult<bool> {
             "mode=turbo" => turbo = true,
             "mode=standard" => turbo = false,
             _ if pair.starts_with("mode=") || pair == "mode" => {
-                return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mode", "mode must be standard or turbo"))
+                return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mode", "mode must be standard or turbo".into()))
             }
             _ => {}
         }
@@ -390,17 +668,28 @@ async fn submit(
         multipart.map_err(|_| bad_request("expected multipart/form-data with a boundary"))?;
     let slot = state
         .active
+        .clone()
         .try_acquire_owned()
         .map_err(|_| unavailable())?;
-    let files = tokio::time::timeout(Duration::from_secs(20), parse_upload(multipart, count))
+    let files = tokio::time::timeout(Duration::from_secs(20), parse_upload(multipart, count, "too many file fields"))
         .await
         .map_err(|_| {
             ApiError(
                 StatusCode::REQUEST_TIMEOUT,
                 "upload_timeout",
-                "upload timed out",
+                "upload timed out".into(),
             )
         })??;
+    queue(&state, files, turbo, slot).await
+}
+
+/// Hand uploads to the inference worker and wait for its rows.
+async fn queue(
+    state: &AppState,
+    files: Vec<Upload>,
+    turbo: bool,
+    slot: tokio::sync::OwnedSemaphorePermit,
+) -> ApiResult<Vec<Value>> {
     let (response, reply) = oneshot::channel();
     state
         .jobs
@@ -417,7 +706,7 @@ async fn submit(
             ApiError(
                 StatusCode::GATEWAY_TIMEOUT,
                 "inference_timeout",
-                "inference timed out",
+                "inference timed out".into(),
             )
         })?
         .map_err(|_| unavailable())
@@ -435,18 +724,22 @@ fn upload_too_large() -> ApiError {
     ApiError(
         StatusCode::PAYLOAD_TOO_LARGE,
         "upload_too_large",
-        "upload exceeds 64 MiB",
+        "upload exceeds 64 MiB".into(),
     )
 }
 
-async fn parse_upload(mut multipart: Multipart, max: usize) -> ApiResult<Vec<Upload>> {
+async fn parse_upload(
+    mut multipart: Multipart,
+    max: usize,
+    too_many: &'static str,
+) -> ApiResult<Vec<Upload>> {
     let mut files = Vec::new();
     while let Some(mut field) = multipart.next_field().await.map_err(multipart_error)? {
         if field.name() != Some("file") {
             return Err(bad_request("expected multipart fields named file"));
         }
         if files.len() >= max {
-            return Err(bad_request("too many file fields"));
+            return Err(bad_request(too_many));
         }
         let name = field
             .file_name()
@@ -467,7 +760,7 @@ async fn parse_upload(mut multipart: Multipart, max: usize) -> ApiResult<Vec<Upl
 
 fn score_uploads(
     photo: &Detector,
-    clip: &Detector,
+    clip: Option<&Detector>,
     frames: usize,
     bands: Bands,
     files: Vec<Upload>,
@@ -491,7 +784,8 @@ fn score_uploads(
             .unwrap_or("")
             .to_ascii_lowercase();
         if matches!(ext.as_str(), "mp4" | "mov" | "m4v") {
-            if let Ok(value) = score_video(clip, frames, bands.clip, &file, &ext) {
+            // Without a video model (the demo), a video stays unreadable.
+            if let Some(Ok(value)) = clip.map(|clip| score_video(clip, frames, bands.clip, &file, &ext)) {
                 results[i] = value;
             }
         } else {
@@ -706,6 +1000,7 @@ mod tests {
                     active: active.clone(),
                     jobs,
                     turbo_default: false,
+                    demo: None,
                 });
 
                 let health = app
@@ -793,7 +1088,7 @@ mod tests {
             let frames = clip.use_video_profile();
             while let Some(job) = receive.blocking_recv() {
                 let photo = photos.get(job.turbo).unwrap();
-                job.execute(photo, &clip, frames, Bands::default());
+                job.execute(photo, Some(&clip), frames, Bands::default());
             }
         });
         let photo = image::RgbImage::from_pixel(224, 224, image::Rgb([47, 127, 211]));
@@ -812,6 +1107,7 @@ mod tests {
                     active: Arc::new(Semaphore::new(MAX_ACTIVE)),
                     jobs,
                     turbo_default: false,
+                    demo: None,
                 });
                 let batch = app
                     .clone()
@@ -926,7 +1222,7 @@ mod tests {
                 Upload { name: "broken.png".into(), bytes: b"broken".to_vec() },
             ]
         };
-        let run = |bands: Bands| score_uploads(&photo, &clip, frames, bands, uploads(), || false).unwrap();
+        let run = |bands: Bands| score_uploads(&photo, Some(&clip), frames, bands, uploads(), || false).unwrap();
         let plain = run(Bands::default());
         // Off: no review keys anywhere.
         assert!(plain.iter().all(|r| r.get("review").is_none() && r.get("review_reason").is_none()), "{plain:?}");
@@ -976,11 +1272,159 @@ mod tests {
             })
             .collect();
         let checks = AtomicUsize::new(0);
-        let output = score_uploads(&detector, &detector, 1, Bands::default(), files, || {
+        let output = score_uploads(&detector, Some(&detector), 1, Bands::default(), files, || {
             // The request closes after the first video reaches the decoder.
             checks.fetch_add(1, Ordering::Relaxed) >= 2
         });
         assert!(output.is_none());
         assert_eq!(checks.load(Ordering::Relaxed), 3);
+    }
+
+    fn png() -> Vec<u8> {
+        let photo = image::RgbImage::from_pixel(64, 48, image::Rgb([47, 127, 211]));
+        let mut png = Vec::new();
+        photo.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        png
+    }
+
+    /// A demo app whose worker answers every job with a fixed row and
+    /// reports the names it was given.
+    fn demo_app() -> (Router, Arc<Demo>, std::sync::mpsc::Receiver<Vec<String>>) {
+        let (jobs, mut receive) = mpsc::channel::<Job>(MAX_ACTIVE);
+        let (names, seen) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            while let Some(job) = receive.blocking_recv() {
+                let rows = job.files.iter().map(|f| json!({"name": f.name, "kind": "image", "score": 0.25, "verdict": "likely-real"})).collect();
+                names.send(job.files.iter().map(|f| f.name.clone()).collect()).unwrap();
+                let _ = job.response.send(rows);
+            }
+        });
+        let demo = Arc::new(Demo::new("https://cheesejaguar.github.io", ClientAddress::LastForwardedFor).unwrap());
+        let state = AppState {
+            token: None,
+            active: Arc::new(Semaphore::new(MAX_ACTIVE)),
+            jobs,
+            turbo_default: false,
+            demo: Some(demo.clone()),
+        };
+        (app(state), demo, seen)
+    }
+
+    fn from(mut request: Request, origin: Option<&str>, forwarded: &str) -> Request {
+        if let Some(origin) = origin {
+            request.headers_mut().insert(header::ORIGIN, origin.parse().unwrap());
+        }
+        request.headers_mut().insert("x-forwarded-for", forwarded.parse().unwrap());
+        request
+    }
+
+    const SITE: Option<&str> = Some("https://cheesejaguar.github.io");
+
+    fn header<'a>(response: &'a Response, name: &str) -> &'a str {
+        response.headers().get(name).map_or("", |v| v.to_str().unwrap())
+    }
+
+    #[test]
+    fn the_demo_answers_its_origin_counts_photos_and_says_where_the_caller_stands() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let (app, demo, seen) = demo_app();
+            let png = png();
+            let send = |origin: Option<&'static str>, forwarded: &'static str, files: Vec<(&'static str, Vec<u8>)>| {
+                let app = app.clone();
+                async move {
+                    let files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+                    app.oneshot(from(request("POST", "/v1/detect", None, &files), origin, forwarded)).await.unwrap()
+                }
+            };
+
+            // Preflight: the site's origin, POST, cached for ten minutes.
+            let preflight = app
+                .clone()
+                .oneshot(from(request("OPTIONS", "/v1/detect", None, &[]), SITE, "203.0.113.1"))
+                .await
+                .unwrap();
+            assert_eq!(preflight.status(), StatusCode::NO_CONTENT);
+            assert_eq!(header(&preflight, "access-control-allow-origin"), SITE.unwrap());
+            assert_eq!(header(&preflight, "access-control-allow-methods"), "POST");
+            assert_eq!(header(&preflight, "cache-control"), "no-store");
+
+            // Another site's page is refused before anything is read or counted.
+            let foreign = send(Some("https://elsewhere.example"), "203.0.113.1", vec![("a.png", png.clone())]).await;
+            assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+            assert_eq!(json(foreign).await["error"]["code"], "origin_not_allowed");
+
+            // Five photos in the window, whatever the caller puts in front of
+            // the address the front end appended.
+            for i in 0..5u32 {
+                let forged = ["203.0.113.1", "9.9.9.9, 203.0.113.1", "1.1.1.1,2.2.2.2, 203.0.113.1"][i as usize % 3];
+                let ok = send(SITE, forged, vec![("holiday.mp4", png.clone())]).await;
+                assert_eq!(ok.status(), StatusCode::OK);
+                assert_eq!(header(&ok, "access-control-allow-origin"), SITE.unwrap());
+                let exposed = header(&ok, "access-control-expose-headers");
+                for name in ["RateLimit", "RateLimit-Policy", "RateLimit-Remaining", "RateLimit-Reset", "Retry-After"] {
+                    assert!(exposed.split(", ").any(|e| e == name), "{name} in {exposed}");
+                }
+                assert_eq!(header(&ok, "cache-control"), "no-store");
+                assert_eq!(header(&ok, "ratelimit-remaining"), (4 - i).to_string());
+                assert!(header(&ok, "ratelimit").starts_with(&format!("\"ip-short\";r={};t=", 4 - i)), "{}", header(&ok, "ratelimit"));
+                assert_eq!(header(&ok, "ratelimit-policy"), "\"ip-short\";q=5;w=600, \"ip-daily\";q=20;w=86400, \"global-daily\";q=2000;w=86400");
+                assert!(ok.headers().get(header::RETRY_AFTER).is_none());
+                assert_eq!(json(ok).await["verdict"], "likely-real");
+                // The caller's file name never reaches the worker: a video name cannot route a photo to the video path.
+                assert_eq!(seen.try_recv().unwrap(), ["photo.png"]);
+            }
+            let limited = send(SITE, "8.8.8.8, 203.0.113.1", vec![("a.png", png.clone())]).await;
+            assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+            let wait: u64 = header(&limited, "retry-after").parse().unwrap();
+            assert!((590..=600).contains(&wait), "{wait}");
+            assert_eq!(header(&limited, "ratelimit-remaining"), "0");
+            assert_eq!(header(&limited, "access-control-allow-origin"), SITE.unwrap());
+            let body = json(limited).await;
+            assert_eq!(body["error"]["code"], "rate_limited");
+            assert_eq!(body["error"]["limit"], "ip_short");
+            assert!(body["error"]["message"].as_str().unwrap().starts_with("You have used the 5 photos allowed per 10 minutes"));
+            assert!(seen.try_recv().is_err());
+
+            // Another network has its own allowance; the shared cap shows the six.
+            let other = send(SITE, "203.0.113.2", vec![("b.jpg", png.clone())]).await;
+            assert_eq!(other.status(), StatusCode::OK);
+            assert_eq!(header(&other, "ratelimit-remaining"), "4");
+            assert!(header(&other, "ratelimit").contains("\"global-daily\";r=1994;t="), "{}", header(&other, "ratelimit"));
+            seen.try_recv().unwrap();
+
+            // Refused uploads are not counted: too large, not a photo, more than one.
+            let before = demo.limiter.status(demo.limiter.key("203.0.113.3".parse().unwrap()), unix_now());
+            let big = send(SITE, "203.0.113.3", vec![("big.png", [png.clone(), vec![0; demo::LIMITS.max_bytes]].concat())]).await;
+            assert_eq!(big.status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let body = json(big).await;
+            assert_eq!(body["error"]["code"], "photo_too_large");
+            assert_eq!(body["error"]["message"], "the demo accepts one photo of up to 10 MB");
+            let mut declared = from(request("POST", "/v1/detect", None, &[("a.png", &png)]), SITE, "203.0.113.3");
+            declared.headers_mut().insert(header::CONTENT_LENGTH, (demo.body_limit() + 1).to_string().parse().unwrap());
+            assert_eq!(app.clone().oneshot(declared).await.unwrap().status(), StatusCode::PAYLOAD_TOO_LARGE);
+            let mp4 = include_bytes!("../tests/fixtures/video.mp4").to_vec();
+            for (name, bytes) in [("clip.mp4", mp4.clone()), ("photo.jpg", mp4), ("notes.txt", b"hello".to_vec()), ("photo.gif", b"GIF89a....".to_vec())] {
+                let refused = send(SITE, "203.0.113.3", vec![(name, bytes)]).await;
+                assert_eq!(refused.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE, "{name}");
+                assert_eq!(header(&refused, "ratelimit-remaining"), "5");
+                assert_eq!(json(refused).await["error"]["code"], "unsupported_media");
+            }
+            let two = send(SITE, "203.0.113.3", vec![("a.png", png.clone()), ("b.png", png.clone())]).await;
+            assert_eq!(two.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(json(two).await["error"]["message"], "send one photo per request");
+            let after = demo.limiter.status(demo.limiter.key("203.0.113.3".parse().unwrap()), unix_now());
+            assert_eq!(before.quotas[0].remaining, after.quotas[0].remaining);
+            assert!(seen.try_recv().is_err(), "nothing refused reached the worker");
+
+            // A script without an Origin may call; the API's batch route does not exist here.
+            assert_eq!(send(None, "203.0.113.4", vec![("a.webp", png.clone())]).await.status(), StatusCode::OK);
+            let batch = app.clone().oneshot(from(request("POST", "/v1/batch", None, &[("a.png", &png)]), SITE, "203.0.113.4")).await.unwrap();
+            assert_eq!(batch.status(), StatusCode::NOT_FOUND);
+            assert_eq!(header(&batch, "cache-control"), "no-store");
+            let health = app.oneshot(request("GET", "/healthz", None, &[])).await.unwrap();
+            let health = json(health).await;
+            assert_eq!(health["demo"]["scored"], 7);
+            assert_eq!(health["demo"]["refused"], 1);
+        });
     }
 }

@@ -1324,3 +1324,70 @@ fn turbo_scores_photos_on_the_eight_bit_engine_and_says_so() {
     assert!(!both.status.success() && String::from_utf8_lossy(&both.stderr).contains("--turbo"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn demo_mode_cannot_start_without_its_origin_or_beside_a_token() {
+    let weights = common::photo_weights();
+    let serve = |extra: &[&str], token: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tintype"));
+        command.args(["serve", "--device", "cpu", "--weights", weights.to_str().unwrap()]).args(extra).current_dir(common::repo());
+        command.env_remove("TINTYPE_API_TOKEN");
+        if let Some(token) = token {
+            command.env("TINTYPE_API_TOKEN", token);
+        }
+        let o = command.output().unwrap();
+        assert!(!o.status.success(), "{extra:?} should not start");
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    assert!(serve(&["--demo", "--bind", "0.0.0.0:0"], None).contains("--demo-origin"));
+    assert!(serve(&["--demo-origin", "https://example.org", "--bind", "127.0.0.1:0"], None).contains("--demo"));
+    assert!(serve(&["--client-address", "last-forwarded-for", "--bind", "127.0.0.1:0"], None).contains("--demo"));
+    assert!(serve(&["--demo", "--demo-origin", "https://example.org/path", "--bind", "127.0.0.1:0"], None).contains("--demo-origin must be an origin"));
+    assert!(serve(&["--demo", "--demo-origin", "https://example.org", "--bind", "127.0.0.1:0"], Some("secret")).contains("demo mode is public"));
+    // Without the demo, binding publicly still needs a token.
+    assert!(serve(&["--bind", "0.0.0.0:0"], None).contains("set TINTYPE_API_TOKEN"));
+}
+
+#[test]
+fn the_demo_scores_one_real_photo_and_reports_its_limits() {
+    use std::io::{BufRead, BufReader};
+    let weights = common::photo_weights();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tintype"))
+        .args(["serve", "--device", "cpu", "--weights", weights.to_str().unwrap(), "--bind", "127.0.0.1:0", "--demo", "--demo-origin", "http://localhost:8000"])
+        .env_remove("TINTYPE_API_TOKEN")
+        .current_dir(common::repo())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut line = String::new();
+    let address = loop {
+        line.clear();
+        assert!(stderr.read_line(&mut line).unwrap() > 0, "the demo exited before listening");
+        if let Some(rest) = line.strip_prefix("Tintype demo listening on ") {
+            break rest.split(':').take(2).collect::<Vec<_>>().join(":");
+        }
+    };
+    let photo = std::fs::read(common::repo().join("site/assets/demo.png")).unwrap();
+    let mut body = b"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"demo.png\"\r\n\r\n".to_vec();
+    body.extend_from_slice(&photo);
+    body.extend_from_slice(b"\r\n--b--\r\n");
+    let response = ureq::post(&format!("http://{address}/v1/detect"))
+        .header("Content-Type", "multipart/form-data; boundary=b")
+        .header("Origin", "http://localhost:8000")
+        .send(&body[..])
+        .unwrap();
+    let header = |name: &str| response.headers().get(name).unwrap().to_str().unwrap().to_owned();
+    assert_eq!(header("access-control-allow-origin"), "http://localhost:8000");
+    assert_eq!(header("ratelimit-remaining"), "4");
+    assert_eq!(header("cache-control"), "no-store");
+    let row: serde_json::Value = serde_json::from_reader(response.into_body().into_reader()).unwrap();
+    // The same score the CLI gives this file.
+    let cli = detect(&[&common::repo().join("site/assets/demo.png")], &["--json"]);
+    let expected = &json_lines(&cli)[0];
+    assert_eq!(row["name"], "photo.png");
+    assert_eq!(row["verdict"], expected["verdict"]);
+    assert!((row["score"].as_f64().unwrap() - score_of(expected).unwrap()).abs() < 1e-6, "{row} against {expected}");
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
