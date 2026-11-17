@@ -1,0 +1,19 @@
+# Upload only what the container build needs (same list as .dockerignore).
+**
+!Cargo.toml
+!Cargo.lock
+!Dockerfile
+!deploy/
+!deploy/**
+!LICENSE-APACHE
+!LICENSE-MIT
+!NOTICE.md
+!src/
+!src/**
+!site/
+!site/assets/
+!site/assets/demo.png
+!models/
+!models/**
+!container-release/
+!container-release/**

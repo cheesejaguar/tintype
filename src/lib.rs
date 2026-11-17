@@ -26,6 +26,7 @@ pub mod integrity;
 pub mod interpolate;
 pub mod split;
 pub mod server;
+pub mod demo;
 pub mod avf;
 pub mod yuv;
 pub mod swdec;

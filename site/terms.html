@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f6f3eb">
+  <title>Terms of use — Tintype</title>
+  <meta name="description" content="Terms of use for the Tintype online demo: non-commercial, rate limited, no warranty.">
+  <link rel="canonical" href="https://cheesejaguar.github.io/tintype/terms.html">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header page-width">
+    <a class="wordmark" href="./" aria-label="Tintype home">Tintype</a>
+    <nav aria-label="Main navigation">
+      <a href="./#try">Try it</a>
+      <a href="./#quickstart">Quickstart</a>
+      <a href="https://github.com/cheesejaguar/tintype">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+
+  <main class="page-width legal" id="main">
+    <h1>Terms of use</h1>
+    <p class="updated">The online demo · last updated 16 November 2026</p>
+
+    <p>These terms cover the demo on this website. Tintype's code and model weights have their own licences, in the <a href="https://github.com/cheesejaguar/tintype">repository</a>.</p>
+
+    <h2>A free, non-commercial demo</h2>
+    <p>The demo is free and offered so you can try Tintype. Use it only for personal, educational, research or other non-commercial purposes, in line with the <a href="https://github.com/cheesejaguar/tintype/blob/main/models/LICENSE.md">non-commercial licence</a> of the model weights. Do not build it into a product or service, and do not use it to process photos in bulk: install Tintype instead.</p>
+
+    <h2>What you may upload</h2>
+    <ul>
+      <li>Only photos you have the right to share, and only for a lawful purpose.</li>
+      <li>Nothing unlawful, including sexual images of children, intimate images shared without consent, or material that infringes someone else's rights.</li>
+      <li>Think twice before uploading photos of other people. The demo keeps nothing, but you are still sending their image to a server.</li>
+    </ul>
+
+    <h2>Limits</h2>
+    <ul>
+      <li>Photos only: one JPEG, PNG or WebP file per request, up to 10 MB and 12 megapixels.</li>
+      <li>From one network: 5 photos per 10 minutes, starting with the first, and 20 photos per day. The day starts at midnight UTC.</li>
+      <li>In total: the demo runs on a small hosting budget, so it scores a fixed number of photos per day across all visitors. When they are used up it pauses until midnight UTC, and says so.</li>
+    </ul>
+    <p>Photos the demo refuses before scoring, because they are too large, have too many pixels or are not a supported photo, do not count. Every photo it accepts counts, including one it cannot read. The demo tells you how many you have left after each photo. Do not try to get around the limits, for example by switching addresses or automating requests. We may change the limits, pause the demo or end it at any time.</p>
+
+    <h2>What a result means</h2>
+    <p>A result is one statistical signal from a model, and it can be wrong either way. At the demo's setting, Tintype flagged 1.2% of real photos and missed 10.3% of AI-generated ones in its blind benchmark, and it does worse on resized, re-saved or screenshotted copies. A result is not proof that a photo is or is not AI-generated. Do not use it as the only basis for any decision about a person, such as hiring, discipline, grading, moderation, publication or a legal claim.</p>
+
+    <h2>No warranty</h2>
+    <p>The demo is provided "as is" and "as available", without warranties of any kind, including accuracy, availability or fitness for a particular purpose. To the extent the law allows, the Tintype maintainers are not liable for any loss or damage arising from your use of the demo or its results. Some places do not allow these limits, so they may not all apply to you.</p>
+
+    <h2>Privacy</h2>
+    <p>How the demo handles your photo and your network address is set out in the <a href="privacy.html">privacy notice</a>.</p>
+
+    <h2>Changes</h2>
+    <p>We may update these terms. The date at the top changes when they do, and their history is public in the <a href="https://github.com/cheesejaguar/tintype/commits/main/site/terms.html">project repository</a>.</p>
+  </main>
+
+  <footer class="site-footer page-width">
+    <a class="wordmark" href="./" aria-label="Tintype home">Tintype</a>
+    <p>Rust code under MIT or Apache-2.0. Bundled weights under CC BY-NC-SA 4.0.</p>
+    <nav aria-label="Project links">
+      <a href="privacy.html">Privacy</a>
+      <a href="terms.html">Terms</a>
+      <a href="https://github.com/cheesejaguar/tintype">GitHub <span aria-hidden="true">↗</span></a>
+      <a href="https://github.com/cheesejaguar/tintype/issues">Issues <span aria-hidden="true">↗</span></a>
+    </nav>
+  </footer>
+</body>
+</html>

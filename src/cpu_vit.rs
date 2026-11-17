@@ -497,6 +497,12 @@ impl CpuVit {
         self.kernels
     }
 
+    /// The integer kernel the eight-bit engine runs on this processor, or
+    /// `None` when it simulates eight-bit layers instead.
+    pub fn int8_kernel(&self) -> Option<&'static str> {
+        self.kernels.then(int8_gemm::kernel_name)
+    }
+
     /// One line for standard error when `--device cpu-int8` would be slower
     /// than `--device cpu` here: no byte dot-product instruction (ARM64 dot
     /// product, AVX-VNNI or AVX-512 VNNI), or the simulation was asked for.

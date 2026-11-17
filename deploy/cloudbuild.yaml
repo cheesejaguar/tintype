@@ -1,0 +1,11 @@
+# Builds the Tintype container with the bundled models for Cloud Run (x86-64).
+#   gcloud builds submit --config deploy/cloudbuild.yaml \
+#     --substitutions=_IMAGE=REGION-docker.pkg.dev/PROJECT/tintype/tintype:TAG
+# See docs/HOSTING.md.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "--target", "bundled", "--platform", "linux/amd64", "-t", "${_IMAGE}", "."]
+images: ["${_IMAGE}"]
+timeout: 3600s
+options:
+  logging: CLOUD_LOGGING_ONLY
