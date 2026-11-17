@@ -866,6 +866,14 @@ impl Detector {
         self.device
     }
 
+    /// The eight-bit engine's integer kernel, when this detector runs it.
+    pub fn int8_kernel(&self) -> Option<&'static str> {
+        match &self.engine {
+            Engine::Cpu { vit } if matches!(self.device, Device::CpuInt8) => vit.int8_kernel(),
+            _ => None,
+        }
+    }
+
     pub fn new(w: &Weights, spec: ModelSpec, batch: usize, device: Device) -> Result<Self> {
         #[cfg(target_os = "macos")]
         if spec.arch == "swinv2_large_w16_256" {

@@ -65,6 +65,9 @@ struct Bands {
 const MAX_REQUEST: usize = 64 * 1024 * 1024;
 const MAX_FILES: usize = 16;
 const MAX_ACTIVE: usize = 4;
+/// The most pixels an uploaded image may have, and the longest side.
+pub const MAX_PIXELS: u64 = 12_000_000;
+const MAX_SIDE: u32 = 8192;
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
@@ -208,12 +211,14 @@ struct Photos {
     weights: PathBuf,
     standard: Detector,
     turbo: Option<Detector>,
+    /// Whether the turbo kernel has been named on standard error.
+    announced: bool,
 }
 
 impl Photos {
     fn new(weights: PathBuf, device: Device, preload_turbo: bool) -> Result<Self> {
         let standard = Detector::load(&weights, None, 32, device)?;
-        let mut photos = Self { weights, standard, turbo: None };
+        let mut photos = Self { weights, standard, turbo: None, announced: false };
         if preload_turbo {
             photos.get(true)?;
         }
@@ -229,6 +234,12 @@ impl Photos {
                 eprintln!("note: turbo mode scores photos on the eight-bit CPU engine; on this Mac the GPU engine (mode=standard) is faster");
             }
             self.turbo = Some(Detector::load(&self.weights, None, 32, Device::CpuInt8)?);
+        }
+        if !self.announced {
+            // Says which kernel turbo runs here, so a host's CPU can be checked from its logs.
+            let kernel = self.turbo.as_ref().unwrap_or(&self.standard).int8_kernel();
+            eprintln!("turbo mode: photos run on the eight-bit engine, kernel: {}", kernel.unwrap_or("none (simulated)"));
+            self.announced = true;
         }
         Ok(self.turbo.as_ref().unwrap())
     }
@@ -578,10 +589,11 @@ async fn demo_detect(
     }
     // Photos only, by their bytes. The name is replaced, so nothing the
     // caller calls the file can route it anywhere else.
-    file.name = match image::guess_format(&file.bytes) {
-        Ok(image::ImageFormat::Jpeg) => "photo.jpg",
-        Ok(image::ImageFormat::Png) => "photo.png",
-        Ok(image::ImageFormat::WebP) => "photo.webp",
+    let format = image::guess_format(&file.bytes).ok();
+    file.name = match format {
+        Some(image::ImageFormat::Jpeg) => "photo.jpg",
+        Some(image::ImageFormat::Png) => "photo.png",
+        Some(image::ImageFormat::WebP) => "photo.webp",
         _ => {
             return Err(ApiError(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -591,6 +603,22 @@ async fn demo_detect(
         }
     }
     .to_owned();
+    // Too many pixels to decode: say so plainly, before counting the photo.
+    // The header alone gives the size; nothing is decoded here.
+    let size = image::ImageReader::with_format(std::io::Cursor::new(&file.bytes), format.unwrap())
+        .into_dimensions()
+        .ok();
+    if let Some((w, h)) = size.filter(|&(w, h)| u64::from(w) * u64::from(h) > MAX_PIXELS || w.max(h) > MAX_SIDE) {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "photo_too_many_pixels",
+            format!(
+                "this photo is {w} by {h} pixels; the demo accepts photos of up to {} megapixels and {MAX_SIDE} pixels a side. Install Tintype to check larger photos on your own computer",
+                MAX_PIXELS / 1_000_000
+            )
+            .into(),
+        ));
+    }
     if let Err(status) = demo.limiter.take(key, unix_now()) {
         return Ok(demo.refuse(status));
     }
@@ -865,15 +893,15 @@ fn decode_image(bytes: &[u8]) -> Result<image_io::Rgb> {
         let mut reader =
             image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
         let mut limits = image::Limits::default();
-        limits.max_image_width = Some(8192);
-        limits.max_image_height = Some(8192);
+        limits.max_image_width = Some(MAX_SIDE);
+        limits.max_image_height = Some(MAX_SIDE);
         limits.max_alloc = Some(128 * 1024 * 1024);
         reader.limits(limits);
         Ok::<_, std::io::Error>(reader)
     };
     let (w, h) = reader()?.into_dimensions()?;
     ensure!(
-        w > 0 && h > 0 && u64::from(w) * u64::from(h) <= 12_000_000,
+        w > 0 && h > 0 && u64::from(w) * u64::from(h) <= MAX_PIXELS,
         "image too large"
     );
     ensure!(w.max(h) <= w.min(h) * 32, "image aspect ratio too large");
@@ -1409,6 +1437,16 @@ mod tests {
                 assert_eq!(header(&refused, "ratelimit-remaining"), "5");
                 assert_eq!(json(refused).await["error"]["code"], "unsupported_media");
             }
+            let mut huge = Vec::new();
+            image::RgbImage::from_pixel(4032, 3024, image::Rgb([9, 9, 9]))
+                .write_to(&mut Cursor::new(&mut huge), image::ImageFormat::Png)
+                .unwrap();
+            let refused = send(SITE, "203.0.113.3", vec![("huge.png", huge)]).await;
+            assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(header(&refused, "ratelimit-remaining"), "5");
+            let body = json(refused).await;
+            assert_eq!(body["error"]["code"], "photo_too_many_pixels");
+            assert!(body["error"]["message"].as_str().unwrap().starts_with("this photo is 4032 by 3024 pixels"), "{body}");
             let two = send(SITE, "203.0.113.3", vec![("a.png", png.clone()), ("b.png", png.clone())]).await;
             assert_eq!(two.status(), StatusCode::BAD_REQUEST);
             assert_eq!(json(two).await["error"]["message"], "send one photo per request");

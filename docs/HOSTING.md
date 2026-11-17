@@ -130,10 +130,12 @@ so no upload is ever written to disk.
 ```sh
 gcloud run deploy tintype-demo --image "$IMAGE" --region "$REGION" \
   --service-account "tintype-demo@$PROJECT.iam.gserviceaccount.com" \
-  --args=serve,--bind,0.0.0.0:8080,--device,cpu,--demo,--demo-origin,"$SITE_ORIGIN",--client-address,last-forwarded-for \
+  --args=serve,--bind,0.0.0.0:8080,--turbo,--demo,--demo-origin,"$SITE_ORIGIN",--client-address,last-forwarded-for \
   --cpu=2 --memory=1Gi --concurrency=4 --max-instances=1 --min-instances=0 \
   --timeout=60 --execution-environment=gen2 --allow-unauthenticated
 ```
+
+`--turbo` is used here because the instances measured in us-central1 ran turbo's VNNI kernel; check yours first ([Turbo on Cloud Run](#turbo-on-cloud-run)).
 
 `--max-instances=1` is the hard ceiling on cost. It also keeps the rate limits
 in a single process, so they apply across all visitors.
@@ -238,7 +240,7 @@ are the cap.
 
 ```sh
 gcloud billing budgets create --billing-account="$BILLING_ACCOUNT" \
-  --display-name=tintype --budget-amount=10USD \
+  --display-name=tintype --budget-amount=25USD \
   --filter-projects="projects/$PROJECT" \
   --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 \
   --threshold-rule=percent=1.0,basis=forecasted-spend
@@ -253,18 +255,43 @@ The most each service can cost is set by its instance cap:
   allowance. A flood of refused requests can still keep its single instance
   busy.
 
+## The daily capacity and the budget
+
+The demo's daily cap across all visitors (`daily_total` in `src/demo.rs`) is
+set from the $25 monthly budget. The arithmetic, with Tier 1 request-based
+prices:
+
+- **Time per photo.** A 2 vCPU, 1 GiB instance spends about 0.85 s on each
+  photo in turbo mode. That figure was measured from a client on 2026-11-16
+  and includes the network.
+- **Cost per photo.** 0.85 s × (2 × $0.000024 + $0.0000025), plus
+  $0.0000004 for the request, is about $0.000043.
+- **What $25 buys.** $25 a month at that cost is about 577,000 photos, or
+  about 19,000 a day.
+- **The cap.** The cap is 15,000 a day. That leaves a margin for cold starts,
+  refused requests and slow uploads.
+- **The free allowance.** The calculation ignores Cloud Run's free monthly
+  allowance. That allowance is shared across the billing account, so it is
+  extra margin rather than part of the budget.
+
+If you change the instance size or the engine, measure again and change the
+constant. The website does not state the number. When the cap is reached, the
+page explains that the demo has a hosting budget and links to the install
+instructions.
+
 ## Turbo on Cloud Run
 
-The server prints a note when the CPU it runs on has no fast 8-bit kernel. To
-check an instance, send one photo to the API with `?mode=turbo`, then read the
-service's logs.
+When turbo mode loads, the server logs which eight-bit kernel it runs, for
+example `turbo mode: photos run on the eight-bit engine, kernel: AVX-512 VNNI
+...`. To check an instance, send one photo to the API with `?mode=turbo`, then
+read the service's logs.
 
-| Log shows | Meaning | What to do |
+| Kernel in the log | Meaning | What to do |
 |---|---|---|
-| The note | That instance has no VNNI | Turbo would be slower there. Leave it off |
-| No note | The instance has VNNI | Compare latency with `mode=standard` before adding `--turbo` to the service |
+| AVX-VNNI or AVX-512 VNNI | The instance's CPU has VNNI | Turbo is faster. On 2026-11-16 in us-central1: about 0.82 s against 1.10 s per photo, file to verdict, from a client |
+| AVX2 | No VNNI; the server also prints a note | Turbo is slower than standard. Leave it off |
 
-Instances don't all run on the same CPU model, so check more than one.
+Cloud Run doesn't promise one CPU model, so check again after redeploying.
 
 ## Remove it
 

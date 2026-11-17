@@ -34,11 +34,17 @@ pub struct Limits {
 /// The demo's limits. Change them here, then update the site, the terms and
 /// `docs/API.md`; `the_pages_state_the_limits_the_server_enforces` fails
 /// until all three agree.
+///
+/// `daily_total` is what a $25 monthly budget buys on the hosted demo, with
+/// a margin: about 0.85 s of a 2 vCPU, 1 GiB Cloud Run instance per photo in
+/// turbo mode, or $0.000043 a photo, is about 19,000 photos a day; 15,000
+/// leaves room for cold starts, refused requests and slow uploads
+/// (docs/HOSTING.md).
 pub const LIMITS: Limits = Limits {
     short: 5,
     short_window_s: 600,
     daily_per_ip: 20,
-    daily_total: 2_000,
+    daily_total: 15_000,
     max_bytes: 10_000_000,
 };
 
@@ -72,6 +78,7 @@ impl Limits {
             format!("{} photos per {} minutes", self.short, self.short_window_s / 60),
             format!("{} photos per day", self.daily_per_ip),
             format!("{} MB", self.max_bytes / 1_000_000),
+            format!("{} megapixels", crate::server::MAX_PIXELS / 1_000_000),
         ]
     }
 
@@ -496,7 +503,7 @@ mod tests {
             Limits { short_window_s: 0, ..LIMITS },
             Limits { short_window_s: DAY + 1, ..LIMITS },
             Limits { short: 30, ..LIMITS },
-            Limits { daily_per_ip: 5_000, ..LIMITS },
+            Limits { daily_per_ip: LIMITS.daily_total + 1, ..LIMITS },
         ] {
             assert!(Limiter::new(broken).is_err(), "{broken:?}");
         }

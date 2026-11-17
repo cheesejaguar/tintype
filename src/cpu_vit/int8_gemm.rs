@@ -328,8 +328,7 @@ fn kernel() -> Kernel {
 }
 
 /// Which kernel [`gemm_i8`] runs here.
-#[cfg(test)]
-fn kernel_name() -> &'static str {
+pub(super) fn kernel_name() -> &'static str {
     match kernel() {
         #[cfg(target_arch = "aarch64")]
         Kernel::DotProd => "NEON dot product (SDOT), four rows by four",
