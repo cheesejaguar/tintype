@@ -222,7 +222,7 @@ tintype serve --demo --demo-origin https://example.org --bind 0.0.0.0:8080 --dev
 | Size | 10 MB per photo (10,000,000 bytes), and at most 12 megapixels and 8,192 pixels a side, as for the API |
 | Per network, short window | 5 photos per 10 minutes. The window starts with the first photo in it |
 | Per network, per day | 20 photos per day. Counts start again at midnight UTC |
-| Everyone, per day | 15,000 photos per day across all visitors, the hosted demo's budget. Counts start again at midnight UTC. The website does not state this number; it explains the cap when it is reached |
+| Everyone, per day | 12,000 photos per day across all visitors, the hosted demo's budget. Counts start again at midnight UTC. The website does not state this number; it explains the cap when it is reached |
 
 A network is one IPv4 address, or one IPv6 /64. A photo counts once it is known to be a JPEG, PNG or WebP within the size cap, whether or not it can be decoded. Requests refused before that (too large, too many pixels, another type, more than one file, wrong origin, server busy) do not count. The limits are counted in memory by each server process: they start again when the process restarts, so the instance cap of the deployment is the hard ceiling on cost. The response's `name` is always `photo.jpg`, `photo.png` or `photo.webp`; the uploaded filename is not used.
 
@@ -231,8 +231,8 @@ A network is one IPv4 address, or one IPv6 /64. A photo counts once it is known 
 Every response to `POST /v1/detect` carries the IETF [RateLimit header fields](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/), one item per limit, and the older single-limit fields for the limit closest to running out. `t` and `RateLimit-Reset` are seconds until that count starts again.
 
 ```http
-RateLimit-Policy: "ip-short";q=5;w=600, "ip-daily";q=20;w=86400, "global-daily";q=15000;w=86400
-RateLimit: "ip-short";r=4;t=600, "ip-daily";r=19;t=43200, "global-daily";r=14999;t=43200
+RateLimit-Policy: "ip-short";q=5;w=600, "ip-daily";q=20;w=86400, "global-daily";q=12000;w=86400
+RateLimit: "ip-short";r=4;t=600, "ip-daily";r=19;t=43200, "global-daily";r=11999;t=43200
 RateLimit-Limit: 5
 RateLimit-Remaining: 4
 RateLimit-Reset: 600

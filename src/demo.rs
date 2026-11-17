@@ -35,16 +35,15 @@ pub struct Limits {
 /// `docs/API.md`; `the_pages_state_the_limits_the_server_enforces` fails
 /// until all three agree.
 ///
-/// `daily_total` is what a $25 monthly budget buys on the hosted demo, with
-/// a margin: about 0.85 s of a 2 vCPU, 1 GiB Cloud Run instance per photo in
-/// turbo mode, or $0.000043 a photo, is about 19,000 photos a day; 15,000
-/// leaves room for cold starts, refused requests and slow uploads
-/// (docs/HOSTING.md).
+/// `daily_total` is what a $25 monthly budget buys on the hosted demo when
+/// it lands on its slowest CPU: about 1.27 s of a 2 vCPU, 1 GiB Cloud Run
+/// instance per photo (turbo without VNNI), or $0.000065 a photo, is about
+/// 12,700 photos a day (docs/HOSTING.md).
 pub const LIMITS: Limits = Limits {
     short: 5,
     short_window_s: 600,
     daily_per_ip: 20,
-    daily_total: 15_000,
+    daily_total: 12_000,
     max_bytes: 10_000_000,
 };
 

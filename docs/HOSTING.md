@@ -261,15 +261,19 @@ The demo's daily cap across all visitors (`daily_total` in `src/demo.rs`) is
 set from the $25 monthly budget. The arithmetic, with Tier 1 request-based
 prices:
 
-- **Time per photo.** A 2 vCPU, 1 GiB instance spends about 0.85 s on each
-  photo in turbo mode. That figure was measured from a client on 2026-11-16
-  and includes the network.
-- **Cost per photo.** 0.85 s × (2 × $0.000024 + $0.0000025), plus
-  $0.0000004 for the request, is about $0.000043.
-- **What $25 buys.** $25 a month at that cost is about 577,000 photos, or
-  about 19,000 a day.
-- **The cap.** The cap is 15,000 a day. That leaves a margin for cold starts,
-  refused requests and slow uploads.
+- **Time per photo.** Measured from a client on 2026-11-16, network
+  included, a 2 vCPU, 1 GiB instance spends about 0.6 to 0.9 s on each photo
+  in turbo mode on a VNNI CPU, and about 1.1 s in standard mode.
+- **The slowest CPU.** Cloud Run sometimes places an instance on a CPU
+  without VNNI. Turbo there is about 15% slower than standard, so about
+  1.27 s per photo. The cap is sized for that case.
+- **Cost per photo.** 1.27 s × (2 × $0.000024 + $0.0000025), plus $0.0000004
+  for the request, is about $0.000065.
+- **What $25 buys.** $25 a month at that cost is about 387,000 photos, or
+  about 12,700 a day.
+- **The cap.** The cap is 12,000 a day. On VNNI CPUs, a full day at the cap
+  costs nearer $16 a month, which leaves room for cold starts, refused
+  requests and slow uploads.
 - **The free allowance.** The calculation ignores Cloud Run's free monthly
   allowance. That allowance is shared across the billing account, so it is
   extra margin rather than part of the budget.
@@ -291,7 +295,10 @@ read the service's logs.
 | AVX-VNNI or AVX-512 VNNI | The instance's CPU has VNNI | Turbo is faster. On 2026-11-16 in us-central1: about 0.82 s against 1.10 s per photo, file to verdict, from a client |
 | AVX2 | No VNNI; the server also prints a note | Turbo is slower than standard. Leave it off |
 
-Cloud Run doesn't promise one CPU model, so check again after redeploying.
+Cloud Run doesn't promise one CPU model. On 2026-11-16, three instances in
+us-central1 got AVX-512 VNNI, AVX-VNNI and AVX2 respectively. Turbo is on
+because most instances got VNNI, and the daily cap is sized for the AVX2
+case.
 
 ## Remove it
 
