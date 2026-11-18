@@ -25,10 +25,12 @@ use sha2::{Digest, Sha256};
 use crate::mps::{Executable, Precision};
 
 /// Packages kept, over all entries; the most recently used entry is always
-/// kept whole. A many-photo run of the photo network is an entry of three
-/// packages (batches of 16, 32 and 64) and a single photo one of one, so
-/// both fit, in about 165 MB.
-pub const KEEP: usize = 5;
+/// kept whole. A many-photo run of one network is an entry of three packages
+/// (batches of 16, 32 and 64) and a single photo one of one. Eight holds
+/// two networks' many-photo entries (the photo network and the second
+/// opinion's, say, which would otherwise evict each other on every run) and
+/// two single-photo ones, in about 330 MB.
+pub const KEEP: usize = 8;
 
 /// Entries in the middle of being written are left alone for this long.
 const STALE_SECS: u64 = 3600;

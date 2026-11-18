@@ -9,7 +9,7 @@ tintype serve --bind 127.0.0.1:8080
 curl --fail-with-body http://127.0.0.1:8080/healthz
 ```
 
-The address defaults to `127.0.0.1:8080`. When the model worker is ready, `GET /healthz` returns JSON with `status` set to `"ok"` and `version` set to the running Tintype version. `HEAD /healthz` returns the same status and headers with an empty body. Health requests need no credentials.
+The address defaults to `127.0.0.1:8080`. When the model worker is ready, `GET /healthz` returns JSON with `status` set to `"ok"` and `version` set to the running Tintype version. `HEAD /healthz` returns the same status and headers with an empty body. Health requests need no credentials. `GET /health` is the same check under a path that Cloud Run passes on: it answers `/healthz` itself, because it reserves paths ending in `z`.
 
 `--device auto` uses Apple Metal when available and the CPU elsewhere. Use `--device cpu` to select the CPU explicitly. `--turbo` scores photos in [turbo mode](#turbo-mode) unless a request asks otherwise. `--weights` and `--video-weights` select model files. The server refuses to start with experimental weights whose spec lists an `uncalibrated` profile (written by `tintype interpolate`): their scores are not at any false-positive target, and a response has nowhere to say so. `tintype detect` scores such weights with a warning on standard error. The [distribution guide](DISTRIBUTION.md) covers containers, model discovery, and the licences for bundled and separately supplied weights.
 
@@ -48,6 +48,12 @@ A successful photo response looks like this. Values are illustrative.
 The detector flags scores above `0.5` and reports `likely-real` otherwise. Successful rows also carry the raw `logit` and `threshold_logit` used by the model profile. Treat the result as one signal when reviewing provenance.
 
 `score` is a detector score, not a probability that the file is AI-generated. The calibration places `0.5` at a false-positive target on held-out authentic media and fits the slope with both classes weighted equally. The share of flags that are correct depends on how common AI-generated files are among your inputs: `precision = recall·π / (recall·π + FPR·(1 − π))` for a share π. At the rates of the newest blind photo batch (89.7% recall, 1.21% of authentic photos flagged) and π = 1%, about 43% of flags would be correct, if those rates transferred. Reaching 90% at 90% recall takes a false-positive rate of about 0.10%.
+
+Every scored response (`/v1/detect`, `/v1/batch` and the demo) carries a [`Server-Timing`](https://www.w3.org/TR/server-timing/) header with where the server's time went, in milliseconds: reading the upload, waiting for the worker, decoding, preparing views, the network, and the total from queueing to the result. Decoding, views and the network are each added up over the threads that did them, so on several threads they can exceed the total. It holds durations only.
+
+```http
+Server-Timing: upload;dur=4.2, queue;dur=0.1, decode;dur=119.7, views;dur=32.1, network;dur=100.0, total;dur=258.3
+```
 
 For video, `profile` is `video`. The response reports `frames`, `frames_expected`, `duration_s`, `analysed_until_s`, and `complete`. `analysed_until_s` is the latest sampling target represented in the score. The decoder can use the nearest frame to each target. Both timestamps may be `null` if the information is unavailable. `complete` means the model obtained the evidence its sampling and early-exit profile required. A decodable clip with insufficient coverage receives the `inconclusive` verdict. The server samples at most the first 30 seconds of each clip.
 
@@ -212,7 +218,7 @@ tintype serve --demo --demo-origin https://example.org --bind 0.0.0.0:8080 --dev
 - `--demo-origin` is required: the one origin whose pages may call the demo. Responses carry `Access-Control-Allow-Origin` for it alone, and a request that names any other `Origin` gets 403 `origin_not_allowed` before its body is read. Scripts that send no `Origin` header may call it.
 - `--client-address` says where the caller's address comes from: `peer` (the TCP connection, the default) or `last-forwarded-for` (the last `X-Forwarded-For` entry). Use `last-forwarded-for` only behind a front end that appends the real address, such as Cloud Run's. Entries before the last one are the caller's own and are ignored, so they cannot be used to forge a fresh allowance.
 - The demo refuses to start with `TINTYPE_API_TOKEN` set: run the token-protected API as a separate service.
-- It does not load the video model, has only `GET /healthz` and `POST /v1/detect`, and ignores `mode`.
+- It does not load the video model, has only `GET /healthz`, `GET /health` and `POST /v1/detect`, and ignores `mode`.
 
 ### What the demo accepts
 
@@ -222,7 +228,7 @@ tintype serve --demo --demo-origin https://example.org --bind 0.0.0.0:8080 --dev
 | Size | 10 MB per photo (10,000,000 bytes), and at most 50 megapixels and 16,384 pixels a side, as for the API |
 | Per network, short window | 5 photos per 10 minutes. The window starts with the first photo in it |
 | Per network, per day | 20 photos per day. Counts start again at midnight UTC |
-| Everyone, per day | 12,000 photos per day across all visitors, the hosted demo's budget. Counts start again at midnight UTC. The website does not state this number; it explains the cap when it is reached |
+| Everyone, per day | 20,000 photos per day across all visitors, the hosted demo's budget. Counts start again at midnight UTC. The website does not state this number; it explains the cap when it is reached |
 
 A network is one IPv4 address, or one IPv6 /64. A photo counts once it is known to be a JPEG, PNG or WebP within the size cap, whether or not it can be decoded. Requests refused before that (too large, too many pixels, another type, more than one file, wrong origin, server busy) do not count. The limits are counted in memory by each server process: they start again when the process restarts, so the instance cap of the deployment is the hard ceiling on cost. The response's `name` is always `photo.jpg`, `photo.png` or `photo.webp`; the uploaded filename is not used.
 
@@ -231,13 +237,13 @@ A network is one IPv4 address, or one IPv6 /64. A photo counts once it is known 
 Every response to `POST /v1/detect` carries the IETF [RateLimit header fields](https://datatracker.ietf.org/doc/draft-ietf-httpapi-ratelimit-headers/), one item per limit, and the older single-limit fields for the limit closest to running out. `t` and `RateLimit-Reset` are seconds until that count starts again.
 
 ```http
-RateLimit-Policy: "ip-short";q=5;w=600, "ip-daily";q=20;w=86400, "global-daily";q=12000;w=86400
-RateLimit: "ip-short";r=4;t=600, "ip-daily";r=19;t=43200, "global-daily";r=11999;t=43200
+RateLimit-Policy: "ip-short";q=5;w=600, "ip-daily";q=20;w=86400, "global-daily";q=20000;w=86400
+RateLimit: "ip-short";r=4;t=600, "ip-daily";r=19;t=43200, "global-daily";r=19999;t=43200
 RateLimit-Limit: 5
 RateLimit-Remaining: 4
 RateLimit-Reset: 600
 Cache-Control: no-store
-Access-Control-Expose-Headers: RateLimit, RateLimit-Policy, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After
+Access-Control-Expose-Headers: RateLimit, RateLimit-Policy, RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After, Server-Timing
 ```
 
 A request over a limit gets HTTP 429 with `Retry-After`, before its upload is read. `limit` is `ip_short`, `ip_daily` or `global_daily`; when more than one is spent, it names the one with the longest wait.

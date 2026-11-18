@@ -1,0 +1,91 @@
+# Batch 7 timing sample again, 2026-11-18: 2,096 photos (every eleventh of the batch, checked against the frozen hashes),
+# decode to verdict with `tintype score`, Apple M6. 'new' is the build of this change, 'main' the build before it
+# (already with the compiled, cached GPU networks). The two alternate; a run starts only once no other process
+# has used more than 60% of a core for three checks; load averages in brackets.
+### main tintype default auto (2.87 2.57 2.72)
+scored 2096 images (0 unreadable) in 3.5s: 592.3 img/s end-to-end, 732.9 img/s model-only, 1.70 views per image
+### new tintype default auto (3.04 2.61 2.74)
+scored 2096 images (0 unreadable) in 3.6s: 575.0 img/s end-to-end, 707.2 img/s model-only, 1.70 views per image
+### main tintype + second opinion auto (2.90 2.60 2.73)
+scored 2096 images (0 unreadable, 1029 given a second opinion) in 7.1s: 296.8 img/s end-to-end, 372.6 img/s model-only, 1.70 views per image
+### new tintype + second opinion auto (4.10 2.87 2.83)
+scored 2096 images (0 unreadable, 1029 given a second opinion) in 7.1s: 293.3 img/s end-to-end, 369.0 img/s model-only, 1.70 views per image
+### main commfor through this engine auto (3.91 2.89 2.83)
+scored 2096 images (0 unreadable) in 7.6s: 276.2 img/s end-to-end, 360.4 img/s model-only, 1.00 views per image
+### new commfor through this engine auto (3.23 3.20 2.97)
+scored 2096 images (0 unreadable) in 6.8s: 306.6 img/s end-to-end, 392.2 img/s model-only, 1.00 views per image
+### main commfor through this engine gpu-f32 (2.73 3.09 2.94)
+scored 2096 images (0 unreadable) in 18.2s: 115.5 img/s end-to-end, 124.9 img/s model-only, 1.00 views per image
+### new commfor through this engine gpu-f32 (3.12 3.16 2.97)
+scored 2096 images (0 unreadable) in 18.1s: 115.6 img/s end-to-end, 125.0 img/s model-only, 1.00 views per image
+### new tintype default auto (2.25 2.95 2.90)
+scored 2096 images (0 unreadable) in 3.5s: 592.7 img/s end-to-end, 731.8 img/s model-only, 1.70 views per image
+### main tintype default auto (3.38 3.18 2.98)
+scored 2096 images (0 unreadable) in 3.6s: 590.4 img/s end-to-end, 736.5 img/s model-only, 1.70 views per image
+### new tintype + second opinion auto (4.05 3.34 3.04)
+scored 2096 images (0 unreadable, 1029 given a second opinion) in 6.9s: 303.2 img/s end-to-end, 380.9 img/s model-only, 1.70 views per image
+### main tintype + second opinion auto (4.07 3.41 3.07)
+scored 2096 images (0 unreadable, 1029 given a second opinion) in 6.9s: 303.3 img/s end-to-end, 385.3 img/s model-only, 1.70 views per image
+### new commfor through this engine auto (4.88 3.64 3.16)
+scored 2096 images (0 unreadable) in 6.9s: 305.2 img/s end-to-end, 391.0 img/s model-only, 1.00 views per image
+### main commfor through this engine auto (4.21 3.54 3.13)
+scored 2096 images (0 unreadable) in 6.9s: 304.4 img/s end-to-end, 387.9 img/s model-only, 1.00 views per image
+### new commfor through this engine gpu-f32 (3.42 3.40 3.09)
+scored 2096 images (0 unreadable) in 19.1s: 109.5 img/s end-to-end, 119.1 img/s model-only, 1.00 views per image
+### main commfor through this engine gpu-f32 (3.52 3.43 3.10)
+scored 2096 images (0 unreadable) in 19.2s: 109.1 img/s end-to-end, 118.4 img/s model-only, 1.00 views per image
+### main tintype default auto (3.07 3.32 3.08)
+scored 2096 images (0 unreadable) in 3.7s: 569.9 img/s end-to-end, 705.2 img/s model-only, 1.70 views per image
+### new tintype default auto (2.98 3.29 3.07)
+scored 2096 images (0 unreadable) in 3.7s: 563.3 img/s end-to-end, 691.5 img/s model-only, 1.70 views per image
+### main tintype + second opinion auto (3.14 3.32 3.08)
+scored 2096 images (0 unreadable, 1029 given a second opinion) in 7.3s: 287.4 img/s end-to-end, 366.8 img/s model-only, 1.70 views per image
+### new tintype + second opinion auto (4.78 3.70 3.22)
+scored 2096 images (0 unreadable, 1029 given a second opinion) in 7.3s: 287.1 img/s end-to-end, 364.4 img/s model-only, 1.70 views per image
+### main commfor through this engine auto (4.78 3.75 3.25)
+scored 2096 images (0 unreadable) in 7.3s: 288.6 img/s end-to-end, 371.4 img/s model-only, 1.00 views per image
+### new commfor through this engine auto (4.59 3.74 3.25)
+scored 2096 images (0 unreadable) in 7.0s: 300.9 img/s end-to-end, 389.0 img/s model-only, 1.00 views per image
+### main commfor through this engine gpu-f32 (3.96 3.64 3.22)
+scored 2096 images (0 unreadable) in 19.2s: 109.0 img/s end-to-end, 118.3 img/s model-only, 1.00 views per image
+### new commfor through this engine gpu-f32 (3.59 3.57 3.21)
+scored 2096 images (0 unreadable) in 19.2s: 109.0 img/s end-to-end, 118.4 img/s model-only, 1.00 views per image
+### main tintype default cpu (3.12 3.45 3.18)
+scored 2096 images (0 unreadable) in 28.9s: 72.5 img/s end-to-end, 73.8 img/s model-only, 1.70 views per image
+### new tintype default cpu (4.45 3.80 3.32)
+scored 2096 images (0 unreadable) in 27.0s: 77.7 img/s end-to-end, 79.1 img/s model-only, 1.70 views per image
+### main tintype + second opinion cpu (5.40 4.08 3.43)
+scored 2096 images (0 unreadable, 1028 given a second opinion) in 53.2s: 39.4 img/s end-to-end, 40.5 img/s model-only, 1.70 views per image
+### new tintype + second opinion cpu (8.09 4.98 3.81)
+scored 2096 images (0 unreadable, 1028 given a second opinion) in 53.5s: 39.2 img/s end-to-end, 40.2 img/s model-only, 1.70 views per image
+### main commfor through this engine cpu (7.71 5.44 4.06)
+scored 2096 images (0 unreadable) in 51.5s: 40.7 img/s end-to-end, 42.0 img/s model-only, 1.00 views per image
+### new commfor through this engine cpu (6.11 5.43 4.15)
+scored 2096 images (0 unreadable) in 51.6s: 40.6 img/s end-to-end, 41.9 img/s model-only, 1.00 views per image
+### new tintype default cpu (6.89 5.91 4.42)
+scored 2096 images (0 unreadable) in 28.0s: 74.9 img/s end-to-end, 76.4 img/s model-only, 1.70 views per image
+### main tintype default cpu (7.94 6.25 4.60)
+scored 2096 images (0 unreadable) in 28.4s: 73.9 img/s end-to-end, 75.4 img/s model-only, 1.70 views per image
+### new tintype + second opinion cpu (8.65 6.61 4.79)
+scored 2096 images (0 unreadable, 1028 given a second opinion) in 53.5s: 39.2 img/s end-to-end, 40.3 img/s model-only, 1.70 views per image
+### main tintype + second opinion cpu (7.96 6.86 5.01)
+scored 2096 images (0 unreadable, 1028 given a second opinion) in 55.3s: 37.9 img/s end-to-end, 38.9 img/s model-only, 1.70 views per image
+### new commfor through this engine cpu (10.31 7.66 5.43)
+scored 2096 images (0 unreadable) in 51.2s: 40.9 img/s end-to-end, 42.2 img/s model-only, 1.00 views per image
+### main commfor through this engine cpu (8.09 7.58 5.56)
+scored 2096 images (0 unreadable) in 51.4s: 40.8 img/s end-to-end, 42.0 img/s model-only, 1.00 views per image
+
+# Video, 100 stand-in clips (the 147 clips first timed are no longer on disk), `tintype score-video`, GPU;
+# timed 2026-11-18 while another job was using two to three cores, so only the comparison is meaningful.
+### main video standin (13.52 12.56 9.60)
+scored 100 clips (0 unreadable) in 2.3s: 43.03 clips/s end-to-end (23.2 ms/clip), model time 2.2s
+### new video standin (13.52 12.56 9.60)
+scored 100 clips (0 unreadable) in 2.4s: 42.46 clips/s end-to-end (23.6 ms/clip), model time 2.2s
+### new video standin (13.08 12.48 9.59)
+scored 100 clips (0 unreadable) in 2.4s: 41.60 clips/s end-to-end (24.0 ms/clip), model time 2.3s
+### main video standin (13.08 12.48 9.59)
+scored 100 clips (0 unreadable) in 2.4s: 41.97 clips/s end-to-end (23.8 ms/clip), model time 2.2s
+### main video standin (12.59 12.39 9.58)
+scored 100 clips (0 unreadable) in 2.5s: 39.77 clips/s end-to-end (25.1 ms/clip), model time 2.3s
+### new video standin (12.59 12.39 9.58)
+scored 100 clips (0 unreadable) in 2.3s: 42.83 clips/s end-to-end (23.3 ms/clip), model time 2.2s

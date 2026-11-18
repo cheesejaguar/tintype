@@ -90,9 +90,14 @@ gcloud run deploy tintype-api --image "$IMAGE" --region "$REGION" \
   --service-account "tintype-api@$PROJECT.iam.gserviceaccount.com" \
   --args=serve,--bind,0.0.0.0:8080,--device,cpu \
   --set-secrets=TINTYPE_API_TOKEN=tintype-api-token:latest \
+  --set-env-vars=RAYON_NUM_THREADS=2 \
   --cpu=2 --memory=2Gi --concurrency=4 --max-instances=2 --min-instances=0 \
   --timeout=120 --execution-environment=gen2 --allow-unauthenticated
 ```
+
+`RAYON_NUM_THREADS` must match `--cpu`. A second-generation instance shows
+the server more processors than it is given, and a thread for each of them
+made every request about twice as slow ([Speed](#speed-on-cloud-run)).
 
 How these flags cap spending:
 
@@ -131,6 +136,7 @@ so no upload is ever written to disk.
 gcloud run deploy tintype-demo --image "$IMAGE" --region "$REGION" \
   --service-account "tintype-demo@$PROJECT.iam.gserviceaccount.com" \
   --args=serve,--bind,0.0.0.0:8080,--device,cpu,--demo,--demo-origin,"$SITE_ORIGIN",--client-address,last-forwarded-for \
+  --set-env-vars=RAYON_NUM_THREADS=2 \
   --cpu=2 --memory=1Gi --concurrency=4 --max-instances=1 --min-instances=0 \
   --timeout=60 --execution-environment=gen2 --allow-unauthenticated
 ```
@@ -263,19 +269,21 @@ The demo's daily cap across all visitors (`daily_total` in `src/demo.rs`) is
 set from the $25 monthly budget. The arithmetic, with Tier 1 request-based
 prices:
 
-- **Time per photo.** Measured from a client on 2026-11-16, network
-  included, a 2 vCPU instance spends about 1.1 s on each photo in standard
-  mode, the mode the demo runs in.
-- **The figure the cap uses.** The cap is costed at 1.27 s per photo. That
-  is 15% above the measured time, which covers turbo on a CPU without VNNI,
-  the slowest case seen.
-- **Cost per photo.** 1.27 s × (2 × $0.000024 + $0.0000025), plus $0.0000004
-  for the request, is about $0.000065.
-- **What $25 buys.** $25 a month at that cost is about 387,000 photos, or
-  about 12,700 a day.
-- **The cap.** The cap is 12,000 a day. In standard mode, a full month at
-  the cap costs nearer $21, which leaves room for cold starts, refused
-  requests, slow uploads and large photos.
+- **Time per photo.** Measured on 2026-11-17 from the `Server-Timing`
+  header, on 15 photos from small images to 22 MP camera JPEGs, a 2 vCPU
+  instance with `RAYON_NUM_THREADS=2` spends 0.23 s on a photo on average
+  (median 0.14 s). A photo that needs five views took 0.65 s. Cloud Run
+  bills each request's time rounded up to 100 ms: 0.29 s on average here.
+- **The figure the cap uses.** The cap is costed at 0.75 s per photo, what
+  a photo that needs all six views takes, so a day of hard photos stays
+  inside the budget.
+- **Cost per photo.** 0.75 s × (2 × $0.000024 + $0.0000025), plus
+  $0.0000004 for the request, is about $0.0000383.
+- **What $25 buys.** $25 a month at that cost is about 653,000 photos, or
+  about 21,500 a day.
+- **The cap.** The cap is 20,000 a day. A full month at the cap costs about
+  $23 if every photo needs all six views, and about $9 at the measured
+  average.
 - **The free allowance.** The calculation ignores Cloud Run's free monthly
   allowance. That allowance is shared across the billing account, so it is
   extra margin rather than part of the budget.
@@ -284,6 +292,50 @@ If you change the instance size or the engine, measure again and change the
 constant. The website does not state the number. When the cap is reached, the
 page explains that the demo has a hosting budget and links to the install
 instructions.
+
+## Speed on Cloud Run
+
+Every response carries a `Server-Timing` header: the time to read the
+upload, the wait for the worker, decoding, preparing views, the network and
+the server's total, in milliseconds. Decoding, views and the network are
+each added up over the threads that did them. The demo exposes the header
+to the page. To see it:
+
+```sh
+curl -s -D - -o /dev/null -H "Origin: $SITE_ORIGIN" -F file=@site/assets/demo.png "$DEMO/v1/detect" | grep -i server-timing
+```
+
+What was measured on 2026-11-17 in us-central1, on the API with the same
+image, server time per photo:
+
+| Setting | Site's sample photo (5 views) | 22 MP camera JPEG (1 view) |
+|---|---|---|
+| Second generation, default threads | 1.32–1.55 s | 0.53–0.69 s |
+| Second generation, `RAYON_NUM_THREADS=2` | 0.55–0.63 s | 0.26–0.28 s |
+| First generation, default threads | 0.89–1.05 s | 0.45–0.48 s |
+
+- **Threads.** The start-up log names the thread count, for example
+  `inference threads: 2 (2 processors visible, RAYON_NUM_THREADS=2)`. If it
+  is higher than `--cpu`, set `RAYON_NUM_THREADS`.
+- **Execution environment.** The first generation was faster than the
+  second with default threads, but slower than the second with two threads,
+  and it took 6.2 s from instance start to listening against 1.2–2.3 s.
+  Both services stay on the second generation.
+- **Cold starts.** An instance that has stopped takes about 1.3–2.3 s to
+  start before it answers. The website hides most of that: opening the photo
+  picker, or dragging a file over it, sends an empty request to `/health`,
+  which starts an instance while the visitor chooses a photo. (Cloud Run
+  answers `/healthz` itself without reaching the container, since it keeps
+  paths ending in `z`; `/health` is the same check.) It is sent at
+  most once in 10 minutes, counts toward no limit and is described in the
+  privacy notice.
+- **What would cost more.** `--min-instances=1` on the demo would remove
+  cold starts entirely, but an idle instance is billed at about $0.0000025
+  per vCPU-second and per GiB-second, about $20 a month for 2 vCPU and 1 GiB:
+  most of the $25 budget. More vCPUs would shorten a photo with several views
+  but not one decided by its first view, and cost the same per photo or more.
+- **Where the rest goes.** On a large photo the server spends about as long
+  decoding the JPEG as in the network; decoding is one thread.
 
 ## Turbo on Cloud Run
 
