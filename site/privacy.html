@@ -24,7 +24,7 @@
 
   <main class="page-width legal" id="main">
     <h1>Privacy</h1>
-    <p class="updated">The online demo · last updated 16 November 2026</p>
+    <p class="updated">The online demo · last updated 17 November 2026</p>
 
     <p>This notice covers the demo on this website, which scores one photo at a time on a server we run. Tintype itself runs on your own computer and sends nothing anywhere; this notice is only about the demo.</p>
 
@@ -43,6 +43,7 @@
     <h2>Your network address</h2>
     <ul>
       <li>Your IP address reaches our server because that is how the response gets back to you. The server also uses it to enforce the demo's limits.</li>
+      <li>When you open the photo picker, or drag a file over it, the page also sends an empty request that wakes the server, so that a photo you then choose is scored sooner. That request carries no photo and nothing else about you, counts toward no limit and is not recorded, but your address reaches the server with it even if you choose nothing.</li>
       <li>For that, it keeps a keyed hash of the address (for IPv6, of its first 64 bits), not the address itself. The key is random, made when the server starts and never stored, so once the server stops, nobody can match the hash to an address.</li>
       <li>The hash is held only in memory. Once a new UTC day starts (and your 10-minute window, if it runs past midnight, has ended), the hash is dropped the next time the server runs. Everything it holds is lost when the server stops, which it does by itself within about 15 minutes of its last visitor.</li>
       <li>The server does not write your address, your browser's details, the photo, its contents, its metadata or any fingerprint of it to its logs. Its only log line about the demo is an hourly count of photos scored and requests refused.</li>

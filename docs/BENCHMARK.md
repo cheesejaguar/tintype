@@ -26,8 +26,8 @@ once. Each system is at its shipped threshold.
 | | `--sensitive`: 0.955, 0.972 | SwinV2 detector: 0.896, 0.918 |
 | **Video**, batch 4: 1,156 AI and 900 real | 0.997, 0.941 | WaveRep: 0.983, 0.912 |
 | | with the second opinion: 0.997, 0.960 | |
-| **Photo throughput**, GPU, end to end | 263 images/s; 455 with `--fast` (1,000 mixed files up to 4K, before the speed changes; 530–563 on the batch 7 sample after them) | Community Forensics: 61–67 as released, 100 through this engine; SwinV2 detector: 8.6 and 30 |
-| **Photo throughput**, CPU | 38.8 images/s; 52.6 with `--fast` (the same files; 77–78 on the batch 7 sample after the speed changes) | Community Forensics: 25.4 as released, 35.0 through this engine |
+| **Photo throughput**, GPU, end to end | 263 images/s; 455 with `--fast` (1,000 mixed files up to 4K, before the speed changes; 563–593 on the batch 7 sample after them) | Community Forensics: 61–67 as released, 100 through this engine; SwinV2 detector: 8.6 and 30 |
+| **Photo throughput**, CPU | 38.8 images/s; 52.6 with `--fast` (the same files; 75–78 on the batch 7 sample after the speed changes) | Community Forensics: 25.4 as released, 35.0 through this engine |
 | **Video**, time per clip | 0.09 s; 0.26 s with the second opinion | WaveRep: 4.0 s as released, 1.08 s through this engine at 16 bits |
 
 Pooled over each blind batch, the default photo profile is ahead of both
@@ -59,8 +59,8 @@ Where Tintype is not ahead, or the comparison needs a qualifier:
 - **The photo second opinion is Community Forensics' own network, and it
   costs its speed.** The mode sends about half the photos of a balanced test
   set – nine real photos in ten – to that network. It is then as fast as
-  Community Forensics through this engine, no faster (288 against 295
-  images/s on the GPU, 41 against 42 on the CPU), and 3.5× and 1.6× faster
+  Community Forensics through this engine, no faster (303 against 307
+  images/s on the GPU, 39 against 41 on the CPU), and 3.7× and 1.5× faster
   than Community Forensics as released. On a stream of mostly real photos it
   is slower than Community Forensics through this engine. It also flags more
   real photos than the default: 3.1% against 1.2% on batch 7 (Community
@@ -243,16 +243,25 @@ at or above Community Forensics':
   which came out byte for byte the same.
 
 Speed on this batch, decode to verdict, on 2,096 of its photos (every
-eleventh), two rounds
-([results/confirm7_second_opinion.log](results/confirm7_second_opinion.log)):
+eleventh). Timed again on 2026-11-18 after the GPU engine changes
+([runbook](runbooks/gpu-engine-speed.md)): three rounds on the GPU and two
+on the CPU, each run started only when nothing else on the machine was busy
+([results/confirm7_speed_2026-11-18.log](results/confirm7_speed_2026-11-18.log)).
+The files were fetched again and checked against the batch's frozen hashes.
 
 | Batch 7 sample | GPU, images/s | CPU, images/s |
 |---|---|---|
-| **Tintype**, default (1.7 views per image) | **530–563** | **77–78** |
-| **Tintype + second opinion** (48% of photos to the second stage) | **281–288** | **39–41** |
-| Community Forensics, as released (PyTorch, 32-bit) | 82 | 26 |
-| Community Forensics, Rust port, 32-bit on the GPU | 112 | – |
-| Community Forensics, Rust port, 16-bit on the GPU (not a released configuration) | 291–295 | 39–42 |
+| **Tintype**, default (1.7 views per image) | **563–593** | **75–78** |
+| **Tintype + second opinion** (49% of photos to the second stage) | **287–303** | **39** |
+| Community Forensics, as released (PyTorch, 32-bit); not timed again | 82 | 26 |
+| Community Forensics, Rust port, 32-bit on the GPU | 109–116 | – |
+| Community Forensics, Rust port, 16-bit on the GPU (not a released configuration) | 301–307 | 41 |
+
+The first timing of this sample, before those changes, gave 530–563 and
+77–78 for Tintype, 281–288 and 39–41 with the second opinion, and 291–295
+and 39–42 for the 16-bit port
+([results/confirm7_second_opinion.log](results/confirm7_second_opinion.log)).
+The CPU figures are the same within the spread of the runs.
 
 Raw tables: [results/confirm7.md](results/confirm7.md).
 

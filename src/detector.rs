@@ -596,7 +596,9 @@ enum Engine {
     /// `runs` are the network compiled for one or more batch sizes, smallest
     /// first; the largest is the detector's batch. A run of fewer views goes
     /// through the smallest that holds them (see [`gpu_runs`]).
-    Mps { g: Graph, runs: Vec<Executable>, pixels: std::sync::Arc<PixelFeed> },
+    /// `warm` is a first run on zeros still going on another thread (see
+    /// [`Executable::warm_up`]); the first real run waits for it.
+    Mps { g: Graph, runs: Vec<Executable>, pixels: std::sync::Arc<PixelFeed>, warm: Warm },
     /// The engine in `cpu_vit`: Accelerate on macOS, pure Rust elsewhere.
     Cpu { vit: crate::cpu_vit::CpuVit },
 }
@@ -846,6 +848,22 @@ impl Stages<'_> {
     }
 }
 
+/// A warm-up run of the GPU engine, joined before the engine's first run.
+#[cfg(target_os = "macos")]
+type Warm = std::cell::RefCell<Option<std::thread::JoinHandle<()>>>;
+
+/// Start a warm-up run where it costs next to nothing: a detector with one
+/// small batch size, as for a few photos, whose first run would otherwise
+/// pay for setting up after the photos are decoded. Bigger jobs fill a batch
+/// first, and warming their larger sizes would hold the GPU up instead.
+#[cfg(target_os = "macos")]
+fn warm(g: &Graph, runs: &[Executable]) -> Warm {
+    std::cell::RefCell::new(match runs {
+        [only] if only.batch() <= SHORT_RUNS[0] => Some(only.warm_up(g)),
+        _ => None,
+    })
+}
+
 /// Batch sizes compiled besides the full one, for runs with fewer views.
 #[cfg(target_os = "macos")]
 const SHORT_RUNS: [usize; 2] = [16, 32];
@@ -982,7 +1000,8 @@ impl Detector {
             let out = g.cast_out(&crate::swin::build_swin(&g, w, &crate::swin::SwinConfig::large_w16_256(), &inp, batch)?);
             let runs = vec![g.compile_native(&inp, &shape, &[out])];
             let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
-            return Ok(Self { engine: Engine::Mps { g, runs, pixels }, device, batch, spec, reuse: ViewReuse::from_env() });
+            let warm = Warm::default();
+            return Ok(Self { engine: Engine::Mps { g, runs, pixels, warm }, device, batch, spec, reuse: ViewReuse::from_env() });
         }
         let cfg = VitConfig::by_name(&spec.arch, spec.img).ok_or_else(|| anyhow::anyhow!("unknown architecture `{}`", spec.arch))?;
         let engine = match device {
@@ -991,7 +1010,8 @@ impl Detector {
                 let g = Graph::new(if device == Device::Gpu { Precision::F16 } else { Precision::F32 })?;
                 let runs = gpu_runs(&g, w, &cfg, batch)?;
                 let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
-                Engine::Mps { g, runs, pixels }
+                let warm = warm(&g, &runs);
+                Engine::Mps { g, runs, pixels, warm }
             }
             #[cfg(not(target_os = "macos"))]
             Device::Gpu | Device::GpuF32 => anyhow::bail!("the GPU engine is only available on macOS; use the CPU engine"),
@@ -1042,7 +1062,8 @@ impl Detector {
             e.store(&runs);
         }
         let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
-        Ok(Self { engine: Engine::Mps { g, runs, pixels }, device, batch, spec, reuse: ViewReuse::from_env() })
+        let warm = warm(&g, &runs);
+        Ok(Self { engine: Engine::Mps { g, runs, pixels, warm }, device, batch, spec, reuse: ViewReuse::from_env() })
     }
 
     fn view_len(&self) -> usize {
@@ -1101,7 +1122,10 @@ impl Detector {
     fn run(&self, x: &[u8]) -> Vec<f32> {
         match &self.engine {
             #[cfg(target_os = "macos")]
-            Engine::Mps { g, runs, pixels } => {
+            Engine::Mps { g, runs, pixels, warm } => {
+                if let Some(warming) = warm.borrow_mut().take() {
+                    let _ = warming.join();
+                }
                 let fl = self.view_len() * pixels.width();
                 gpu_run(g, runs, x, fl)
             }

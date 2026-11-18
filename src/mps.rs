@@ -329,7 +329,31 @@ pub struct Executable {
 
 type Buffer = Retained<ProtocolObject<dyn MTLBuffer>>;
 
+/// Objective-C objects handed to one other thread that alone uses them.
+struct Lent<T>(T);
+unsafe impl<T> Send for Lent<T> {}
+
 impl Executable {
+    /// Run this executable once on zeros on a thread of its own, so that
+    /// what a first run sets up (MPSGraph specialising the program, Metal
+    /// creating its pipelines) happens while the caller does other work,
+    /// such as decoding the first photo. Nothing else may run this graph
+    /// until the returned thread has been joined.
+    pub fn warm_up(&self, g: &Graph) -> std::thread::JoinHandle<()> {
+        let lent = Lent((self.exe.clone(), g.queue.clone(), g.dev.clone(), self.shape.clone(), self.ty));
+        std::thread::spawn(move || {
+            let lent = lent;
+            let (exe, queue, dev, shape, ty) = &lent.0;
+            let width = if *ty == MPSDataType::Float16 { 2 } else { 4 };
+            let len = shape.iter().product::<isize>() as usize * width;
+            autoreleasepool(|_| unsafe {
+                let input = MPSGraphTensorData::initWithDevice_data_shape_dataType(MPSGraphTensorData::alloc(), dev, &NSData::with_bytes(&vec![0u8; len]), &ints(shape), *ty);
+                let inputs = NSArray::from_retained_slice(&[input]);
+                exe.runWithMTLCommandQueue_inputsArray_resultsArray_executionDescriptor(queue, &inputs, None, None);
+            });
+        })
+    }
+
     /// Write this executable as an MPSGraph package (a directory) at `path`.
     /// The package holds the compiled program and its constants (the
     /// weights), so loading it needs neither the weights file nor the graph.

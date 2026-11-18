@@ -533,21 +533,7 @@ fn rank_windows(img: &Rgb, crop: u32, k: usize) -> Vec<(i64, i64)> {
     }
     // Gradient energy on a subsampled luma plane, as an integral image.
     let (sw, sh) = (w / 2, h / 2);
-    let luma = |x: usize, y: usize| {
-        let i = (y * 2 * w + x * 2) * 3;
-        (img.data[i] as i32 * 77 + img.data[i + 1] as i32 * 150 + img.data[i + 2] as i32 * 29) >> 8
-    };
-    let mut integ = vec![0u64; (sw + 1) * (sh + 1)];
-    for y in 0..sh {
-        let mut row = 0u64;
-        for x in 0..sw {
-            let v = luma(x, y);
-            let gx = if x + 1 < sw { (luma(x + 1, y) - v).abs() } else { 0 };
-            let gy = if y + 1 < sh { (luma(x, y + 1) - v).abs() } else { 0 };
-            row += (gx + gy) as u64;
-            integ[(y + 1) * (sw + 1) + x + 1] = integ[y * (sw + 1) + x + 1] + row;
-        }
-    }
+    let integ = gradient_integral(img, sw, sh);
     let energy = |x0: usize, y0: usize| {
         let (a, b, cc, d) = (x0 / 2, y0 / 2, (x0 + c) / 2, (y0 + c) / 2);
         integ[d * (sw + 1) + cc] + integ[b * (sw + 1) + a] - integ[b * (sw + 1) + cc] - integ[d * (sw + 1) + a]
@@ -583,6 +569,87 @@ fn rank_windows(img: &Rgb, crop: u32, k: usize) -> Vec<(i64, i64)> {
         picks.push(picks.first().copied().unwrap_or((0, 0)));
     }
     picks
+}
+
+/// The integral image of gradient energy on the luma plane subsampled by two
+/// (every other pixel of every other row): entry `(y + 1) * (sw + 1) + x + 1`
+/// is the sum over the samples above and to the left of `(x, y)` of
+/// `|right - here| + |below - here|`, a missing neighbour counting nothing.
+/// Integer arithmetic throughout, so splitting rows and columns between
+/// threads, as large images do, gives the same sums.
+fn gradient_integral(img: &Rgb, sw: usize, sh: usize) -> Vec<u64> {
+    use rayon::prelude::*;
+    let w = img.w as usize;
+    if sw == 0 || sh == 0 {
+        return vec![0; (sw + 1) * (sh + 1)];
+    }
+    let parallel = sw * sh >= 1 << 20;
+    // The luma of each sample, 0..=255.
+    let mut luma = vec![0u8; sw * sh];
+    let luma_row = |(y, out): (usize, &mut [u8])| {
+        let row = &img.data[y * 2 * w * 3..];
+        for (x, o) in out.iter_mut().enumerate() {
+            let i = x * 6;
+            *o = ((row[i] as i32 * 77 + row[i + 1] as i32 * 150 + row[i + 2] as i32 * 29) >> 8) as u8;
+        }
+    };
+    if parallel {
+        luma.par_chunks_mut(sw).enumerate().for_each(luma_row);
+    } else {
+        luma.chunks_mut(sw).enumerate().for_each(luma_row);
+    }
+    // Each row's running sum of gradients, then the rows added down.
+    let mut integ = vec![0u64; (sw + 1) * (sh + 1)];
+    let row_sums = |(y, out): (usize, &mut [u64])| {
+        let here = &luma[y * sw..(y + 1) * sw];
+        let below = if y + 1 < sh { Some(&luma[(y + 1) * sw..(y + 2) * sw]) } else { None };
+        let mut run = 0u64;
+        for x in 0..sw {
+            let v = here[x] as i32;
+            let gx = if x + 1 < sw { (here[x + 1] as i32 - v).abs() } else { 0 };
+            let gy = below.map_or(0, |b| (b[x] as i32 - v).abs());
+            run += (gx + gy) as u64;
+            out[x + 1] = run;
+        }
+    };
+    if parallel {
+        integ[sw + 1..].par_chunks_mut(sw + 1).enumerate().for_each(row_sums);
+    } else {
+        integ[sw + 1..].chunks_mut(sw + 1).enumerate().for_each(row_sums);
+    }
+    // Rows added down: within blocks of rows side by side, then each block
+    // offset by the total of the blocks above it.
+    let stride = sw + 1;
+    let block_rows = if parallel { sh.div_ceil(rayon::current_num_threads().max(1) * 4).max(16) } else { sh.max(1) };
+    let add_down = |block: &mut [u64]| {
+        for y in 1..block.len() / stride {
+            let (above, rest) = block.split_at_mut(y * stride);
+            for (r, a) in rest[..stride].iter_mut().zip(&above[(y - 1) * stride..]) {
+                *r += *a;
+            }
+        }
+    };
+    let rows = &mut integ[stride..];
+    if parallel {
+        rows.par_chunks_mut(block_rows * stride).for_each(add_down);
+        let blocks = rows.len().div_ceil(block_rows * stride);
+        let mut offsets = vec![vec![0u64; stride]; blocks];
+        for k in 1..blocks {
+            let last = &rows[(k * block_rows - 1) * stride..k * block_rows * stride];
+            let next: Vec<u64> = offsets[k - 1].iter().zip(last).map(|(o, l)| o + l).collect();
+            offsets[k] = next;
+        }
+        rows.par_chunks_mut(block_rows * stride).zip(offsets.par_iter()).skip(1).for_each(|(block, off)| {
+            for row in block.chunks_mut(stride) {
+                for (r, o) in row.iter_mut().zip(off) {
+                    *r += *o;
+                }
+            }
+        });
+    } else {
+        add_down(rows);
+    }
+    integ
 }
 
 /// A deterministic inference-time view of an image.
@@ -728,6 +795,41 @@ pub fn first_uses(plan: &[Pixels]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The integral image as first written, one sample at a time.
+    fn gradient_integral_reference(img: &Rgb, sw: usize, sh: usize) -> Vec<u64> {
+        let w = img.w as usize;
+        let luma = |x: usize, y: usize| {
+            let i = (y * 2 * w + x * 2) * 3;
+            (img.data[i] as i32 * 77 + img.data[i + 1] as i32 * 150 + img.data[i + 2] as i32 * 29) >> 8
+        };
+        let mut integ = vec![0u64; (sw + 1) * (sh + 1)];
+        for y in 0..sh {
+            let mut row = 0u64;
+            for x in 0..sw {
+                let v = luma(x, y);
+                let gx = if x + 1 < sw { (luma(x + 1, y) - v).abs() } else { 0 };
+                let gy = if y + 1 < sh { (luma(x, y + 1) - v).abs() } else { 0 };
+                row += (gx + gy) as u64;
+                integ[(y + 1) * (sw + 1) + x + 1] = integ[y * (sw + 1) + x + 1] + row;
+            }
+        }
+        integ
+    }
+
+    #[test]
+    fn the_gradient_integral_matches_the_sample_by_sample_one() {
+        let mut rng = crate::rng::Rng::new(3);
+        // Small ones take the single-threaded path, the last two the parallel one.
+        for (w, h) in [(1u32, 1u32), (2, 2), (3, 7), (225, 224), (640, 481), (2049, 2050), (4031, 3025)] {
+            let mut img = Rgb::new(w, h);
+            for (i, v) in img.data.iter_mut().enumerate() {
+                *v = ((i as u32 / 3 % w) * 7 + (i as u32 / 3 / w) * 3) as u8 ^ rng.below(32) as u8;
+            }
+            let (sw, sh) = (w as usize / 2, h as usize / 2);
+            assert_eq!(gradient_integral(&img, sw, sh), gradient_integral_reference(&img, sw, sh), "{w}x{h}");
+        }
+    }
 
     fn gradient(w: u32, h: u32) -> Rgb {
         let mut im = Rgb::new(w, h);
