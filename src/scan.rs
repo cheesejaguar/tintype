@@ -214,7 +214,24 @@ struct Scan {
     photo_review: Option<Review>,
     video_review: Option<Review>,
     photo_second: Option<PathBuf>,
+    /// `detect` without `--photo-second-opinion`: use the bundled second
+    /// network if it sits beside the photo weights (see
+    /// [`bundled_photo_second`]). Resolved once, with the photo model.
+    photo_second_bundled: bool,
     video_second: Option<PathBuf>,
+}
+
+/// File name of the bundled Community Forensics 384 px network: the photo
+/// second opinion `detect` gives by default when it is installed beside the
+/// photo weights.
+pub const BUNDLED_PHOTO_SECOND: &str = "commfor-384.safetensors";
+
+/// The bundled second network beside `weights`, if it is there and the
+/// model's spec stores a band for it.
+fn bundled_photo_second(weights: &Path, spec: &ModelSpec) -> Option<PathBuf> {
+    spec.second_opinion?;
+    let path = weights.parent()?.join(BUNDLED_PHOTO_SECOND);
+    path.is_file().then_some(path)
 }
 
 impl Scan {
@@ -259,6 +276,7 @@ impl Scan {
             photo_review: None,
             video_review: None,
             photo_second,
+            photo_second_bundled: false,
             video_second,
         })
     }
@@ -276,6 +294,12 @@ impl Scan {
             self.photo_review = self.options.review.resolve(stored);
             if let Some(warning) = spec.uncalibrated_warning(&weights) {
                 eprintln!("{warning}");
+            }
+            if std::mem::take(&mut self.photo_second_bundled)
+                && matches!(self.profile, Profile::Default)
+                && !self.options.turbo
+            {
+                self.photo_second = bundled_photo_second(&weights, &spec);
             }
             match self.profile {
                 Profile::Default => {}
@@ -682,9 +706,12 @@ pub fn detect(
     paths: Vec<PathBuf>,
     options: ScanOptions,
     photo_second: Option<PathBuf>,
+    no_photo_second: bool,
     video_second: Option<PathBuf>,
 ) -> Result<()> {
+    let bundled = photo_second.is_none() && !no_photo_second;
     let mut scan = Scan::new(options, photo_second, video_second)?;
+    scan.photo_second_bundled = bundled;
     let mut counts = Counts::default();
     let mut output = BufWriter::new(io::stdout().lock());
     scan.run_chunk(

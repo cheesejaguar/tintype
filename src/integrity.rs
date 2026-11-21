@@ -37,11 +37,13 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 /// SHA-256). `docs/DATA.md` lists the same values; `tintype verify-models`
 /// and the `models` integration test check the files against them. A
 /// retrained or recalibrated model changes these on purpose.
-pub const MODEL_FILES: [(&str, u64, &str); 4] = [
-    ("models/tintype.safetensors", 86_678_036, "9dcb21dc9800591ffd758a3c7ca6aa65fa5a9f09a223fecc952f34294ae9aeba"),
-    ("models/tintype.json", 3_450, "bfe1366bcfec28d15fb9116cb96c721de52de91d6fa4d98b6da4ec7fe6e62709"),
+pub const MODEL_FILES: [(&str, u64, &str); 5] = [
+    ("models/tintype.safetensors", 86_678_036, "1187032f067cba5543743109bf3cb0f0f6c10666d5f715715bfff5aec16c62d3"),
+    ("models/tintype.json", 3_454, "e8d12a17dc924b5641b91f2cfe7bb0aa3ba9a878c4acf3f9ec3fa31978e3b626"),
     ("models/tintype-video.safetensors", 86_678_036, "77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881"),
     ("models/tintype-video.json", 2_161, "673e9040d941125691bfb80cbcf130e8efe2fdbf26a08f0b947450c4abca4e9c"),
+    // The Community Forensics 384 px checkpoint, unchanged: the photo second opinion of `detect`.
+    ("models/commfor-384.safetensors", 87_262_324, "b89f36275f3bf5e2b040eee36597a8f19db051bff9a473a9cf7b2466284fb387"),
 ];
 
 /// Check every released model file under `root` (the repository) against

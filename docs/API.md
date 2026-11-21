@@ -134,7 +134,7 @@ These fields are additive. `verdict`, `score`, `logit`, HTTP status and CLI exit
 - **Margin units.** Calibrated logits around the active profile's threshold: `logit_scale · (logit − threshold_logit)`. A margin of 0 marks nothing; the band is open, so a result exactly at the margin is outside it.
 - **Disagreement with early exit.** Only the views that were looked at exist. A photo decided on its first view has one logit and is never marked for disagreement. With `--all-views` every view counts.
 - **Video.** The margin is on the clip's calibrated logit, and disagreement is the share of scored frame logits (each the mean of that frame's views) on the other side of the threshold. `inconclusive` keeps its meaning (incomplete coverage) and is still reported in `verdict`; `review` is a separate field and is computed from the frames that were read.
-- **Second opinion** (`detect` only). The margin is measured on the blended score. Disagreement is among the first stage's views, against the first stage's threshold.
+- **Second opinion** (`detect` only; on by default for photos when `commfor-384.safetensors` is installed beside the photo weights, off with `--no-photo-second-opinion`). The margin is measured on the blended score. Disagreement is among the first stage's views, against the first stage's threshold.
 - **Profiles.** A band stored in a spec is in the default profile's calibrated logits, so `--strict`, `--sensitive` and `--fast` ignore it unless a flag gives one.
 - **Errors.** A file that could not be scored has no verdict and no review fields.
 

@@ -28,9 +28,17 @@ enum Cmd {
         /// WaveRep weights for an optional video second opinion (macOS only).
         #[arg(long)]
         second_opinion: Option<PathBuf>,
-        /// Community Forensics 384 px weights for an optional photo second opinion.
+        /// Community Forensics 384 px weights for the photo second opinion.
+        /// Without this flag the default profile uses the bundled copy
+        /// (`commfor-384.safetensors` beside the photo weights) when it is
+        /// installed.
         #[arg(long, conflicts_with_all = ["fast", "sensitive", "strict"])]
         photo_second_opinion: Option<PathBuf>,
+        /// Score photos with Tintype's own network only, even when the
+        /// bundled second network is installed: about twice the throughput,
+        /// at the first stage's own threshold.
+        #[arg(long, conflicts_with = "photo_second_opinion")]
+        no_photo_second_opinion: bool,
     },
     /// Recursively scan directories with bounded memory and stream results.
     Batch {
@@ -1242,8 +1250,8 @@ fn load_manifests(ms: &[PathBuf]) -> Result<Vec<ingest::Item>> {
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Detect { paths, options, second_opinion, photo_second_opinion } => {
-            scan::detect(paths, options, photo_second_opinion, second_opinion)
+        Cmd::Detect { paths, options, second_opinion, photo_second_opinion, no_photo_second_opinion } => {
+            scan::detect(paths, options, photo_second_opinion, no_photo_second_opinion, second_opinion)
         }
         Cmd::Batch { paths, options } => scan::batch(paths, options),
         Cmd::Demo(options) => scan::demo(options),

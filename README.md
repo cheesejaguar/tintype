@@ -107,6 +107,35 @@ video. The charts and default-threshold table below use *blind batches*
 scored after the configuration and protocol were committed. Each system
 runs at its shipped threshold.
 
+> **Photo weights changed in this release (phase 7).** The bundled photo
+> network was retrained, and `detect` now gives every photo the Community
+> Forensics second opinion by default (the 384-pixel network is bundled;
+> `--no-photo-second-opinion` turns it off). The charts and photo tables on
+> this page, apart from the table just below, were measured with the
+> previous photo weights and have not been re-run. See
+> [docs/DATA.md](docs/DATA.md#phase-7-8000-steps--the-released-photo-weights).
+>
+> Two later batches, at each configuration's built-in decision, pooled
+> without the OpenFake test shard (batch 9: 13,475 AI and 11,486 real
+> photos; batch 8: the 11,684 AI and 9,624 real photos still on disk):
+>
+> | | Batch 8 precision / recall / real photos flagged | Batch 9 precision / recall / real photos flagged |
+> |---|---|---|
+> | Previous weights, default | 99.09% / 90.10% / 1.01% | 98.87% / 90.55% / 1.22% |
+> | Previous weights, `--photo-second-opinion` | 98.30% / 93.99% / 1.97% | 97.33% / 94.86% / 3.05% |
+> | **This release, default (`detect`)** | **99.40% / 92.89% / 0.68%** | **98.95% / 93.31% / 1.16%** |
+> | This release, `--no-photo-second-opinion` (also `batch`, `serve`) | 98.75% / 92.94% / 1.43% | 98.46% / 93.03% / 1.71% |
+> | Community Forensics alone | 96.92% / 79.38% / 3.07% | 95.24% / 84.12% / 4.94% |
+>
+> On batch 9's OpenFake test shard (3,520 AI, 3,470 real) the new default
+> finds fewer: 74.18% recall at 0.14% flagged, against 76.48% at 0.17% for
+> the previous default and 81.08% at 0.32% without the second network.
+> Neither batch was blind for this configuration: the weights were chosen
+> and the blend fitted on batch 7, then batches 8 and 9 were read in
+> research before the calibration shipped here was fitted. The second
+> network roughly doubles the time per photo (median 22 ms to 49 ms per
+> photo on an Apple GPU that was also busy with other work).
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/errors-dark.svg">
   <img alt="Bar chart of error rates. Photos: AI photos missed – Tintype 10.3%, Tintype with second opinion 6.5%, Community Forensics 21.1%; real photos flagged – 1.2%, 3.1%, 5.2%. Video: AI clips missed – Tintype 5.9%, with second opinion 4.0%, WaveRep 8.8%; real clips flagged – 0.3%, 0.3%, 2.0%." src="docs/assets/errors-light.svg" width="820">
@@ -283,10 +312,13 @@ alone, and because most clips never reach the second network the pair is
 still several times faster than WaveRep by itself. With a second opinion every
 frame of every clip is looked at.
 
-**And one for photos.** `--photo-second-opinion` does the same with the
+**And one for photos, on by default in `detect`.** The
 [Community Forensics](https://github.com/JeongsooP/Community-Forensics)
-384-pixel network (MIT): a photo the default profile is not sure about is
-also scored by it, and the two scores are combined. Community Forensics is
+384-pixel network (MIT) is bundled as `models/commfor-384.safetensors`:
+every photo the default profile scores is also scored by it, and the two
+scores are combined. `--no-photo-second-opinion` scores with Tintype's own
+network only; `--photo-second-opinion <weights>` names another copy.
+`batch`, `serve` and the other profiles do not use it. Community Forensics is
 the stronger of the two on images from older GANs, Tintype on current
 commercial generators; together they find more than either at a precision
 between the two.
@@ -446,8 +478,8 @@ tintype detect --fast --device cpu a.jpg   # two views, CPU engine
 tintype detect --turbo photos/*.jpg        # 8-bit CPU engine for photos
 tintype detect --review-margin 1 inbox/*   # also mark results close to the threshold as needing review
 
+tintype detect --no-photo-second-opinion *.jpg   # Tintype's own network only, about half the time per photo
 tintype data baselines                     # fetches the reference detectors' weights, once
-tintype detect --photo-second-opinion baselines/commfor-384.safetensors *.jpg
 tintype detect --second-opinion baselines/waverep-g4.ckpt *.mp4
 ```
 
@@ -584,7 +616,7 @@ tintype data confirm6
 tintype evaluate confirm6 --baselines
 
 # the photo second opinion
-tintype set-photo-second-opinion --band=-7,0.5,0.5,0
+tintype set-photo-second-opinion --band=-7,0.5,0.5,0   # the phase-6 band; phase 7 stores -1000,1000,4.3,0.94 (docs/DATA.md)
 tintype data confirm7
 tintype evaluate confirm7 --baselines
 
@@ -642,6 +674,6 @@ tintype evaluate confirm4 --baselines
 |---|---|
 | Code | MIT OR Apache-2.0 ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)) |
 | Trained weights | CC BY-NC-SA 4.0, because of the training data ([models/LICENSE.md](models/LICENSE.md)). **Non-commercial.** |
-| Optional second-opinion weights | Community Forensics: MIT. WaveRep: its authors' non-profit licence. Neither is shipped here. |
+| Second-opinion weights | Community Forensics 384 px: MIT, bundled as `models/commfor-384.safetensors`. WaveRep: its authors' non-profit licence, not shipped here. |
 
 Third-party notices: [NOTICE.md](NOTICE.md).
