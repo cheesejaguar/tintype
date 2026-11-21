@@ -26,8 +26,8 @@ retrain with `tintype train` on data you have the rights to.
 `commfor-384.safetensors` is the Community Forensics ViT-S/16 384 px
 checkpoint, unchanged (`OwensLab/commfor-model-384`, commit `6076002b`, MIT,
 Park & Owens, CVPR 2025; SHA-256 `b89f3627…4fb387`). It stays under the MIT
-licence of its authors and is not covered by the licence above. `detect`
-uses it for the photo second opinion.
+licence of its authors and is not covered by the licence above. `detect`,
+`batch` and `serve` use it for the photo second opinion.
 
 `detect --second-opinion` loads the WaveRep checkpoint. That file is not part
 of this repository or of this licence: it is downloaded from its authors

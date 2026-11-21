@@ -35,8 +35,8 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["fast", "sensitive", "strict"])]
         photo_second_opinion: Option<PathBuf>,
         /// Score photos with Tintype's own network only, even when the
-        /// bundled second network is installed: about twice the throughput,
-        /// at the first stage's own threshold.
+        /// bundled second network is installed: about three times the
+        /// throughput, at the first stage's own threshold.
         #[arg(long, conflicts_with = "photo_second_opinion")]
         no_photo_second_opinion: bool,
     },
@@ -47,6 +47,10 @@ enum Cmd {
         paths: Vec<PathBuf>,
         #[command(flatten)]
         options: ScanOptions,
+        /// Score photos with Tintype's own network only, even when the
+        /// bundled second network is installed (see `detect`).
+        #[arg(long)]
+        no_photo_second_opinion: bool,
     },
     /// Score the included labeled sample offline.
     Demo(scan::DemoOptions),
@@ -1253,7 +1257,7 @@ fn main() -> Result<()> {
         Cmd::Detect { paths, options, second_opinion, photo_second_opinion, no_photo_second_opinion } => {
             scan::detect(paths, options, photo_second_opinion, no_photo_second_opinion, second_opinion)
         }
-        Cmd::Batch { paths, options } => scan::batch(paths, options),
+        Cmd::Batch { paths, options, no_photo_second_opinion } => scan::batch(paths, options, no_photo_second_opinion),
         Cmd::Demo(options) => scan::demo(options),
         #[cfg(feature = "provenance")]
         Cmd::Provenance(args) => provenance::run(args),

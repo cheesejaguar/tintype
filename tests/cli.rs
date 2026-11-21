@@ -240,6 +240,21 @@ fn detect_uses_the_bundled_photo_second_opinion_unless_told_not_to() {
     let o = tintype(&base);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(json_lines(&o)[0]["second_opinion"], true);
+    let blended = json_lines(&o).remove(0);
+    // `batch` gives the same blended score, and has the same flag to leave it out.
+    let batch = |extra: &[&str]| {
+        let mut args = vec!["batch", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        args.push(photo.to_str().unwrap());
+        let o = tintype(&args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        json_lines(&o).remove(0)
+    };
+    let row = batch(&[]);
+    assert_eq!(row["second_opinion"], true, "{row}");
+    assert!((score_of(&row).unwrap() - score_of(&blended).unwrap()).abs() < 1e-6, "{row} against {blended}");
+    assert_eq!(row["verdict"], blended["verdict"]);
+    assert_eq!(batch(&["--no-photo-second-opinion"])["second_opinion"], false);
     // The flag and the other profiles leave it out.
     for extra in ["--no-photo-second-opinion", "--strict", "--fast", "--sensitive"] {
         let mut args = base.to_vec();
@@ -1424,8 +1439,11 @@ fn the_demo_scores_one_real_photo_and_reports_its_limits() {
     assert_eq!(header("cache-control"), "no-store");
     let row: serde_json::Value = serde_json::from_reader(response.into_body().into_reader()).unwrap();
     // The same score the CLI gives this file.
-    let cli = detect(&[&common::repo().join("site/assets/demo.png")], &["--json"]);
+    // The server blends in the bundled second network, as `detect` does by default.
+    let cli = tintype(&["detect", "--device", "cpu", "--json", "--weights", common::photo_weights().to_str().unwrap(), common::repo().join("site/assets/demo.png").to_str().unwrap()]);
     let expected = &json_lines(&cli)[0];
+    assert_eq!(row["second_opinion"], true, "{row}");
+    assert_eq!(expected["second_opinion"], true, "{expected}");
     assert_eq!(row["name"], "photo.png");
     assert_eq!(row["verdict"], expected["verdict"]);
     assert!((row["score"].as_f64().unwrap() - score_of(expected).unwrap()).abs() < 1e-6, "{row} against {expected}");

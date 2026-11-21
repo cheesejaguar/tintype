@@ -29,6 +29,11 @@ pub struct ServeArgs {
     video_weights: Option<PathBuf>,
     #[arg(long, default_value = "auto")]
     device: String,
+    /// Score photos with Tintype's own network only, even when the bundled
+    /// second network is installed beside the photo weights (see
+    /// `detect --no-photo-second-opinion`).
+    #[arg(long)]
+    no_photo_second_opinion: bool,
     /// Score photos in turbo mode (the eight-bit CPU engine, `cpu-int8`)
     /// unless a request asks for `?mode=standard`. Without it, requests
     /// opt in with `?mode=turbo`. Videos always use the standard engine.
@@ -190,8 +195,10 @@ struct Job {
 }
 
 impl Job {
-    fn execute(self, photo: &Detector, clip: Option<&Detector>, frames: usize, bands: Bands) {
-        if let Some(mut rows) = score_uploads(photo, clip, frames, bands, self.files, || {
+    fn execute(self, photo: &Detector, second: Option<&Detector>, clip: Option<&Detector>, frames: usize, bands: Bands) {
+        // Turbo mode scores photos with the first stage alone, as `detect --turbo` does.
+        let second = second.filter(|_| !self.turbo);
+        if let Some(mut rows) = score_uploads(photo, second, clip, frames, bands, self.files, || {
             self.response.is_closed()
         }) {
             if self.turbo {
@@ -317,6 +324,7 @@ pub fn run(
     let (ready, startup) = oneshot::channel();
     let review = args.review;
     let turbo_default = args.turbo;
+    let no_photo_second = args.no_photo_second_opinion;
     // The demo takes photos only: its video model is never loaded, so the
     // video path, which writes the upload to a temporary file, cannot run.
     let photos_only = demo.is_some();
@@ -324,6 +332,16 @@ pub fn run(
     // the best engine here for clips and loads the eight-bit one for photos.
     let worker = std::thread::spawn(move || {
         let setup = (|| -> Result<_> {
+            // The photo second opinion: the bundled network beside the photo
+            // weights, loaded once for the life of the server.
+            let second = match crate::detector::ModelSpec::load_for(&photo)
+                .ok()
+                .and_then(|spec| crate::detector::bundled_photo_second(&photo, &spec))
+                .filter(|_| !no_photo_second)
+            {
+                Some(path) => Some(crate::detector::load_photo_second(&path, 32, device)?),
+                None => None,
+            };
             let photos = Photos::new(photo, device, turbo_default)?;
             let photo = &photos.standard;
             ensure!(!photo.spec.views.is_empty(), "model must declare at least one view");
@@ -346,9 +364,9 @@ pub fn run(
                     .as_ref()
                     .and_then(|c| review.resolve(c.spec.video.as_ref().and_then(|v| v.review))),
             };
-            Ok((photos, clip, frames, bands))
+            Ok((photos, second, clip, frames, bands))
         })();
-        let (mut photos, clip, frames, bands) = match setup {
+        let (mut photos, second, clip, frames, bands) = match setup {
             Ok(models) => {
                 let _ = ready.send(Ok(()));
                 models
@@ -360,7 +378,7 @@ pub fn run(
         };
         while let Some(job) = receive.blocking_recv() {
             match photos.get(job.turbo) {
-                Ok(photo) => job.execute(photo, clip.as_ref(), frames, bands),
+                Ok(photo) => job.execute(photo, second.as_ref(), clip.as_ref(), frames, bands),
                 // Dropping the job answers 503: the eight-bit engine could not load.
                 Err(error) => eprintln!("turbo mode unavailable: {error:#}"),
             }
@@ -788,8 +806,11 @@ async fn parse_upload(
     Ok(files)
 }
 
+/// `second` is the network of the photo second opinion: with it, every photo
+/// inside the photo model's band gets the blended score `detect` gives.
 fn score_uploads(
     photo: &Detector,
+    second: Option<&Detector>,
     clip: Option<&Detector>,
     frames: usize,
     bands: Bands,
@@ -865,19 +886,54 @@ fn score_uploads(
         if cancelled() {
             return None;
         }
-        for ((i, file), scores) in images.into_iter().zip(scores) {
+        // The second opinion: the photos inside the band, scored once more by
+        // the second network and blended, as `detect` does.
+        let mut blended: Vec<Option<f32>> = vec![None; images.len()];
+        if let Some((second, band)) = second.zip(photo.spec.second_opinion) {
+            let first: Vec<Option<f32>> = scores
+                .iter()
+                .map(|s| s.as_ref().map(|l| photo.calibrated_logit(l)))
+                .collect();
+            let pick: Vec<usize> = (0..images.len())
+                .filter(|&k| first[k].is_some_and(|z| band.wanted(z)))
+                .collect();
+            if !pick.is_empty() {
+                let (res, _) = second.score_stream(pick.len(), 2, |j| {
+                    if cancelled() {
+                        return None;
+                    }
+                    decode_image(&images[pick[j]].1.bytes)
+                        .ok()
+                        .filter(|_| !cancelled())
+                        .map(|image| vec![image])
+                });
+                if cancelled() {
+                    return None;
+                }
+                for (&k, r) in pick.iter().zip(res) {
+                    if let (Some(z1), Some(z2)) = (first[k], r.and_then(|mut v| v.pop()).and_then(|v| v.first().copied())) {
+                        blended[k] = Some(band.probability(z1, z2)).filter(|p| p.is_finite());
+                    }
+                }
+            }
+        }
+        for (k, ((i, file), scores)) in images.into_iter().zip(scores).enumerate() {
             if let Some(scores) = scores {
-                let score = photo.probability(&scores);
+                let score = blended[k].unwrap_or_else(|| photo.probability(&scores));
                 if score.is_finite() {
                     results[i] = json!({
                         "name": file.name, "kind": "image", "profile": "default", "score": score,
                         "verdict": verdict(score), "views": scores.len(),
                         "logit": video::aggregate(&scores), "threshold_logit": photo.threshold_logit()
                     });
+                    if second.is_some() {
+                        results[i]["second_opinion"] = blended[k].is_some().into();
+                    }
                     if let Some(band) = bands.photo {
                         // From the view logits already scored: no further inference.
+                        // With a second opinion the margin is on the blended score.
                         let reason = band.reason(
-                            photo.calibrated_logit(&scores),
+                            blended[k].map_or_else(|| photo.calibrated_logit(&scores), review::logit_of),
                             &scores,
                             photo.threshold_logit(),
                         );
@@ -1120,7 +1176,7 @@ mod tests {
             let frames = clip.use_video_profile();
             while let Some(job) = receive.blocking_recv() {
                 let photo = photos.get(job.turbo).unwrap();
-                job.execute(photo, Some(&clip), frames, Bands::default());
+                job.execute(photo, None, Some(&clip), frames, Bands::default());
             }
         });
         let photo = image::RgbImage::from_pixel(224, 224, image::Rgb([47, 127, 211]));
@@ -1254,7 +1310,7 @@ mod tests {
                 Upload { name: "broken.png".into(), bytes: b"broken".to_vec() },
             ]
         };
-        let run = |bands: Bands| score_uploads(&photo, Some(&clip), frames, bands, uploads(), || false).unwrap();
+        let run = |bands: Bands| score_uploads(&photo, None, Some(&clip), frames, bands, uploads(), || false).unwrap();
         let plain = run(Bands::default());
         // Off: no review keys anywhere.
         assert!(plain.iter().all(|r| r.get("review").is_none() && r.get("review_reason").is_none()), "{plain:?}");
@@ -1304,7 +1360,7 @@ mod tests {
             })
             .collect();
         let checks = AtomicUsize::new(0);
-        let output = score_uploads(&detector, Some(&detector), 1, Bands::default(), files, || {
+        let output = score_uploads(&detector, None, Some(&detector), 1, Bands::default(), files, || {
             // The request closes after the first video reaches the decoder.
             checks.fetch_add(1, Ordering::Relaxed) >= 2
         });

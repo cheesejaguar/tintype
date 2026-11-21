@@ -108,8 +108,8 @@ scored after the configuration and protocol were committed. Each system
 runs at its shipped threshold.
 
 > **Photo weights changed in this release (phase 7).** The bundled photo
-> network was retrained, and `detect` now gives every photo the Community
-> Forensics second opinion by default (the 384-pixel network is bundled;
+> network was retrained, and `detect`, `batch` and `serve` now give every
+> photo the Community Forensics second opinion by default (the 384-pixel network is bundled;
 > `--no-photo-second-opinion` turns it off). The charts and photo tables on
 > this page, apart from the table just below, were measured with the
 > previous photo weights and have not been re-run. See
@@ -123,8 +123,8 @@ runs at its shipped threshold.
 > |---|---|---|
 > | Previous weights, default | 99.09% / 90.10% / 1.01% | 98.87% / 90.55% / 1.22% |
 > | Previous weights, `--photo-second-opinion` | 98.30% / 93.99% / 1.97% | 97.33% / 94.86% / 3.05% |
-> | **This release, default (`detect`)** | **99.40% / 92.89% / 0.68%** | **98.95% / 93.31% / 1.16%** |
-> | This release, `--no-photo-second-opinion` (also `batch`, `serve`) | 98.75% / 92.94% / 1.43% | 98.46% / 93.03% / 1.71% |
+> | **This release, default (`detect`, `batch`, `serve`)** | **99.40% / 92.89% / 0.68%** | **98.95% / 93.31% / 1.16%** |
+> | This release, `--no-photo-second-opinion` | 98.75% / 92.94% / 1.43% | 98.46% / 93.03% / 1.71% |
 > | Community Forensics alone | 96.92% / 79.38% / 3.07% | 95.24% / 84.12% / 4.94% |
 >
 > On batch 9's OpenFake test shard (3,520 AI, 3,470 real) the new default
@@ -133,8 +133,9 @@ runs at its shipped threshold.
 > Neither batch was blind for this configuration: the weights were chosen
 > and the blend fitted on batch 7, then batches 8 and 9 were read in
 > research before the calibration shipped here was fitted. The second
-> network roughly doubles the time per photo (median 22 ms to 49 ms per
-> photo on an Apple GPU that was also busy with other work).
+> network costs speed: on an idle Apple GPU, `batch` went from about 545 to
+> about 185 photos a second on cached files, a single photo from a median
+> of 8 to 12 ms to about 15 ms, and one `serve` request from 24 ms to 67 ms.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/errors-dark.svg">
@@ -312,13 +313,15 @@ alone, and because most clips never reach the second network the pair is
 still several times faster than WaveRep by itself. With a second opinion every
 frame of every clip is looked at.
 
-**And one for photos, on by default in `detect`.** The
+**And one for photos, on by default.** The
 [Community Forensics](https://github.com/JeongsooP/Community-Forensics)
 384-pixel network (MIT) is bundled as `models/commfor-384.safetensors`:
 every photo the default profile scores is also scored by it, and the two
 scores are combined. `--no-photo-second-opinion` scores with Tintype's own
 network only; `--photo-second-opinion <weights>` names another copy.
-`batch`, `serve` and the other profiles do not use it. Community Forensics is
+`detect`, `batch` and `serve` all blend, and all take
+`--no-photo-second-opinion`; `--fast`, `--strict`, `--sensitive` and turbo
+mode score with the first stage alone. Community Forensics is
 the stronger of the two on images from older GANs, Tintype on current
 commercial generators; together they find more than either at a precision
 between the two.
@@ -478,7 +481,7 @@ tintype detect --fast --device cpu a.jpg   # two views, CPU engine
 tintype detect --turbo photos/*.jpg        # 8-bit CPU engine for photos
 tintype detect --review-margin 1 inbox/*   # also mark results close to the threshold as needing review
 
-tintype detect --no-photo-second-opinion *.jpg   # Tintype's own network only, about half the time per photo
+tintype detect --no-photo-second-opinion *.jpg   # Tintype's own network only, about three times the throughput
 tintype data baselines                     # fetches the reference detectors' weights, once
 tintype detect --second-opinion baselines/waverep-g4.ckpt *.mp4
 ```

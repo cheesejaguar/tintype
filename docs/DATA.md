@@ -262,7 +262,7 @@ phase-6 calibration clips still on disk.
 `4.3 × calibrated logit + Community Forensics logit > 0.94`. The weight is
 the research blend (raw logit + 0.3 × second logit) restated in calibrated
 logits; the threshold is the 1% false-positive point of batch 7.
-`detect` applies it by default with the bundled
+`detect`, `batch` and `serve` apply it by default with the bundled
 `models/commfor-384.safetensors`.
 
 ## How the evaluation was staged

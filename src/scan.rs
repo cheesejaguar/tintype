@@ -214,24 +214,13 @@ struct Scan {
     photo_review: Option<Review>,
     video_review: Option<Review>,
     photo_second: Option<PathBuf>,
-    /// `detect` without `--photo-second-opinion`: use the bundled second
+    /// `detect` and `batch` without a flag about it: use the bundled second
     /// network if it sits beside the photo weights (see
-    /// [`bundled_photo_second`]). Resolved once, with the photo model.
+    /// [`detector::bundled_photo_second`]). Resolved once, with the photo model.
     photo_second_bundled: bool,
+    /// The second network, kept between the chunks of `batch`.
+    photo_second_det: Option<Detector>,
     video_second: Option<PathBuf>,
-}
-
-/// File name of the bundled Community Forensics 384 px network: the photo
-/// second opinion `detect` gives by default when it is installed beside the
-/// photo weights.
-pub const BUNDLED_PHOTO_SECOND: &str = "commfor-384.safetensors";
-
-/// The bundled second network beside `weights`, if it is there and the
-/// model's spec stores a band for it.
-fn bundled_photo_second(weights: &Path, spec: &ModelSpec) -> Option<PathBuf> {
-    spec.second_opinion?;
-    let path = weights.parent()?.join(BUNDLED_PHOTO_SECOND);
-    path.is_file().then_some(path)
 }
 
 impl Scan {
@@ -277,6 +266,7 @@ impl Scan {
             video_review: None,
             photo_second,
             photo_second_bundled: false,
+            photo_second_det: None,
             video_second,
         })
     }
@@ -299,7 +289,7 @@ impl Scan {
                 && matches!(self.profile, Profile::Default)
                 && !self.options.turbo
             {
-                self.photo_second = bundled_photo_second(&weights, &spec);
+                self.photo_second = detector::bundled_photo_second(&weights, &spec);
             }
             match self.profile {
                 Profile::Default => {}
@@ -365,10 +355,18 @@ impl Scan {
                 .iter()
                 .map(|r| r.as_ref().map(|l| det.calibrated_logit(l)))
                 .collect();
-            self.photo = None;
+            if !warm {
+                // One chunk only: make room for the second network.
+                self.photo = None;
+            }
+            if self.photo_second_det.is_none() {
+                let batch = if warm { 64 } else { 64.min(paths.len()) };
+                self.photo_second_det =
+                    Some(detector::load_photo_second(weights, batch, self.device)?);
+            }
+            let second = self.photo_second_det.as_ref().unwrap();
             for (i, score) in
-                detector::photo_second_opinion(&band, weights, paths, &first, self.device, threads)?
-                    .0
+                detector::photo_second_opinion_with(second, &band, paths, &first, threads).0
             {
                 if score.is_finite() {
                     rows[i].score = Some(score);
@@ -724,8 +722,9 @@ pub fn detect(
     counts.finish()
 }
 
-pub fn batch(roots: Vec<PathBuf>, options: ScanOptions) -> Result<()> {
+pub fn batch(roots: Vec<PathBuf>, options: ScanOptions, no_photo_second: bool) -> Result<()> {
     let mut scan = Scan::new(options, None, None)?;
+    scan.photo_second_bundled = !no_photo_second;
     let mut counts = Counts::default();
     let mut output = BufWriter::new(io::stdout().lock());
     let mut inputs = Vec::with_capacity(CHUNK);
