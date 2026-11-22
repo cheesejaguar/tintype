@@ -144,6 +144,19 @@ if (demo?.dataset.endpoint) {
     input.value = '';
   };
 
+  // Opening the picker, or dragging a file over it, wakes the server, so
+  // that a server which has stopped since its last visitor is starting while
+  // the photo is chosen rather than after it is sent. The request carries
+  // nothing, counts toward no limit and is sent at most once in 10 minutes.
+  let woke = 0;
+  const wake = () => {
+    if (Date.now() - woke < 600000) return;
+    woke = Date.now();
+    fetch(new URL('/health', endpoint), { mode: 'no-cors', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' }).catch(() => {});
+  };
+  input.addEventListener('click', wake);
+  input.closest('label')?.addEventListener('dragenter', wake);
+
   input.disabled = false;
   say('');
   input.addEventListener('change', async () => {

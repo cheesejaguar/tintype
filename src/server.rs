@@ -12,6 +12,10 @@ use axum::{
     Json, Router,
 };
 use clap::Args;
+use std::time::Instant;
+
+/// The W3C `Server-Timing` response header.
+const SERVER_TIMING: header::HeaderName = header::HeaderName::from_static("server-timing");
 use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -190,24 +194,72 @@ struct Job {
     files: Vec<Upload>,
     /// Score the photos with the eight-bit engine.
     turbo: bool,
-    response: oneshot::Sender<Vec<Value>>,
+    response: oneshot::Sender<(Vec<Value>, WorkTimes)>,
+    queued: Instant,
     _slot: tokio::sync::OwnedSemaphorePermit,
+}
+
+/// Where a request's time went, for its `Server-Timing` header: durations
+/// only, nothing about the caller or the photo. The worker scores one job
+/// at a time, so what the work counters ([`crate::stats`]) gain while it
+/// runs is that job's.
+#[derive(Clone, Copy, Default)]
+struct WorkTimes {
+    /// Waiting for the worker.
+    queue: Duration,
+    /// Decoding, preparing views and the network, each added up over the
+    /// threads that did it.
+    decode_ns: u64,
+    views_ns: u64,
+    network_ns: u64,
+    /// The worker's time on the job.
+    score: Duration,
+}
+
+impl WorkTimes {
+    /// `Server-Timing` (W3C) entries in milliseconds, `upload` being the time
+    /// spent reading the request body.
+    fn header(&self, upload: Duration) -> HeaderValue {
+        let ms = |d: Duration| d.as_secs_f64() * 1e3;
+        let ns = |n: u64| n as f64 / 1e6;
+        let value = format!(
+            "upload;dur={:.1}, queue;dur={:.1}, decode;dur={:.1}, views;dur={:.1}, network;dur={:.1}, total;dur={:.1}",
+            ms(upload),
+            ms(self.queue),
+            ns(self.decode_ns),
+            ns(self.views_ns),
+            ns(self.network_ns),
+            ms(self.queue + self.score)
+        );
+        HeaderValue::from_str(&value).expect("ASCII")
+    }
 }
 
 impl Job {
     fn execute(self, photo: &Detector, second: Option<&Detector>, clip: Option<&Detector>, frames: usize, bands: Bands) {
+        use crate::stats::{CONVERT_TIME, DECODE_TIME, MODEL_TIME, VIEWS_TIME};
         // Turbo mode scores photos with the first stage alone, as `detect --turbo` does.
         let second = second.filter(|_| !self.turbo);
+        let start = Instant::now();
+        let before = [DECODE_TIME.get() + CONVERT_TIME.get(), VIEWS_TIME.get(), MODEL_TIME.get()];
         if let Some(mut rows) = score_uploads(photo, second, clip, frames, bands, self.files, || {
             self.response.is_closed()
         }) {
+            let after = [DECODE_TIME.get() + CONVERT_TIME.get(), VIEWS_TIME.get(), MODEL_TIME.get()];
+            let times = WorkTimes {
+                queue: start - self.queued,
+                decode_ns: after[0] - before[0],
+                views_ns: after[1] - before[1],
+                network_ns: after[2] - before[2],
+                score: start.elapsed(),
+            };
             if self.turbo {
                 // Photos scored in turbo mode say so; clips use the standard engine.
                 for row in rows.iter_mut().filter(|r| r["kind"] == "image") {
                     row["mode"] = "turbo".into();
                 }
             }
-            let _ = self.response.send(rows);
+            let _ = self.response.send((rows, times));
         }
     }
 }
@@ -394,6 +446,15 @@ pub fn run(
             demo: demo.clone(),
         };
         let listener = tokio::net::TcpListener::bind(args.bind).await?;
+        // A host that gives the container fewer processors than it shows
+        // (Cloud Run's second generation) needs RAYON_NUM_THREADS set to its
+        // share: more threads than processors there halves the speed.
+        eprintln!(
+            "inference threads: {} ({} processors visible{})",
+            rayon::current_num_threads(),
+            std::thread::available_parallelism().map_or(0, usize::from),
+            std::env::var("RAYON_NUM_THREADS").map(|n| format!(", RAYON_NUM_THREADS={n}")).unwrap_or_default()
+        );
         if let Some(demo) = demo {
             let l = demo.limiter.limits();
             eprintln!(
@@ -447,6 +508,9 @@ fn app(state: AppState) -> Router {
     if let Some(demo) = state.demo.clone() {
         return Router::new()
             .route("/healthz", get(health))
+            // Cloud Run answers `/healthz` itself (it reserves paths ending in
+            // `z`), so the page wakes the server through `/health`.
+            .route("/health", get(health))
             .route(
                 "/v1/detect",
                 post(demo_detect).route_layer(middleware::from_fn_with_state(state.clone(), demo_gate)),
@@ -465,6 +529,7 @@ fn app(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(MAX_REQUEST));
     Router::new()
         .route("/healthz", get(health))
+        .route("/health", get(health))
         .merge(inference)
         .with_state(state)
 }
@@ -596,6 +661,7 @@ async fn demo_detect(
     let multipart =
         multipart.map_err(|_| bad_request("expected multipart/form-data with a boundary"))?;
     let slot = state.active.clone().try_acquire_owned().map_err(|_| unavailable())?;
+    let reading = Instant::now();
     let mut files = tokio::time::timeout(
         Duration::from_secs(20),
         parse_upload(multipart, 1, "send one photo per request"),
@@ -603,6 +669,7 @@ async fn demo_detect(
     .await
     .map_err(|_| ApiError(StatusCode::REQUEST_TIMEOUT, "upload_timeout", "upload timed out".into()))?
     .map_err(|error| if error.0 == StatusCode::PAYLOAD_TOO_LARGE { photo_too_large() } else { error })?;
+    let upload = reading.elapsed();
     let file = &mut files[0];
     if file.bytes.len() > demo.limiter.limits().max_bytes {
         return Err(photo_too_large());
@@ -643,14 +710,14 @@ async fn demo_detect(
         return Ok(demo.refuse(status));
     }
     demo.scored.fetch_add(1, Ordering::Relaxed);
-    let mut results = queue(&state, files, state.turbo_default, slot).await?;
+    let (mut results, times) = queue(&state, files, state.turbo_default, slot).await?;
     let result = results.remove(0);
     let status = if result.get("error").is_some() {
         StatusCode::UNPROCESSABLE_ENTITY
     } else {
         StatusCode::OK
     };
-    Ok((status, Json(result)).into_response())
+    Ok((status, [(SERVER_TIMING, times.header(upload))], Json(result)).into_response())
 }
 
 async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
@@ -670,23 +737,23 @@ async fn detect(
     uri: Uri,
     multipart: std::result::Result<Multipart, MultipartRejection>,
 ) -> ApiResult<impl IntoResponse> {
-    let mut results = submit(state, &uri, multipart, 1).await?;
+    let (mut results, timing) = submit(state, &uri, multipart, 1).await?;
     let result = results.remove(0);
     let status = if result.get("error").is_some() {
         StatusCode::UNPROCESSABLE_ENTITY
     } else {
         StatusCode::OK
     };
-    Ok((status, Json(result)))
+    Ok((status, [(SERVER_TIMING, timing)], Json(result)))
 }
 
 async fn batch(
     State(state): State<AppState>,
     uri: Uri,
     multipart: std::result::Result<Multipart, MultipartRejection>,
-) -> ApiResult<Json<Value>> {
-    let results = submit(state, &uri, multipart, MAX_FILES).await?;
-    Ok(Json(json!({"results": results})))
+) -> ApiResult<impl IntoResponse> {
+    let (results, timing) = submit(state, &uri, multipart, MAX_FILES).await?;
+    Ok(([(SERVER_TIMING, timing)], Json(json!({"results": results}))))
 }
 
 /// `?mode=turbo` or `?mode=standard`; without it, the server's default.
@@ -710,7 +777,7 @@ async fn submit(
     uri: &Uri,
     multipart: std::result::Result<Multipart, MultipartRejection>,
     count: usize,
-) -> ApiResult<Vec<Value>> {
+) -> ApiResult<(Vec<Value>, HeaderValue)> {
     let turbo = turbo_requested(uri, state.turbo_default)?;
     let multipart =
         multipart.map_err(|_| bad_request("expected multipart/form-data with a boundary"))?;
@@ -719,6 +786,7 @@ async fn submit(
         .clone()
         .try_acquire_owned()
         .map_err(|_| unavailable())?;
+    let reading = Instant::now();
     let files = tokio::time::timeout(Duration::from_secs(20), parse_upload(multipart, count, "too many file fields"))
         .await
         .map_err(|_| {
@@ -728,7 +796,9 @@ async fn submit(
                 "upload timed out".into(),
             )
         })??;
-    queue(&state, files, turbo, slot).await
+    let upload = reading.elapsed();
+    let (rows, times) = queue(&state, files, turbo, slot).await?;
+    Ok((rows, times.header(upload)))
 }
 
 /// Hand uploads to the inference worker and wait for its rows.
@@ -737,7 +807,7 @@ async fn queue(
     files: Vec<Upload>,
     turbo: bool,
     slot: tokio::sync::OwnedSemaphorePermit,
-) -> ApiResult<Vec<Value>> {
+) -> ApiResult<(Vec<Value>, WorkTimes)> {
     let (response, reply) = oneshot::channel();
     state
         .jobs
@@ -745,6 +815,7 @@ async fn queue(
             files,
             turbo,
             response,
+            queued: Instant::now(),
             _slot: slot,
         })
         .map_err(|_| unavailable())?;
@@ -965,7 +1036,9 @@ fn decode_image(bytes: &[u8]) -> Result<image_io::Rgb> {
         "image too large"
     );
     ensure!(w.max(h) <= w.min(h) * 32, "image aspect ratio too large");
+    let start = Instant::now();
     let image = reader()?.decode()?.into_rgb8();
+    crate::stats::DECODE_TIME.since(start);
     Ok(image_io::Rgb {
         w,
         h,
@@ -1067,6 +1140,25 @@ mod tests {
             )
             .body(Body::from(body))
             .unwrap()
+    }
+
+    /// The `Server-Timing` entries of a response, by name, in milliseconds.
+    fn server_timing(response: &Response) -> Vec<(String, f64)> {
+        let value = response.headers()[SERVER_TIMING].to_str().unwrap();
+        value
+            .split(", ")
+            .map(|entry| {
+                let (name, dur) = entry.split_once(";dur=").expect("name;dur=ms");
+                (name.to_string(), dur.parse().expect("milliseconds"))
+            })
+            .collect()
+    }
+
+    fn assert_server_timing(response: &Response) {
+        let entries = server_timing(response);
+        let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["upload", "queue", "decode", "views", "network", "total"]);
+        assert!(entries.iter().all(|(_, ms)| ms.is_finite() && *ms >= 0.0), "{entries:?}");
     }
 
     async fn json(response: Response) -> Value {
@@ -1212,6 +1304,7 @@ mod tests {
                     .await
                     .unwrap();
                 assert_eq!(batch.status(), StatusCode::OK);
+                assert_server_timing(&batch);
                 let result = json(batch).await;
                 let results = result["results"].as_array().unwrap();
                 assert_eq!(results.len(), 3);
@@ -1260,6 +1353,11 @@ mod tests {
                     .oneshot(request("POST", "/v1/detect?mode=standard", None, &[("photo.png", &png)]))
                     .await
                     .unwrap();
+                assert_server_timing(&standard);
+                // The photo went through the network (its decode, of a tiny
+                // fixture, can round to nothing).
+                let timing = server_timing(&standard);
+                assert!(timing[4].1 > 0.0, "{timing:?}");
                 assert_eq!(json(standard).await, results[2]);
                 let unknown = app
                     .clone()
@@ -1417,7 +1515,7 @@ mod tests {
             while let Some(job) = receive.blocking_recv() {
                 let rows = job.files.iter().map(|f| json!({"name": f.name, "kind": "image", "score": 0.25, "verdict": "likely-real"})).collect();
                 names.send(job.files.iter().map(|f| f.name.clone()).collect()).unwrap();
-                let _ = job.response.send(rows);
+                let _ = job.response.send((rows, WorkTimes::default()));
             }
         });
         let demo = Arc::new(Demo::new("https://cheesejaguar.github.io", ClientAddress::LastForwardedFor).unwrap());
@@ -1482,9 +1580,10 @@ mod tests {
                 assert_eq!(ok.status(), StatusCode::OK);
                 assert_eq!(header(&ok, "access-control-allow-origin"), SITE.unwrap());
                 let exposed = header(&ok, "access-control-expose-headers");
-                for name in ["RateLimit", "RateLimit-Policy", "RateLimit-Remaining", "RateLimit-Reset", "Retry-After"] {
+                for name in ["RateLimit", "RateLimit-Policy", "RateLimit-Remaining", "RateLimit-Reset", "Retry-After", "Server-Timing"] {
                     assert!(exposed.split(", ").any(|e| e == name), "{name} in {exposed}");
                 }
+                assert_server_timing(&ok);
                 assert_eq!(header(&ok, "cache-control"), "no-store");
                 assert_eq!(header(&ok, "ratelimit-remaining"), (4 - i).to_string());
                 assert!(header(&ok, "ratelimit").starts_with(&format!("\"ip-short\";r={};t=", 4 - i)), "{}", header(&ok, "ratelimit"));
@@ -1548,10 +1647,14 @@ mod tests {
             let batch = app.clone().oneshot(from(request("POST", "/v1/batch", None, &[("a.png", &png)]), SITE, "203.0.113.4")).await.unwrap();
             assert_eq!(batch.status(), StatusCode::NOT_FOUND);
             assert_eq!(header(&batch, "cache-control"), "no-store");
-            let health = app.oneshot(request("GET", "/healthz", None, &[])).await.unwrap();
-            let health = json(health).await;
-            assert_eq!(health["demo"]["scored"], 7);
-            assert_eq!(health["demo"]["refused"], 1);
+            // `/health` is the same answer (Cloud Run keeps `/healthz` for itself),
+            // and asking it counts toward nothing.
+            for path in ["/health", "/healthz"] {
+                let health = app.clone().oneshot(request("GET", path, None, &[])).await.unwrap();
+                let health = json(health).await;
+                assert_eq!(health["demo"]["scored"], 7, "{path}");
+                assert_eq!(health["demo"]["refused"], 1, "{path}");
+            }
         });
     }
 }

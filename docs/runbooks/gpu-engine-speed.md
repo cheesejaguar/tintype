@@ -60,7 +60,9 @@ against about 0.1 s in the network. Nothing here changes that.
   build of tintype, the macOS build, the GPU, the weights file's path, size
   and modification time, the architecture, the precision and the batch.
 - Entries are written under a temporary name and renamed into place.
-  Beyond five packages, the least recently used entries are removed.
+  Beyond eight packages, the least recently used entries are removed. (It
+  was five at first, which let two networks' many-photo entries, three
+  packages each, evict each other on every run.)
 - `TINTYPE_GPU_CACHE=0` turns the cache off; any other value is the
   directory to use.
 
@@ -132,6 +134,77 @@ Not tried:
 - private Neural Engine interfaces;
 - hand-written SME assembly;
 - running the GPU and the Neural Engine at once.
+
+## Second round: large photos and the hosted server
+
+Measured on 2026-11-17 and 2026-11-18, same machine. Scores are unchanged
+again: `--json` output and `tintype score` output were byte-identical to
+the build before on the GPU and CPU engines.
+
+**Texture ranking.** Choosing the textured crops reads the whole photo:
+a gradient sum over every other pixel, kept as an integral image.
+- For photos of about 4 MP and more it now runs on all cores: rows side by
+  side, then a blocked prefix sum down the rows.
+- The arithmetic is integer, so the sums are the same bit for bit; a unit
+  test compares them with the one-sample-at-a-time version.
+- On the 44 large JPEGs (22.7 MP on average) it went from 11.9 to 3.0 ms a
+  photo.
+
+**JPEG decoding was not sped up.** It is the largest cost of a large photo:
+about 45 ms for 22.7 MP, on one thread, three quarters of it Huffman
+decoding, which the format makes serial without restart markers (none of
+the 44 had them).
+- Apple's ImageIO decoded the same files in 39 ms against 58 ms in a
+  like-for-like test, 1.5 times as fast.
+- It gives slightly different pixels, though, which would move scores and
+  need the accuracy checked again, so it was not adopted.
+- Resizing on several threads (`fast_image_resize`'s `rayon` feature) saved
+  about 1.5 ms a photo and added some 400 lines of dependencies to the
+  lockfile; not adopted either.
+
+**GPU warm-up.** A detector with one small batch size, as for one or two
+photos, now makes its first run on zeros on a thread of its own while the
+photo is decoded, and the first real run waits for it. What a first run
+sets up (MPSGraph specialising the program, Metal creating pipelines) then
+overlaps the decode instead of following it.
+
+**`Server-Timing`.** Every scored HTTP response says where the server's
+time went: upload, queue, decode, views, network and total, in
+milliseconds ([API](../API.md#detect-one-file)).
+
+**Threads on Cloud Run.** That header showed the hosted server spending
+1.3–1.5 s in the network on the site's sample photo (five views), far
+more than two processors should need.
+- A second-generation Cloud Run instance with 2 vCPUs shows the process 3
+  or 4 processors, and the thread pool made a thread for each.
+- With `RAYON_NUM_THREADS=2` the same photo took 0.55–0.63 s on the server
+  instead of 1.32–1.55 s, and a 22 MP JPEG 0.26–0.28 s instead of
+  0.53–0.69 s.
+- The server now logs its thread count at start, and both hosted services
+  set the variable ([Hosting](../HOSTING.md#speed-on-cloud-run)).
+
+**Cold starts.** The website now wakes the server when the photo picker
+opens, through `GET /health`, so an instance that had stopped is starting
+while the visitor chooses a photo. Cloud Run answers `/healthz` itself, so
+that path never reached the server.
+
+**Results of the second round.** Wall time of `tintype detect` in
+seconds, six alternating runs, each build with its own warm cache:
+
+| Workload | Before | After |
+|---|---|---|
+| One small photo | 0.06 | 0.06 |
+| One 22 MP photo | 0.11–0.12 | 0.09 |
+| 214 small photos | 0.39–0.42 | 0.39–0.41 |
+| 44 large photos | 0.66–0.70 | 0.64–0.67 |
+
+On the 2,096-photo sample of blind batch 7, `tintype score` ran at 563–593
+photos a second on the GPU and 75–78 on the CPU, level with the build
+before this round (570–592 and 73–74). The first timing of that sample,
+before either round, was 530–563 and 77–78
+([benchmark](../BENCHMARK.md), [raw log](../results/confirm7_speed_2026-11-18.log)).
+Video was level on 100 stand-in clips; the 147 clips of the published video
+timing are no longer on disk, so that figure was not measured again.
 
 ## Checking it
 

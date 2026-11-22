@@ -33,8 +33,8 @@ not a probability that the file is AI-generated ([why](#-reading-the-output)).
 
 | 📷 Photos | 🎬 Video | ⚡ Speed |
 |:---:|:---:|:---:|
-| **0.988** precision · **0.897** recall | **0.997** precision · **0.941** recall | **530–563** photos/s on an Apple GPU |
-| 23,052 photos in 30 blind sets | 2,056 clips in 3 blind sets | 77–78 photos/s on the CPU |
+| **0.988** precision · **0.897** recall | **0.997** precision · **0.941** recall | **563–593** photos/s on an Apple GPU |
+| 23,052 photos in 30 blind sets | 2,056 clips in 3 blind sets | 75–78 photos/s on the CPU |
 
 A tintype is a photograph made directly on a metal plate: one exposure, one
 original. This project is about telling that kind of picture from the other
@@ -184,7 +184,7 @@ clips at its shipped cutoff. Both systems used the same normalized clips.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/speed-dark.svg">
-  <img alt="Bar chart of photo throughput in photos per second. Apple GPU: Tintype 530–563, Tintype with second opinion 281–288, Community Forensics as released 82, Community Forensics ported to this engine 291–295. CPU: Tintype 77–78, with second opinion 39–41, Community Forensics as released 26, ported 39–42." src="docs/assets/speed-light.svg" width="820">
+  <img alt="Bar chart of photo throughput in photos per second. Apple GPU: Tintype 563–593, Tintype with second opinion 287–303, Community Forensics as released 82, Community Forensics ported to this engine 301–307. CPU: Tintype 75–78, with second opinion 39–41, Community Forensics as released 26, ported 39–42." src="docs/assets/speed-light.svg" width="820">
 </picture>
 
 Video runs at about 0.09 s per clip on the GPU on an idle machine; WaveRep
@@ -402,7 +402,7 @@ and each is kept only after a probe shows it gives the full batch's logits
 bit for bit on this machine. A network thread runs one batch while the next
 is gathered. The compiled networks are cached in
 `~/Library/Caches/tintype/gpu`, at about 41 MB per batch size with at most
-five kept, so a later run starts without reading the weights or compiling.
+eight kept, so a later run starts without reading the weights or compiling.
 On an Apple M6 that took a single photo from 0.17 s to 0.06 s and 214 small
 photos from 0.61 s to 0.38 s, with every score unchanged
 ([measurements](docs/runbooks/gpu-engine-speed.md)). `TINTYPE_GPU_CACHE=0`

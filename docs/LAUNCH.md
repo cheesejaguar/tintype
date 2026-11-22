@@ -72,4 +72,4 @@ The default photo result and reference rows are measured at their respective shi
 
 On the same 1% budget, the JPEG-only slice of batch 7 So-Fake-OOD social-media images reaches 77.0% recall for Tintype, 46.7% for SwinV2, and 28.8% for Community Forensics. The post-hoc slice contains 2,281 files and checks how the lead changes when format is held fixed. [Same-format analysis](EVIDENCE.md#social-media-jpegs)
 
-The end-to-end photo speed range of 530–563 images per second comes from two runs on an Apple M6 GPU on every eleventh image in batch 7, for a total of 2,096 images. Other hardware, workloads, and profile choices can change throughput. [Raw timing log](results/confirm7_second_opinion.log)
+The end-to-end photo speed range of 563–593 images per second comes from three runs on an Apple M6 GPU on every eleventh image in batch 7, for a total of 2,096 images. Other hardware, workloads, and profile choices can change throughput. [Raw timing log](results/confirm7_speed_2026-11-18.log)
