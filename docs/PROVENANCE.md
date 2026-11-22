@@ -38,7 +38,7 @@ Tintype’s demo is an original ImageGen illustration. [Download the untouched, 
 |---|---|---:|
 | Original ImageGen PNG | Trusted | 0.874, flagged |
 | Original pixels with the credential chunk removed | Absent | 0.874, flagged |
-| Resized 880 × 660 demo PNG | Absent | 0.491, missed |
+| Resized 880 × 660 demo PNG | Absent | 0.420, missed |
 | Original PNG with a signed byte altered | Invalid, `assertion.dataHash.mismatch` | — |
 
 The original without configured trust anchors reports `valid-untrusted`. The original SHA-256 is `324bb86fbea4292280a786c7cb32fa46e8524ac134a319a3be8049840a5d0ee3`. The original image is available under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) to the extent possible. The embedded credentials are unchanged. The locally signed [verification fixtures](../tests/fixtures/provenance/) exercise trust policies in CI and use a test-only root. See [the launch guide](LAUNCH.md) for the generation prompt and resized sample. [OpenAI provenance documentation](https://help.openai.com/en/articles/8912793-c2pa-in-chatgpt-images)

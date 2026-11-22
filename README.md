@@ -33,8 +33,8 @@ not a probability that the file is AI-generated ([why](#-reading-the-output)).
 
 | 📷 Photos | 🎬 Video | ⚡ Speed |
 |:---:|:---:|:---:|
-| **0.988** precision · **0.897** recall | **0.997** precision · **0.941** recall | **563–593** photos/s on an Apple GPU |
-| 23,052 photos in 30 blind sets | 2,056 clips in 3 blind sets | 75–78 photos/s on the CPU |
+| **0.990** precision · **0.933** recall | **0.997** precision · **0.941** recall | **300–364** photos/s on an Apple GPU |
+| 24,961 photos in batch 9 (not a blind test) | 2,056 clips in 3 blind sets | 540–579 without the second network |
 
 A tintype is a photograph made directly on a metal plate: one exposure, one
 original. This project is about telling that kind of picture from the other
@@ -109,7 +109,8 @@ runs at its shipped threshold.
 
 > **Photo weights changed in this release (phase 7).** The bundled photo
 > network was retrained, and `detect`, `batch` and `serve` now give every
-> photo the Community Forensics second opinion by default (the 384-pixel network is bundled;
+> uncertain photo (about a quarter of photos) the Community Forensics second
+> opinion by default (the 384-pixel network is bundled;
 > `--no-photo-second-opinion` turns it off). The charts and photo tables on
 > this page, apart from the table just below, were measured with the
 > previous photo weights and have not been re-run. See
@@ -133,9 +134,12 @@ runs at its shipped threshold.
 > Neither batch was blind for this configuration: the weights were chosen
 > and the blend fitted on batch 7, then batches 8 and 9 were read in
 > research before the calibration shipped here was fitted. The second
-> network costs speed: on an idle Apple GPU, `batch` went from about 545 to
-> about 185 photos a second on cached files, a single photo from a median
-> of 8 to 12 ms to about 15 ms, and one `serve` request from 24 ms to 67 ms.
+> network costs speed. On an idle Apple GPU, decode to verdict on 2,096
+> batch 7 photos over five rounds, the default ran at 300–364 photos a
+> second, against 540–579 with `--no-photo-second-opinion` and 284–298 for
+> Community Forensics alone on the same engine. The second network runs
+> only on photos whose first score is uncertain; on all 53,259 photos of
+> batches 8 and 9 that gave the same verdicts as running it on every photo.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/errors-dark.svg">

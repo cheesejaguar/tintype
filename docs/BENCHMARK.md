@@ -34,6 +34,20 @@ Pooled over each blind batch, the default photo profile is ahead of both
 reference photo detectors on precision and on recall, and the video
 checkpoint is ahead of WaveRep on both.
 
+**The shipped photo default has changed since these batches.** The photo
+rows above were measured with earlier weights and without the second
+network. The current default (phase-7 weights, with the Community Forensics
+second opinion on photos whose first score is uncertain) has no blind
+batch yet. On batch 9 (13,475 AI and 11,486 real photos, read in research
+before the shipped calibration was fitted, so not a blind test) it scores
+precision 0.990 and recall 0.933 with 1.2% of real photos flagged, against
+0.952, 0.841 and 4.9% for Community Forensics and 0.838, 0.488 and 11.0%
+for the SwinV2 detector. On the batch 7 speed sample (2,096 photos, idle
+Apple GPU, five rounds) it runs at 300–364 photos/s, against 540–579
+without the second network and 284–298 for Community Forensics alone on
+this engine. Figures and caveats: the
+[README](../README.md#-results) and [DATA.md](DATA.md).
+
 Where Tintype is not ahead, or the comparison needs a qualifier:
 
 - **Older generators, set by set.** Batches 5 and 6 are mostly GANs, GLIDE

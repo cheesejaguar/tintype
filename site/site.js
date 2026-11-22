@@ -198,7 +198,7 @@ if (demo?.dataset.endpoint) {
       verdict.textContent = flagged ? 'Flagged: likely AI-generated' : 'Not flagged: likely real';
       verdict.classList.toggle('flagged', flagged);
       score.textContent = `Score ${data.score.toFixed(3)} · photos above 0.500 are flagged`;
-      explain.textContent = 'At this setting, Tintype flagged 1.2% of real photos and missed 10.3% of AI-generated ones in its blind benchmark. Resized, re-saved or screenshotted copies are harder to judge.';
+      explain.textContent = 'At this setting, Tintype flagged 1.2% of real photos and missed 6.7% of AI-generated ones on its ninth photo batch. Resized, re-saved or screenshotted copies are harder to judge.';
       result.hidden = false;
       say('');
     } else if (response.status === 429 && data?.error?.limit === 'global_daily') {
