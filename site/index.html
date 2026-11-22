@@ -169,11 +169,11 @@
           <dd>video recall at 1% false positives on 2,056 clips in blind batch 4. WaveRep reached 87.4%.</dd>
         </div>
         <div>
-          <dt>184–190/s</dt>
-          <dd>photos from start-up to last verdict on an Apple M6 GPU, timed on 3,176 photos. With <code>--no-photo-second-opinion</code>: 521–547.</dd>
+          <dt>300–364/s</dt>
+          <dd>photos from start-up to last verdict on an Apple M6 GPU, timed on 2,096 photos. Community Forensics alone on the same engine: 284–298. With <code>--no-photo-second-opinion</code>: 540–579.</dd>
         </div>
       </dl>
-      <p class="measurement-note">Tintype checks every photo with two networks: its own, and the Community Forensics network as a second opinion. The table leaves out one set of 6,990 photos from a collection Tintype trains on; there it found 74.2% of AI photos and flagged 0.14% of real ones.</p>
+      <p class="measurement-note">Tintype scores every photo with its own network and asks the Community Forensics network for a second opinion when it is unsure, on about a quarter of photos. The table leaves out one set of 6,990 photos from a collection Tintype trains on; there it found 74.2% of AI photos and flagged 0.14% of real ones.</p>
       <p class="measurement-note">The next three results were measured with the previous photo weights and have not been re-run.</p>
       <p class="measurement-note"><strong>73.1% vs. 23.7% recall at 1% false positives.</strong> Tintype and Community Forensics scored the same 2,038 images after both classes were re-encoded with the same JPEG settings. GPTTrace reached 76.7% on those JPEGs. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/EVIDENCE.md#ai-detector-arena-v01">See the external Arena comparison <span aria-hidden="true">↗</span></a></p>
       <p class="measurement-note">Matched-rate comparisons set the thresholds retrospectively on each batch. Default recall was 14.3% on the FaceForensics++ face-swap subset. On the distorted NTIRE 2026 public-test JPEGs, Tintype found 2.2% of generated images at 1% false positives. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/EVIDENCE.md#cvpr-2026-ntire-public-test">See the NTIRE comparison <span aria-hidden="true">↗</span></a> Use flags to prioritize review and corroborate them with other evidence. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/EVIDENCE.md">See the evidence and limitations <span aria-hidden="true">↗</span></a></p>
