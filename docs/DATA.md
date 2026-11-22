@@ -225,6 +225,46 @@ out for validation and calibration. What that rule gives each store and each
 generator family is measured under
 [What the training files are, and how often they are drawn](#what-the-training-files-are-and-how-often-they-are-drawn).
 
+### Phase 7 (8,000 steps) – the released photo weights
+
+Continued from the phase-6 weights (`--lr 2e-5 --warmup 300 --seed 1`, batch
+32, the released augmentation) on every store of phase 6 and:
+
+| Store | Source | Real | AI |
+|---|---|---|---|
+| `openfake3` | OpenFake (CC BY-NC 4.0): sub-shard `00001` of sixteen training groups, none read by an earlier phase | – | about 64 k |
+| `bgreal` | BG-REAL training split, 1,192 source groups: untouched photos and their plain re-encodes as real, two generated-background families as AI. Reconstruction controls are left out | 2.4 k | 2.4 k |
+
+422,612 training images after the three-percent hold-out. The retraining
+protocol, its arms and the choice of this one ("arm B") are recorded in the
+research notes of the retraining round; **the data plan that fetches these
+two stores is not in this repository yet**, so the weights cannot be
+reproduced from `tintype data` alone.
+
+**Calibration differs from `finalize`.** The evaluation-development images
+that `finalize` scores (`dev`, `benchmarks`, batches 1 to 5: 47,798 of the
+53,935 phase-6 calibration photos) were no longer on disk. The four photo
+profiles were instead fitted with `tintype calibrate`, at the usual targets
+(default 1.5%, strict and fast 0.5%, sensitive 5%, balanced over real
+sources of at least 100 items), on 34,477 photos: the three-percent
+validation split of all 18 training stores (11,425) and blind batch 7
+(23,052). Batch 7 is therefore calibration data for these weights and no
+longer a test of them. The early-exit schedule is the standard one,
+checked with `refit-exit` on the same photos (default profile: 1.41% of
+real photos flagged per source against 1.45% with every view).
+
+The photo weights' own video profile (used only when the video checkpoint
+is absent) was fitted at the usual 1% target on the 3,838 of the 5,644
+phase-6 calibration clips still on disk.
+
+**The photo second opinion** is stored as the band
+`-1000, 1000, 4.3, 0.94`: every photo is inside it, and the verdict is
+`4.3 × calibrated logit + Community Forensics logit > 0.94`. The weight is
+the research blend (raw logit + 0.3 × second logit) restated in calibrated
+logits; the threshold is the 1% false-positive point of batch 7.
+`detect`, `batch` and `serve` apply it by default with the bundled
+`models/commfor-384.safetensors`.
+
 ## How the evaluation was staged
 
 Each stage's sets were scored only after the decisions listed before it were
@@ -583,10 +623,11 @@ they mean for other uses.
 
 | File | Bytes | SHA-256 |
 |---|---|---|
-| models/tintype.safetensors | 86,678,036 | 9dcb21dc9800591ffd758a3c7ca6aa65fa5a9f09a223fecc952f34294ae9aeba |
-| models/tintype.json | 3,450 | bfe1366bcfec28d15fb9116cb96c721de52de91d6fa4d98b6da4ec7fe6e62709 |
+| models/tintype.safetensors | 86,678,036 | 1187032f067cba5543743109bf3cb0f0f6c10666d5f715715bfff5aec16c62d3 |
+| models/tintype.json | 3,454 | e8d12a17dc924b5641b91f2cfe7bb0aa3ba9a878c4acf3f9ec3fa31978e3b626 |
 | models/tintype-video.safetensors | 86,678,036 | 77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881 |
 | models/tintype-video.json | 2,161 | 673e9040d941125691bfb80cbcf130e8efe2fdbf26a08f0b947450c4abca4e9c |
+| models/commfor-384.safetensors | 87,262,324 | b89f36275f3bf5e2b040eee36597a8f19db051bff9a473a9cf7b2466284fb387 |
 
 `tintype verify-models` checks a checkout against these values, which are also
 in [src/integrity.rs](../src/integrity.rs); the `models` test fails if the files,

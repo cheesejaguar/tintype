@@ -953,7 +953,9 @@ def compare(items, opts, out):
 
 
 def shipped_bands():
-    band = json.loads((REPO / "models" / "tintype.json").read_text(encoding="utf-8"))["second_opinion"]
+    # The band of the phase-6 release, which the archived scores were made with;
+    # models/tintype.json now holds the phase-7 band.
+    band = {"lo": -7.0, "hi": 0.5, "weight": 0.5, "threshold": 0.0}
     shipped = (band["lo"], band["hi"], band["weight"], band["threshold"])
     return [("Shipped", shipped), ("Narrowed", (-3.0,) + shipped[1:])]
 

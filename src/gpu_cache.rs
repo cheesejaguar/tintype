@@ -12,6 +12,13 @@
 //! more than [`KEEP`] packages (each is the weights in the working
 //! precision and the compiled program, about 41 MB for the photo network).
 //!
+//! A package is read lazily: MPSGraph specialises a loaded network for its
+//! feed shape on the first run, from the files of the package. An entry
+//! must therefore stay on disk for as long as a process runs networks
+//! loaded from it. Every process that loads or writes an entry holds a
+//! shared lock on `<name>.lock` beside it until it exits, and eviction
+//! removes only entries it can lock exclusively.
+//!
 //! `TINTYPE_GPU_CACHE=0` turns the cache off; any other value is the
 //! directory to use instead of `~/Library/Caches/tintype/gpu`. When the
 //! cache cannot be read or written the engine is built as before.
@@ -25,12 +32,31 @@ use sha2::{Digest, Sha256};
 use crate::mps::{Executable, Precision};
 
 /// Packages kept, over all entries; the most recently used entry is always
-/// kept whole. A many-photo run of one network is an entry of three packages
-/// (batches of 16, 32 and 64) and a single photo one of one. Eight holds
-/// two networks' many-photo entries (the photo network and the second
-/// opinion's, say, which would otherwise evict each other on every run) and
-/// two single-photo ones, in about 330 MB.
+/// kept whole, and so is any entry a running process holds. A many-photo
+/// run is an entry of three packages (batches of 16, 32 and 64) for the
+/// photo network and another for the bundled second network, and a single
+/// photo is one package of each, so both kinds of run fit, in about 350 MB.
 pub const KEEP: usize = 8;
+
+/// The locks this process holds on the entries it has loaded or written,
+/// kept until it exits (the system releases them then, however it ends).
+static HELD: std::sync::Mutex<Vec<std::fs::File>> = std::sync::Mutex::new(Vec::new());
+
+fn lock_path(entry: &Path) -> PathBuf {
+    entry.with_extension("lock")
+}
+
+/// Take, and keep for the life of the process, a shared lock on `entry`.
+/// `false` when it cannot be had: the entry is being removed, or locks do
+/// not work here; the caller then leaves the entry alone.
+fn hold(entry: &Path) -> bool {
+    let Ok(file) = std::fs::File::options().create(true).append(true).open(lock_path(entry)) else { return false };
+    if file.try_lock_shared().is_err() {
+        return false;
+    }
+    HELD.lock().unwrap_or_else(|e| e.into_inner()).push(file);
+    true
+}
 
 /// Entries in the middle of being written are left alone for this long.
 const STALE_SECS: u64 = 3600;
@@ -107,6 +133,10 @@ impl Entry {
     /// The executables of a complete entry, smallest batch first.
     pub fn load(&self) -> Option<Vec<Executable>> {
         let ready = self.dir.join("ready");
+        // Before looking: from here on no process removes this entry.
+        if !ready.is_file() || !hold(&self.dir) {
+            return None;
+        }
         let sizes: Vec<usize> = std::fs::read_to_string(&ready).ok()?.split_whitespace().map(|s| s.parse().ok()).collect::<Option<_>>()?;
         if sizes.is_empty() || sizes.iter().any(|&b| !Self::package(&self.dir, b).is_dir()) {
             return None;
@@ -140,6 +170,11 @@ impl Entry {
             }
             let sizes: Vec<String> = exes.iter().map(|e| e.batch().to_string()).collect();
             std::fs::write(tmp.join("ready"), sizes.join(" ") + "\n")?;
+            // Held before the entry exists under its name, so that another
+            // process loading it at once shares the lock with this one.
+            if !hold(&self.dir) {
+                return Err(std::io::Error::other("entry is being removed"));
+            }
             std::fs::rename(&tmp, &self.dir)
         };
         if write().is_err() {
@@ -179,7 +214,18 @@ fn evict(root: &Path, keep: usize) {
         for (k, (_, packages, path)) in entries.into_iter().enumerate() {
             held += packages;
             if k > 0 && held > keep {
-                let _ = std::fs::remove_dir_all(path);
+                // Only an entry no running process holds: a loaded network
+                // still reads its package on the first run of each batch size.
+                let lock = lock_path(&path);
+                let free = std::fs::File::options().create(true).append(true).open(&lock).is_ok_and(|f| f.try_lock().is_ok() && {
+                    let _ = std::fs::remove_dir_all(&path);
+                    let _ = std::fs::remove_file(&lock);
+                    true
+                });
+                if !free {
+                    // It stays, and still counts towards the budget.
+                    continue;
+                }
             }
         }
     }
@@ -215,6 +261,36 @@ mod tests {
         evict(&root, 2);
         let left = std::fs::read_dir(&root).unwrap().flatten().filter(|e| e.file_name().len() == 32).count();
         assert_eq!(left, 1);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn eviction_leaves_an_entry_that_a_process_holds() {
+        let root = std::env::temp_dir().join(format!("tintype-gpu-cache-held-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let day = std::time::Duration::from_secs(86_400);
+        let now = SystemTime::now();
+        let name = |k: usize| format!("{k:032x}");
+        // Newest first, three packages each: the photo network's entry is the oldest.
+        for k in 0..3 {
+            let dir = root.join(name(k));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("ready"), "16 32 64\n").unwrap();
+            std::fs::File::options().append(true).open(dir.join("ready")).unwrap().set_modified(now - day * k as u32).unwrap();
+        }
+        // This process loaded the oldest one and has not run every batch size yet.
+        assert!(hold(&root.join(name(2))));
+        evict(&root, 3);
+        let mut left: Vec<String> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.len() == 32).collect();
+        left.sort();
+        // The middle one goes; the held one stays although it is the least recently used.
+        assert_eq!(left, [name(0), name(2)]);
+        assert!(!lock_path(&root.join(name(1))).exists());
+        // An entry that is being removed is not loaded.
+        let gone = root.join(name(1));
+        let evictor = std::fs::File::options().create(true).append(true).open(lock_path(&gone)).unwrap();
+        evictor.try_lock().unwrap();
+        assert!(!hold(&gone));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

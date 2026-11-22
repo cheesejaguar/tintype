@@ -8,6 +8,7 @@
 *.safetensors
 !/models/tintype.safetensors
 !/models/tintype-video.safetensors
+!/models/commfor-384.safetensors
 .DS_Store
 /dist
 /container-release

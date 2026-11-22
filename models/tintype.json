@@ -37,8 +37,8 @@
       }
     }
   ],
-  "logit_scale": 0.66400504,
-  "logit_bias": -1.1236415,
+  "logit_scale": 0.76889694,
+  "logit_bias": -0.8412322,
   "threshold": 0.5,
   "prefix": "",
   "video": {
@@ -80,8 +80,8 @@
         }
       }
     ],
-    "logit_scale": 0.8973258,
-    "logit_bias": -0.91026974
+    "logit_scale": 0.8931962,
+    "logit_bias": -0.9666783
   },
   "fast": {
     "views": [
@@ -98,8 +98,8 @@
         }
       }
     ],
-    "logit_scale": 0.37841684,
-    "logit_bias": -1.5882723
+    "logit_scale": 0.48517767,
+    "logit_bias": -1.684532
   },
   "sensitive": {
     "views": [
@@ -139,8 +139,8 @@
         }
       }
     ],
-    "logit_scale": 0.8863126,
-    "logit_bias": 0.68809325
+    "logit_scale": 0.93854576,
+    "logit_bias": 1.1561413
   },
   "strict": {
     "views": [
@@ -180,8 +180,8 @@
         }
       }
     ],
-    "logit_scale": 0.47940388,
-    "logit_bias": -1.6282945
+    "logit_scale": 0.6235317,
+    "logit_bias": -1.5507077
   },
   "early_exit": {
     "order": [
@@ -221,10 +221,10 @@
     ]
   },
   "second_opinion": {
-    "lo": -7.0,
-    "hi": 0.5,
-    "weight": 0.5,
-    "threshold": 0.0
+    "lo": -1000.0,
+    "hi": 1000.0,
+    "weight": 4.3,
+    "threshold": 0.94
   },
   "arch": ""
 }

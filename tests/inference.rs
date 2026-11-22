@@ -12,9 +12,9 @@ use tintype::detector::{Detector, Device};
 
 /// Per-view logits of the released photo model on the fixture, in view order,
 /// recorded on macOS (Apple Silicon) with the CPU engine.
-const EXPECTED_LOGITS: [f32; 6] = [-3.9661195, -3.9661195, -4.6595144, -4.8981724, -3.6314917, -3.6932852];
+const EXPECTED_LOGITS: [f32; 6] = [-4.109058, -4.109058, -4.8466735, -4.9816217, -3.7047207, -3.77847];
 /// The default profile's score (calibrated probability) for those logits.
-const EXPECTED_SCORE: f32 = 0.020435736;
+const EXPECTED_SCORE: f32 = 0.016097896;
 /// SHA-256 of the decoded fixture's pixels: if this fails, the fixture or the
 /// PNG decoder changed, not the model.
 const EXPECTED_PIXELS_SHA256: &str = "9e51a7a3dd80af0af7edd8a5184e99818bdd931339fa835c41ea65e2f5ad04d2";
