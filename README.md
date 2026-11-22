@@ -316,8 +316,9 @@ frame of every clip is looked at.
 **And one for photos, on by default.** The
 [Community Forensics](https://github.com/JeongsooP/Community-Forensics)
 384-pixel network (MIT) is bundled as `models/commfor-384.safetensors`:
-every photo the default profile scores is also scored by it, and the two
-scores are combined. `--no-photo-second-opinion` scores with Tintype's own
+a photo Tintype's own network is not sure about is also scored by it, and
+the two scores are combined (about a quarter of photos; the rest get the
+same verdict without it). `--no-photo-second-opinion` scores with Tintype's own
 network only; `--photo-second-opinion <weights>` names another copy.
 `detect`, `batch` and `serve` all blend, and all take
 `--no-photo-second-opinion`; `--fast`, `--strict`, `--sensitive` and turbo
@@ -619,7 +620,7 @@ tintype data confirm6
 tintype evaluate confirm6 --baselines
 
 # the photo second opinion
-tintype set-photo-second-opinion --band=-7,0.5,0.5,0   # the phase-6 band; phase 7 stores -1000,1000,4.3,0.94 (docs/DATA.md)
+tintype set-photo-second-opinion --band=-7,0.5,0.5,0   # the phase-6 band; phase 7 stores -4,4,4.3,0.94 (docs/DATA.md)
 tintype data confirm7
 tintype evaluate confirm7 --baselines
 

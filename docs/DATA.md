@@ -258,10 +258,18 @@ is absent) was fitted at the usual 1% target on the 3,838 of the 5,644
 phase-6 calibration clips still on disk.
 
 **The photo second opinion** is stored as the band
-`-1000, 1000, 4.3, 0.94`: every photo is inside it, and the verdict is
-`4.3 × calibrated logit + Community Forensics logit > 0.94`. The weight is
-the research blend (raw logit + 0.3 × second logit) restated in calibrated
-logits; the threshold is the 1% false-positive point of batch 7.
+`-4, 4, 4.3, 0.94`: a photo whose calibrated first-stage logit is between
+-4 and 4 gets the verdict
+`4.3 × calibrated logit + Community Forensics logit > 0.94`; outside the
+band the first stage decides alone and the second network is not run. The
+weight is the research blend (raw logit + 0.3 × second logit) restated in
+calibrated logits; the threshold is the 1% false-positive point of batch 7.
+The band was first stored as `-1000, 1000` (every photo blended). At ±4 the
+verdict is the same on all 53,259 photos of batches 8 and 9 (0 differences,
+scored with both), because a first-stage logit beyond ±4 outweighs any
+second logit seen there (largest magnitude 18.1), and about a quarter of
+photos reach the second network (25.4% and 26.2%). The reported score of a
+photo outside the band is the first stage's, not the blended one.
 `detect`, `batch` and `serve` apply it by default with the bundled
 `models/commfor-384.safetensors`.
 
@@ -624,7 +632,7 @@ they mean for other uses.
 | File | Bytes | SHA-256 |
 |---|---|---|
 | models/tintype.safetensors | 86,678,036 | 1187032f067cba5543743109bf3cb0f0f6c10666d5f715715bfff5aec16c62d3 |
-| models/tintype.json | 3,454 | e8d12a17dc924b5641b91f2cfe7bb0aa3ba9a878c4acf3f9ec3fa31978e3b626 |
+| models/tintype.json | 3,448 | 67f43f3a057f69081b59d60c756e3a5468bfdd28d2dfcc5c11de01ef835d2033 |
 | models/tintype-video.safetensors | 86,678,036 | 77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881 |
 | models/tintype-video.json | 2,161 | 673e9040d941125691bfb80cbcf130e8efe2fdbf26a08f0b947450c4abca4e9c |
 | models/commfor-384.safetensors | 87,262,324 | b89f36275f3bf5e2b040eee36597a8f19db051bff9a473a9cf7b2466284fb387 |
