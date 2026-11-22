@@ -34,6 +34,7 @@ mkdir "$output"
 tar -xzf "$archives/$binary" -C "$output" tintype LICENSE-MIT LICENSE-APACHE NOTICE.md
 tar -xzf "$archives/$models" -C "$output" \
     models/LICENSE.md models/tintype.json models/tintype.safetensors \
-    models/tintype-video.json models/tintype-video.safetensors
+    models/tintype-video.json models/tintype-video.safetensors \
+    models/commfor-384.safetensors
 chmod 755 "$output/tintype" "$output/models"
 chmod 644 "$output/"{LICENSE-MIT,LICENSE-APACHE,NOTICE.md} "$output/models/"*

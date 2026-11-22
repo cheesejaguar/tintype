@@ -241,14 +241,44 @@ impl PhotoSecondOpinion {
 /// probability)` for each of them that could be read, how many were asked
 /// about, and the time taken.
 pub fn photo_second_opinion(band: &PhotoSecondOpinion, weights2: &Path, paths: &[PathBuf], first: &[Option<f32>], device: Device, threads: usize) -> Result<(Vec<(usize, f32)>, usize, Timing)> {
-    let pick: Vec<usize> = (0..paths.len()).filter(|&i| first[i].is_some_and(|z| band.wanted(z))).collect();
-    if pick.is_empty() {
+    let wanted = first.iter().filter(|z| z.is_some_and(|z| band.wanted(z))).count();
+    if wanted == 0 {
         return Ok((Vec::new(), 0, Timing { images: 0, wall_s: 0.0, model_s: 0.0 }));
     }
-    let det = Detector::load(weights2, Some(ModelSpec::commfor(384)), 64.min(pick.len()), device)?;
+    let det = load_photo_second(weights2, 64.min(wanted), device)?;
+    Ok(photo_second_opinion_with(&det, band, paths, first, threads))
+}
+
+/// File name of the bundled Community Forensics 384 px network: the photo
+/// second opinion that `detect`, `batch` and `serve` give by default when it
+/// is installed beside the photo weights.
+pub const BUNDLED_PHOTO_SECOND: &str = "commfor-384.safetensors";
+
+/// The bundled second network beside `weights`, if it is there and the
+/// model's spec stores a band for it.
+pub fn bundled_photo_second(weights: &Path, spec: &ModelSpec) -> Option<PathBuf> {
+    spec.second_opinion?;
+    let path = weights.parent()?.join(BUNDLED_PHOTO_SECOND);
+    path.is_file().then_some(path)
+}
+
+/// The network of the photo second stage (Community Forensics, 384 px),
+/// loaded for batches of up to `batch` photos. A process that scores more
+/// than one chunk or request loads it once and passes it to
+/// [`photo_second_opinion_with`].
+pub fn load_photo_second(weights2: &Path, batch: usize, device: Device) -> Result<Detector> {
+    Detector::load(weights2, Some(ModelSpec::commfor(384)), batch.max(1), device)
+}
+
+/// [`photo_second_opinion`] with the second network already loaded.
+pub fn photo_second_opinion_with(det: &Detector, band: &PhotoSecondOpinion, paths: &[PathBuf], first: &[Option<f32>], threads: usize) -> (Vec<(usize, f32)>, usize, Timing) {
+    let pick: Vec<usize> = (0..paths.len()).filter(|&i| first[i].is_some_and(|z| band.wanted(z))).collect();
+    if pick.is_empty() {
+        return (Vec::new(), 0, Timing { images: 0, wall_s: 0.0, model_s: 0.0 });
+    }
     let (res, t) = det.score_files(&pick.iter().map(|&i| paths[i].clone()).collect::<Vec<_>>(), threads);
     let out = pick.iter().zip(res).filter_map(|(&i, r)| Some((i, band.probability(first[i]?, r?[0])))).collect();
-    Ok((out, pick.len(), t))
+    (out, pick.len(), t)
 }
 
 /// How clips are analysed: which frames, which views of each frame, and the

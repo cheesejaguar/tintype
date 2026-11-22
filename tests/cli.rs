@@ -17,9 +17,13 @@ fn tintype(args: &[&str]) -> Output {
     bin().args(args).current_dir(common::repo()).output().expect("running the tintype binary")
 }
 
+/// `detect` with the released photo weights alone. The bundled second
+/// network sits beside them in the repository and `detect` would use it by
+/// default; these tests are about the first stage, which is also what
+/// `batch`, `serve` and the scoring commands run.
 fn detect(files: &[&Path], extra: &[&str]) -> Output {
     let weights = common::photo_weights();
-    let mut args = vec!["detect", "--device", "cpu", "--weights", weights.to_str().unwrap()];
+    let mut args = vec!["detect", "--device", "cpu", "--no-photo-second-opinion", "--weights", weights.to_str().unwrap()];
     args.extend_from_slice(extra);
     args.extend(files.iter().map(|p| p.to_str().unwrap()));
     tintype(&args)
@@ -116,7 +120,7 @@ fn verify_models_accepts_the_released_files() {
     let o = tintype(&["verify-models"]);
     let out = stdout(&o);
     assert!(o.status.success(), "{out}{}", String::from_utf8_lossy(&o.stderr));
-    assert_eq!(out.lines().filter(|l| l.starts_with("ok ")).count(), 4, "{out}");
+    assert_eq!(out.lines().filter(|l| l.starts_with("ok ")).count(), 5, "{out}");
 }
 
 #[test]
@@ -215,6 +219,50 @@ fn an_empty_model_dir_variable_counts_as_unset() {
         .expect("running the tintype binary");
     assert!(o.status.success(), "status {:?}, stderr: {}", o.status, String::from_utf8_lossy(&o.stderr));
     assert_eq!(json_lines(&o).len(), 1);
+}
+
+#[test]
+fn detect_uses_the_bundled_photo_second_opinion_unless_told_not_to() {
+    let dir = common::scratch("cli-detect-bundled-second");
+    let photo = dir.join("photo.png");
+    common::write_fixture(&photo);
+    // A copy of the released photo model with the bundled second network beside it, as in an installed model directory.
+    let weights = dir.join("tintype.safetensors");
+    std::fs::copy(common::photo_weights(), &weights).unwrap();
+    std::fs::copy(common::photo_weights().with_extension("json"), weights.with_extension("json")).unwrap();
+    let base = ["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap(), photo.to_str().unwrap()];
+    // Without the second network beside the weights the first stage decides alone.
+    let o = tintype(&base);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(json_lines(&o)[0]["second_opinion"], false);
+    std::fs::copy(common::repo().join("models/commfor-384.safetensors"), dir.join("commfor-384.safetensors")).unwrap();
+    // With it, the released band takes in every photo.
+    let o = tintype(&base);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(json_lines(&o)[0]["second_opinion"], true);
+    let blended = json_lines(&o).remove(0);
+    // `batch` gives the same blended score, and has the same flag to leave it out.
+    let batch = |extra: &[&str]| {
+        let mut args = vec!["batch", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        args.push(photo.to_str().unwrap());
+        let o = tintype(&args);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        json_lines(&o).remove(0)
+    };
+    let row = batch(&[]);
+    assert_eq!(row["second_opinion"], true, "{row}");
+    assert!((score_of(&row).unwrap() - score_of(&blended).unwrap()).abs() < 1e-6, "{row} against {blended}");
+    assert_eq!(row["verdict"], blended["verdict"]);
+    assert_eq!(batch(&["--no-photo-second-opinion"])["second_opinion"], false);
+    // The flag and the other profiles leave it out.
+    for extra in ["--no-photo-second-opinion", "--strict", "--fast", "--sensitive"] {
+        let mut args = base.to_vec();
+        args.push(extra);
+        let o = tintype(&args);
+        assert!(o.status.success(), "{extra}: {}", String::from_utf8_lossy(&o.stderr));
+        assert_eq!(json_lines(&o)[0]["second_opinion"], false, "{extra}");
+    }
 }
 
 #[test]
@@ -682,7 +730,7 @@ fn refit_exit_checks_fits_and_never_writes_under_models() {
     let o = tintype(&["refit-exit", "--weights", w, "--profile", "photo,strict", "--report", report.to_str().unwrap(), "--target-fpr", "0.015,0.005", "--apply-out", decided.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = stdout(&o);
-    for want in ["stored schedule, order [2, 0, 1, 3, 4, 5], margins after N views (raw logits) 1: 6, 2: 3, 3: 2, 4: 1.5, 5: 1", "## photo, threshold 1.692 (raw logit), stored schedule", "## strict, threshold 3.39", "2000 items (1000 AI, 1000 real);", "verdicts that differ from every view:", "| every view |", "| early exit |", "| real:cam | 500 |", "| real:phone | 500 |", "Mean over real sources with at least 100 items:", "the calibration target is 1.50%", "the calibration target is 0.50%", "photo second-opinion band (-7, 0.5) in calibrated logits", "2000 items as photo decides them under the stored schedule"] {
+    for want in ["stored schedule, order [2, 0, 1, 3, 4, 5], margins after N views (raw logits) 1: 6, 2: 3, 3: 2, 4: 1.5, 5: 1", "## photo, threshold 1.094 (raw logit), stored schedule", "## strict, threshold 2.48", "2000 items (1000 AI, 1000 real);", "verdicts that differ from every view:", "| every view |", "| early exit |", "| real:cam | 500 |", "| real:phone | 500 |", "Mean over real sources with at least 100 items:", "the calibration target is 1.50%", "the calibration target is 0.50%", "photo second-opinion band (-1000, 1000) in calibrated logits", "2000 items as photo decides them under the stored schedule"] {
         assert!(out.contains(want), "missing `{want}` in:\n{out}");
     }
     // The applied file is a score file `report` reads: one row per item, the logits those looked at.
@@ -696,7 +744,7 @@ fn refit_exit_checks_fits_and_never_writes_under_models() {
     let o = tintype(&["refit-exit", "--weights", w, "--fit", fit.to_str().unwrap(), "--report", report.to_str().unwrap(), "--write"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = stdout(&o);
-    for want in ["fitted on 3000 items, pooled precision and recall within 0.001 of every view at photo: margins after N views 1: ", "## photo, threshold 1.692 (raw logit), fitted schedule", "wrote the fitted schedule to "] {
+    for want in ["fitted on 3000 items, pooled precision and recall within 0.001 of every view at photo: margins after N views 1: ", "## photo, threshold 1.094 (raw logit), fitted schedule", "wrote the fitted schedule to "] {
         assert!(out.contains(want), "missing `{want}` in:\n{out}");
     }
     assert!(!out.contains("NOTE: a file is both fitted on and reported on"), "{out}");
@@ -880,7 +928,7 @@ fn replay_pool_refits_each_pool_on_the_fit_file_and_reports_on_the_test_file() {
     let out = stdout(&o);
     for want in [
         "Fit items: 3000 (1500 AI, 1500 real) from 1 file(s). Target false-positive rate 1.50%, averaged over the 2 real sources with at least 100 items.",
-        "| shipped (mean, spec as is) | 2,0,1,3,4,5 | 1.692 | 0.664 | 6 / 3 / 2 / 1.5 / 1 |",
+        "| shipped (mean, spec as is) | 2,0,1,3,4,5 | 1.094 | 0.769 | 6 / 3 / 2 / 1.5 / 1 |",
         "| mean | 2,0,1,3,4,5 |",
         "| top 2 |",
         "| fitted weights ",
@@ -1171,7 +1219,7 @@ fn work_counters_go_to_standard_error_only_when_asked_for() {
     let png = dir.join("fixture.png");
     common::write_fixture(&png);
     let weights = common::photo_weights();
-    let args = ["detect", "--device", "cpu", "--all-views", "--json", "--weights", weights.to_str().unwrap(), png.to_str().unwrap()];
+    let args = ["detect", "--device", "cpu", "--no-photo-second-opinion", "--all-views", "--json", "--weights", weights.to_str().unwrap(), png.to_str().unwrap()];
     let run = |stats: Option<&str>| {
         let mut c = bin();
         c.args(args).current_dir(common::repo()).env_remove("TINTYPE_STATS");
@@ -1210,7 +1258,7 @@ fn a_photo_below_the_crop_size_is_scored_once_per_distinct_view_with_the_same_ou
     let weights = common::photo_weights();
     let run = |reuse: Option<&str>, extra: &[&str]| {
         let mut c = bin();
-        c.args(["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap()]).args(extra).arg(&png).current_dir(common::repo());
+        c.args(["detect", "--device", "cpu", "--no-photo-second-opinion", "--json", "--weights", weights.to_str().unwrap()]).args(extra).arg(&png).current_dir(common::repo());
         c.env("TINTYPE_STATS", "1").env_remove("TINTYPE_VIEW_REUSE");
         if let Some(v) = reuse {
             c.env("TINTYPE_VIEW_REUSE", v);
@@ -1311,7 +1359,7 @@ fn turbo_scores_photos_on_the_eight_bit_engine_and_says_so() {
     let clip = common::repo().join("tests/fixtures/video.mp4");
     let run = |extra: &[&str]| {
         let mut c = bin();
-        c.args(["detect", "--json", "--weights", weights.to_str().unwrap()]).args(extra).arg(&png).arg(&clip);
+        c.args(["detect", "--no-photo-second-opinion", "--json", "--weights", weights.to_str().unwrap()]).args(extra).arg(&png).arg(&clip);
         c.current_dir(common::repo()).env_remove("TINTYPE_INT8").env_remove("TINTYPE_INT8_SIMULATE");
         c.output().expect("running the tintype binary")
     };
@@ -1391,8 +1439,11 @@ fn the_demo_scores_one_real_photo_and_reports_its_limits() {
     assert_eq!(header("cache-control"), "no-store");
     let row: serde_json::Value = serde_json::from_reader(response.into_body().into_reader()).unwrap();
     // The same score the CLI gives this file.
-    let cli = detect(&[&common::repo().join("site/assets/demo.png")], &["--json"]);
+    // The server blends in the bundled second network, as `detect` does by default.
+    let cli = tintype(&["detect", "--device", "cpu", "--json", "--weights", common::photo_weights().to_str().unwrap(), common::repo().join("site/assets/demo.png").to_str().unwrap()]);
     let expected = &json_lines(&cli)[0];
+    assert_eq!(row["second_opinion"], true, "{row}");
+    assert_eq!(expected["second_opinion"], true, "{expected}");
     assert_eq!(row["name"], "photo.png");
     assert_eq!(row["verdict"], expected["verdict"]);
     assert!((row["score"].as_f64().unwrap() - score_of(expected).unwrap()).abs() < 1e-6, "{row} against {expected}");

@@ -7,4 +7,5 @@ binary=${2:-target/release/tintype}
 mkdir -p "$out"
 COPYFILE_DISABLE=1 tar -czf "$out/tintype-models.tar.gz" \
     models/LICENSE.md models/tintype.json models/tintype.safetensors \
-    models/tintype-video.json models/tintype-video.safetensors
+    models/tintype-video.json models/tintype-video.safetensors \
+    models/commfor-384.safetensors

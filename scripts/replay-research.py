@@ -83,7 +83,9 @@ def joint_set_wins(rows, samples, cutoff):
 
 
 def replay_cf():
-    band = json.loads((REPO / "models" / "tintype.json").read_text())["second_opinion"]
+    # The band of the phase-6 release, which the archived scores were made with;
+    # models/tintype.json now holds the phase-7 band.
+    band = {"lo": -7.0, "hi": 0.5, "weight": 0.5, "threshold": 0.0}
     narrow_band = dict(band, lo=-3)
     rows = read("confirm7-scores.tsv.gz")
     shipped, shipped_routes = cf_fusion(rows, band)
