@@ -78,11 +78,11 @@
         <div class="sample-results" aria-label="Recorded results on the sample, using the CPU">
           <div>
             <span>Default score · missed</span>
-            <strong>0.298</strong>
+            <strong>0.491</strong>
           </div>
           <div>
             <span>Sensitive score · flagged</span>
-            <strong>0.913</strong>
+            <strong>0.974</strong>
           </div>
         </div>
         <a class="sample-run" href="#sample">Reproduce this result <span aria-hidden="true">↓</span></a>
@@ -124,7 +124,7 @@
       <div class="benchmark-grid">
         <div class="section-intro">
           <h2 id="benchmark-heading">The benchmark.</h2>
-          <p>23,052 images across 30 sets in Tintype’s seventh blind photo batch. The table shows each detector at its shipped threshold.</p>
+          <p>24,961 photos across 27 sets in Tintype’s ninth photo batch. The table shows each detector at its shipped threshold. The batch was read in research before the current weights were calibrated, so it is not a blind test of them.</p>
           <a class="text-link" href="https://github.com/cheesejaguar/tintype/blob/main/docs/BENCHMARK.md">Read the methodology and per-set results <span aria-hidden="true">↗</span></a>
         </div>
         <table class="benchmark-table" aria-label="Photo benchmark results">
@@ -139,21 +139,21 @@
           <tbody>
             <tr class="tintype-row">
               <th scope="row">Tintype</th>
-              <td>98.8%</td>
-              <td>89.7%</td>
+              <td>99.0%</td>
+              <td>93.3%</td>
               <td>1.2%</td>
             </tr>
             <tr>
               <th scope="row">Community Forensics</th>
-              <td>94.5%</td>
-              <td>78.9%</td>
-              <td>5.2%</td>
+              <td>95.2%</td>
+              <td>84.1%</td>
+              <td>4.9%</td>
             </tr>
             <tr>
               <th scope="row">SwinV2 detector</th>
-              <td>84.1%</td>
-              <td>58.7%</td>
-              <td>12.7%</td>
+              <td>83.8%</td>
+              <td>48.8%</td>
+              <td>11.0%</td>
             </tr>
           </tbody>
         </table>
@@ -161,22 +161,24 @@
 
       <dl class="measurements">
         <div>
-          <dt>88.5%</dt>
-          <dd>photo recall at 1% false positives on batch 7. Community Forensics reached 63.1% and SwinV2 reached 33.8%.</dd>
+          <dt>92.3%</dt>
+          <dd>photo recall at 1% false positives on batch 9. Community Forensics reached 70.9% and SwinV2 reached 28.3%.</dd>
         </div>
         <div>
           <dt>96.1%</dt>
           <dd>video recall at 1% false positives on 2,056 clips in blind batch 4. WaveRep reached 87.4%.</dd>
         </div>
         <div>
-          <dt>563–593/s</dt>
-          <dd>photos from decode to verdict on an Apple M6 GPU, timed on 2,096 batch 7 images.</dd>
+          <dt>184–190/s</dt>
+          <dd>photos from start-up to last verdict on an Apple M6 GPU, timed on 3,176 photos. With <code>--no-photo-second-opinion</code>: 521–547.</dd>
         </div>
       </dl>
+      <p class="measurement-note">Tintype checks every photo with two networks: its own, and the Community Forensics network as a second opinion. The table leaves out one set of 6,990 photos from a collection Tintype trains on; there it found 74.2% of AI photos and flagged 0.14% of real ones.</p>
+      <p class="measurement-note">The next three results were measured with the previous photo weights and have not been re-run.</p>
       <p class="measurement-note"><strong>73.1% vs. 23.7% recall at 1% false positives.</strong> Tintype and Community Forensics scored the same 2,038 images after both classes were re-encoded with the same JPEG settings. GPTTrace reached 76.7% on those JPEGs. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/EVIDENCE.md#ai-detector-arena-v01">See the external Arena comparison <span aria-hidden="true">↗</span></a></p>
       <p class="measurement-note">Matched-rate comparisons set the thresholds retrospectively on each batch. Default recall was 14.3% on the FaceForensics++ face-swap subset. On the distorted NTIRE 2026 public-test JPEGs, Tintype found 2.2% of generated images at 1% false positives. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/EVIDENCE.md#cvpr-2026-ntire-public-test">See the NTIRE comparison <span aria-hidden="true">↗</span></a> Use flags to prioritize review and corroborate them with other evidence. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/EVIDENCE.md">See the evidence and limitations <span aria-hidden="true">↗</span></a></p>
       <p class="measurement-note"><strong>94.8% recall, 0.35% of authentic photos flagged</strong> on 14,526 held-out originals that Tintype never trained on, at the shipped cutoff. On 4,800 copies put through JPEG, resizing, reposts, blur, noise and sharpening: 79.3% and 1.62%. Every authentic original there is a large camera JPEG and every generated one a small PNG, so the originals are the easy case. <a href="https://github.com/cheesejaguar/tintype/blob/main/docs/runbooks/frozen-eval.md#the-incumbent-on-the-split">See the held-out split <span aria-hidden="true">↗</span></a></p>
-      <p class="measurement-note">How often a flag is right depends on how common AI-generated files are in what you scan. If 1 in 100 is AI-generated, about 43% of default-profile flags are, at batch 7’s 89.7% recall and 1.2% false-positive rate.</p>
+      <p class="measurement-note">How often a flag is right depends on how common AI-generated files are in what you scan. If 1 in 100 is AI-generated, about 45% of default-profile flags are, at batch 9’s 93.3% recall and 1.2% false-positive rate.</p>
     </section>
 
     <section class="quickstart section-rule" id="quickstart" aria-labelledby="quickstart-heading">
