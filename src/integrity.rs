@@ -39,7 +39,7 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 /// retrained or recalibrated model changes these on purpose.
 pub const MODEL_FILES: [(&str, u64, &str); 5] = [
     ("models/tintype.safetensors", 86_678_036, "1187032f067cba5543743109bf3cb0f0f6c10666d5f715715bfff5aec16c62d3"),
-    ("models/tintype.json", 3_454, "e8d12a17dc924b5641b91f2cfe7bb0aa3ba9a878c4acf3f9ec3fa31978e3b626"),
+    ("models/tintype.json", 3_448, "67f43f3a057f69081b59d60c756e3a5468bfdd28d2dfcc5c11de01ef835d2033"),
     ("models/tintype-video.safetensors", 86_678_036, "77010f7cd733b23a73f269e275dd9c974f266b32e3c38e0e4d4a12e1723c4881"),
     ("models/tintype-video.json", 2_161, "673e9040d941125691bfb80cbcf130e8efe2fdbf26a08f0b947450c4abca4e9c"),
     // The Community Forensics 384 px checkpoint, unchanged: the photo second opinion of `detect`.

@@ -236,7 +236,9 @@ fn detect_uses_the_bundled_photo_second_opinion_unless_told_not_to() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(json_lines(&o)[0]["second_opinion"], false);
     std::fs::copy(common::repo().join("models/commfor-384.safetensors"), dir.join("commfor-384.safetensors")).unwrap();
-    // With it, the released band takes in every photo.
+    // The released band takes in only photos the first stage is unsure of; widen it on this copy so the fixture is inside.
+    let o = tintype(&["set-photo-second-opinion", "--weights", weights.to_str().unwrap(), "--band=-1000,1000,4.3,0.94"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let o = tintype(&base);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert_eq!(json_lines(&o)[0]["second_opinion"], true);
@@ -730,7 +732,7 @@ fn refit_exit_checks_fits_and_never_writes_under_models() {
     let o = tintype(&["refit-exit", "--weights", w, "--profile", "photo,strict", "--report", report.to_str().unwrap(), "--target-fpr", "0.015,0.005", "--apply-out", decided.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let out = stdout(&o);
-    for want in ["stored schedule, order [2, 0, 1, 3, 4, 5], margins after N views (raw logits) 1: 6, 2: 3, 3: 2, 4: 1.5, 5: 1", "## photo, threshold 1.094 (raw logit), stored schedule", "## strict, threshold 2.48", "2000 items (1000 AI, 1000 real);", "verdicts that differ from every view:", "| every view |", "| early exit |", "| real:cam | 500 |", "| real:phone | 500 |", "Mean over real sources with at least 100 items:", "the calibration target is 1.50%", "the calibration target is 0.50%", "photo second-opinion band (-1000, 1000) in calibrated logits", "2000 items as photo decides them under the stored schedule"] {
+    for want in ["stored schedule, order [2, 0, 1, 3, 4, 5], margins after N views (raw logits) 1: 6, 2: 3, 3: 2, 4: 1.5, 5: 1", "## photo, threshold 1.094 (raw logit), stored schedule", "## strict, threshold 2.48", "2000 items (1000 AI, 1000 real);", "verdicts that differ from every view:", "| every view |", "| early exit |", "| real:cam | 500 |", "| real:phone | 500 |", "Mean over real sources with at least 100 items:", "the calibration target is 1.50%", "the calibration target is 0.50%", "photo second-opinion band (-4, 4) in calibrated logits", "2000 items as photo decides them under the stored schedule"] {
         assert!(out.contains(want), "missing `{want}` in:\n{out}");
     }
     // The applied file is a score file `report` reads: one row per item, the logits those looked at.

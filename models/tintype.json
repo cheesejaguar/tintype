@@ -221,8 +221,8 @@
     ]
   },
   "second_opinion": {
-    "lo": -1000.0,
-    "hi": 1000.0,
+    "lo": -4.0,
+    "hi": 4.0,
     "weight": 4.3,
     "threshold": 0.94
   },
