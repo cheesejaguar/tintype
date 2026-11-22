@@ -36,15 +36,16 @@ pub struct Limits {
 /// until all three agree.
 ///
 /// `daily_total` is what a $25 monthly budget buys on the hosted demo, with
-/// a margin: costed at 0.75 s of a 2 vCPU, 1 GiB Cloud Run instance per
-/// photo (a photo that needs all six views), or $0.0000383, it is about
-/// 21,500 photos a day. A mix of photos measured 0.23 s on average
+/// a margin: costed at 1.6 s of a 2 vCPU, 1 GiB Cloud Run instance per
+/// photo (a photo that needs all six views and the second opinion), or
+/// $0.0000812, it is about 10,200 photos a day. Photos that skip the second
+/// opinion measured about 0.17 s, and those that take it 0.74 to 1.55 s
 /// (docs/HOSTING.md).
 pub const LIMITS: Limits = Limits {
     short: 5,
     short_window_s: 600,
     daily_per_ip: 20,
-    daily_total: 20_000,
+    daily_total: 10_000,
     max_bytes: 10_000_000,
 };
 

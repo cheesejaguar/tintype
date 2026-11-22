@@ -269,21 +269,23 @@ The demo's daily cap across all visitors (`daily_total` in `src/demo.rs`) is
 set from the $25 monthly budget. The arithmetic, with Tier 1 request-based
 prices:
 
-- **Time per photo.** Measured on 2026-11-17 from the `Server-Timing`
-  header, on 15 photos from small images to 22 MP camera JPEGs, a 2 vCPU
-  instance with `RAYON_NUM_THREADS=2` spends 0.23 s on a photo on average
-  (median 0.14 s). A photo that needs five views took 0.65 s. Cloud Run
-  bills each request's time rounded up to 100 ms: 0.29 s on average here.
-- **The figure the cap uses.** The cap is costed at 0.75 s per photo, what
-  a photo that needs all six views takes, so a day of hard photos stays
-  inside the budget.
-- **Cost per photo.** 0.75 s × (2 × $0.000024 + $0.0000025), plus
-  $0.0000004 for the request, is about $0.0000383.
-- **What $25 buys.** $25 a month at that cost is about 653,000 photos, or
-  about 21,500 a day.
-- **The cap.** The cap is 20,000 a day. A full month at the cap costs about
-  $23 if every photo needs all six views, and about $9 at the measured
-  average.
+- **Time per photo.** Measured on 2026-11-22 from the `Server-Timing`
+  header on 20 photos of 43 kB to 2.2 MB, on a 2 vCPU instance with
+  `RAYON_NUM_THREADS=2` and the photo second opinion on (the default). The
+  eight photos decided by the first network alone took 0.16 to 0.18 s. The
+  nine that also went to the second network took 0.74 to 1.55 s; the
+  slowest needed all six views as well. About a quarter of benchmark
+  photos go to the second network, which puts an average photo near
+  0.4 s. Cloud Run bills each request's time rounded up to 100 ms.
+- **The figure the cap uses.** The cap is costed at 1.6 s per photo, what
+  a photo that needs all six views and the second network takes, so a day
+  of hard photos stays inside the budget.
+- **Cost per photo.** 1.6 s × (2 × $0.000024 + $0.0000025), plus
+  $0.0000004 for the request, is about $0.0000812.
+- **What $25 buys.** $25 a month at that cost is about 308,000 photos, or
+  about 10,200 a day.
+- **The cap.** The cap is 10,000 a day. A full month at the cap costs about
+  $24 if every photo is that slow, and about $6 at 0.4 s a photo.
 - **The free allowance.** The calculation ignores Cloud Run's free monthly
   allowance. That allowance is shared across the billing account, so it is
   extra margin rather than part of the budget.
@@ -306,7 +308,9 @@ curl -s -D - -o /dev/null -H "Origin: $SITE_ORIGIN" -F file=@site/assets/demo.pn
 ```
 
 What was measured on 2026-11-17 in us-central1, on the API with the same
-image, server time per photo:
+image, server time per photo. This was before the photo second opinion
+became the default: a photo that takes it now spends a further 0.6 to
+0.9 s in the second network (the site's sample photo: 1.4 to 1.5 s).
 
 | Setting | Site's sample photo (5 views) | 22 MP camera JPEG (1 view) |
 |---|---|---|

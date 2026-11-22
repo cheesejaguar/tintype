@@ -37,29 +37,52 @@ pub fn demo(options: DemoOptions) -> Result<()> {
         !spec.views.is_empty(),
         "photo model must declare at least one view"
     );
-    let image = tintype::image_io::decode(include_bytes!("../site/assets/demo.png"))?;
-    let detector = Detector::load(
-        &weights,
-        Some(spec.clone()),
-        spec.views.len(),
-        super::parse_device(&options.device)?,
-    )?;
-    let results = detector.score_images(&[image]);
+    let bytes = include_bytes!("../site/assets/demo.png");
+    let image = tintype::image_io::decode(bytes)?;
+    let device = super::parse_device(&options.device)?;
+    let det = Detector::load(&weights, Some(spec.clone()), spec.views.len(), device)?;
+    let results = det.score_images(&[image]);
     let views = &results[0];
     let evaluated;
-    let logits = if let Some(exit) = spec.early_exit.filter(|exit| exit.covers(views.len())) {
-        evaluated = exit.looked_at(views, detector.threshold_logit());
+    let logits = if let Some(exit) = spec.early_exit.clone().filter(|exit| exit.covers(views.len())) {
+        evaluated = exit.looked_at(views, det.threshold_logit());
         &evaluated
     } else {
         views
     };
     let mut row = Row::empty(Path::new("demo.png"), "image", profile.name());
     row.set_score(
-        detector.probability(logits),
+        det.probability(logits),
         mean(logits),
-        detector.threshold_logit(),
+        det.threshold_logit(),
     );
     row.views = Some(logits.len());
+    // The same second opinion `detect` gives, in the default profile only:
+    // the bundled network, when the first score is inside the model's band.
+    // It reads files, so the sample goes through a temporary one.
+    let second = spec
+        .second_opinion
+        .filter(|_| matches!(profile, Profile::Default))
+        .zip(detector::bundled_photo_second(&weights, &spec));
+    if let Some((band, weights2)) = second {
+        let first = det.calibrated_logit(logits);
+        if band.wanted(first) {
+            let dir = std::env::temp_dir().join(format!("tintype-demo-{}", std::process::id()));
+            std::fs::create_dir_all(&dir)?;
+            let path = dir.join("demo.png");
+            let scored = std::fs::write(&path, bytes).map_err(anyhow::Error::from).and_then(|()| {
+                detector::photo_second_opinion(&band, &weights2, &[path], &[Some(first)], device, 1)
+            });
+            let _ = std::fs::remove_dir_all(&dir);
+            for (_, score) in scored?.0 {
+                if score.is_finite() {
+                    row.score = Some(score);
+                    row.calibrated = review::logit_of(score);
+                    row.second_opinion = true;
+                }
+            }
+        }
+    }
     ensure!(
         row.score.is_some(),
         "the demo model returned a non-finite score"
