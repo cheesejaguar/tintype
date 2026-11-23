@@ -706,10 +706,15 @@ What was measured, with the rule applied to the default decision:
 | | default or edit check | 98.41% | 65.54% | 1.06% | 37.2% |
 | Semi-Truths-Evalset, 5,000 + 5,550 | default | 99.38% | 75.21% | 0.52% | |
 | | arm L2 fused, without and with the edit check | 99.52% / 99.50% | 74.49% / 74.77% | 0.40% / 0.42% | |
+| MagicBrush, 2,567 COCO + 5,041 DALL·E 2 edits | default | 99.06% | 23.05% | 0.43% | |
+| | default or edit check | 98.35% | 23.61% | 0.78% | |
 
 Limits. The gain is on edits made with the Stable Diffusion family OpenSDI
 uses; on Semi-Truths the edit model adds 0.3 points, and Flux.1 edits are
-found 11 to 14% of the time. Authentic photos flagged rise by about 0.6
+found 11 to 14% of the time. On MagicBrush (DALL·E 2 edits, a third source
+the model had not seen) it adds 0.6 points of recall for 0.35 points more
+authentic photos flagged, and every detector measured finds under a quarter
+of the edits. So the gain is confirmed on OpenSDI-style edits only. Authentic photos flagged rise by about 0.6
 points on the OpenSDI draw. The Semi-Truths rows were read with a research
 arm, not the shipped default, as the base decision. The check runs a second
 ViT-B on every photo. In the runtime, `tintype batch --json` over the 10,000
