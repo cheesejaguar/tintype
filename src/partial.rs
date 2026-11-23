@@ -131,7 +131,7 @@ pub fn view_box(v: ViewSpec, w: u32, h: u32, rich: &[(i64, i64)]) -> (String, Re
             let pos = |full: u32, f: u32| ((full as i64 * f as i64 / 1000) - crop as i64 / 2).clamp(0, (full - crop) as i64) as u32;
             (name, Rect { x: pos(w, fx), y: pos(h, fy), w: crop, h: crop })
         }
-        ViewSpec::SquashPillow { .. } | ViewSpec::CenterPad { .. } => ("view".into(), Rect { x: 0, y: 0, w, h }),
+        ViewSpec::SquashPillow { .. } | ViewSpec::ShortPillowBicubic { .. } | ViewSpec::CenterPad { .. } => ("view".into(), Rect { x: 0, y: 0, w, h }),
     }
 }
 

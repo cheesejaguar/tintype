@@ -294,6 +294,18 @@ impl Rgb {
         Rgb { w, h, data: out }
     }
 
+    /// Shorter side to `size` with Pillow's bicubic filter, then the centre
+    /// `size` square. Sizes follow the edit model's training code:
+    /// `max(size, round(side * size / short))` with Python's rounding (ties
+    /// to even), and the crop origin is `(side - size) // 2`.
+    pub fn short_pillow_bicubic(&self, size: u32) -> Rgb {
+        let scale = size as f64 / self.w.min(self.h) as f64;
+        let side = |v: u32| ((v as f64 * scale).round_ties_even() as u32).max(size);
+        let (w, h) = (side(self.w), side(self.h));
+        let resized = if (w, h) == (self.w, self.h) { None } else { Some(self.resize_pillow(w, h, PillowFilter::Bicubic)) };
+        resized.as_ref().unwrap_or(self).crop(((w - size) / 2) as i64, ((h - size) / 2) as i64, size, size)
+    }
+
     /// torchvision `Resize(short)` on a PIL image (bilinear, aspect kept).
     pub fn resize_short_pillow(&self, short: u32) -> Rgb {
         let (w, h) = if self.w <= self.h {
@@ -668,6 +680,10 @@ pub enum View {
     FitPillow { resize: u32, crop: u32 },
     /// `PIL.Image.resize((size, size), BICUBIC)` (aspect ratio not kept).
     SquashPillow { size: u32 },
+    /// Shorter side to `size` with Pillow's bicubic filter (aspect kept, the
+    /// longer side rounded as Python's `round`), then the centre `size`
+    /// square with a floored origin: the edit model's training pipeline.
+    ShortPillowBicubic { size: u32 },
     /// Centre crop with zero padding and no resampling at all.
     CenterPad { crop: u32 },
     /// The `rank`-th most textured native-resolution window (0 = richest).
@@ -681,7 +697,7 @@ impl View {
         match self {
             View::Fit { crop, .. } | View::Native { crop } | View::NativeAt { crop, .. } | View::NativeRich { crop, .. } => crop,
             View::FitPillow { crop, .. } | View::CenterPad { crop } => crop,
-            View::SquashPillow { size } => size,
+            View::SquashPillow { size } | View::ShortPillowBicubic { size } => size,
         }
     }
 
@@ -725,6 +741,7 @@ impl View {
             View::Fit { resize, crop } => resized(resize, crop),
             View::FitPillow { resize, crop } => Pixels::FitPillow { resize, crop },
             View::SquashPillow { size } => Pixels::SquashPillow { size },
+            View::ShortPillowBicubic { size } => Pixels::ShortPillowBicubic { size },
             View::CenterPad { crop } => {
                 let (x, y) = img.center_origin_torchvision(crop);
                 Pixels::Window { x, y, size: crop }
@@ -768,6 +785,8 @@ pub enum Pixels {
     FitPillow { resize: u32, crop: u32 },
     /// `PIL.Image.resize((size, size), BICUBIC)`.
     SquashPillow { size: u32 },
+    /// Shorter side to `size` (Pillow bicubic), then the centre `size` square.
+    ShortPillowBicubic { size: u32 },
 }
 
 impl Pixels {
@@ -780,6 +799,7 @@ impl Pixels {
             Pixels::Resized { short, size } => img.resize_short(short, Filter::Bilinear).center_crop(size),
             Pixels::FitPillow { resize, crop } => img.resize_short_pillow(resize).center_crop_torchvision(crop),
             Pixels::SquashPillow { size } => img.resize_pillow(size, size, PillowFilter::Bicubic),
+            Pixels::ShortPillowBicubic { size } => img.short_pillow_bicubic(size),
         };
         crate::stats::VIEWS_TIME.since(start);
         out
@@ -961,6 +981,7 @@ mod tests {
             View::Fit { resize, crop } => img.resize_short(resize, Filter::Bilinear).center_crop(crop),
             View::FitPillow { resize, crop } => img.resize_short_pillow(resize).center_crop_torchvision(crop),
             View::SquashPillow { size } => img.resize_pillow(size, size, PillowFilter::Bicubic),
+            View::ShortPillowBicubic { size } => img.short_pillow_bicubic(size),
             View::CenterPad { crop } => img.center_crop_torchvision(crop),
             View::Native { crop } => {
                 if img.w.min(img.h) < crop {
@@ -988,7 +1009,7 @@ mod tests {
         let mut v = vec![View::Fit { resize: 256, crop: 224 }, View::Native { crop: 224 }];
         v.extend((0..4).map(|rank| View::NativeRich { crop: 224, rank }));
         v.extend([(280, 280), (500, 500), (720, 720), (1000, 0)].map(|(fx, fy)| View::NativeAt { crop: 224, fx, fy }));
-        v.extend([View::Fit { resize: 224, crop: 224 }, View::FitPillow { resize: 256, crop: 224 }, View::SquashPillow { size: 224 }, View::CenterPad { crop: 224 }]);
+        v.extend([View::Fit { resize: 224, crop: 224 }, View::FitPillow { resize: 256, crop: 224 }, View::SquashPillow { size: 224 }, View::ShortPillowBicubic { size: 224 }, View::CenterPad { crop: 224 }]);
         v
     }
 
@@ -1076,6 +1097,29 @@ mod tests {
         let c = gradient(10, 10).center_crop_torchvision(16);
         assert_eq!(&c.data[..3], &[0, 0, 0]);
         assert_eq!(c.data[(3 * 16 + 3) * 3 + 2], 0);
+    }
+
+    /// The edit model's view against Pillow itself: weighted byte sums of
+    /// `resize(BICUBIC)` + centre crop computed with Pillow 13 on the same
+    /// synthetic images (short side larger, equal and smaller than 224, odd
+    /// crop margins, and a `round` tie).
+    #[test]
+    fn short_pillow_bicubic_matches_pillow() {
+        let expected: [((u32, u32), u64); 8] = [((300, 200), 2417198948), ((200, 300), 2418871654), ((224, 224), 2419823239), ((225, 300), 2422807372), ((1000, 333), 2421300421), ((624, 416), 2423270018), ((100, 160), 2417782400), ((513, 224), 2417172167)];
+        for ((w, h), sum) in expected {
+            let mut img = Rgb { w, h, data: vec![0; (w * h * 3) as usize] };
+            for y in 0..h {
+                for x in 0..w {
+                    for c in 0..3 {
+                        img.data[((y * w + x) * 3 + c) as usize] = ((x * 7 + y * 13 + c * 29 + x * y) % 256) as u8;
+                    }
+                }
+            }
+            let v = View::ShortPillowBicubic { size: 224 }.apply(&img);
+            assert_eq!((v.w, v.h), (224, 224));
+            let got: u64 = v.data.iter().enumerate().map(|(i, &b)| b as u64 * (i as u64 % 251 + 1)).sum();
+            assert_eq!(got, sum, "{w}x{h}");
+        }
     }
 
     #[test]

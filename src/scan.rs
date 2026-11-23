@@ -144,6 +144,13 @@ pub struct ScanOptions {
     /// VNNI). Videos keep the standard engine.
     #[arg(long, conflicts_with = "device")]
     turbo: bool,
+    /// Opt-in check for locally edited photos: weights of the edit model
+    /// (not bundled). A photo is flagged when the usual decision flags it or
+    /// the edit model's logit is above its fixed cutoff. Runs a second
+    /// network on every photo; Apple GPU only. Finds more inpainted and
+    /// partly regenerated photos and flags more authentic ones.
+    #[arg(long, value_name = "WEIGHTS", conflicts_with = "turbo")]
+    edit_check: Option<PathBuf>,
     #[command(flatten)]
     review: ReviewArgs,
 }
@@ -243,6 +250,8 @@ struct Scan {
     photo_second_bundled: bool,
     /// The second network, kept between the chunks of `batch`.
     photo_second_det: Option<Detector>,
+    /// The edit model of `--edit-check`, kept between the chunks of `batch`.
+    edit_det: Option<Detector>,
     video_second: Option<PathBuf>,
 }
 
@@ -271,6 +280,10 @@ impl Scan {
             "--coverage reports the primary model window by window and cannot be combined with --second-opinion"
         );
         let device = super::parse_device(&options.device)?;
+        ensure!(
+            options.edit_check.is_none() || !device.is_cpu(),
+            "--edit-check runs on the Apple GPU engine only"
+        );
         let photo_device = if options.turbo { Device::CpuInt8 } else { device };
         if options.turbo && !device.is_cpu() {
             eprintln!("note: turbo runs photos on the eight-bit CPU engine; on this Mac the default GPU engine is faster");
@@ -290,6 +303,7 @@ impl Scan {
             photo_second,
             photo_second_bundled: false,
             photo_second_det: None,
+            edit_det: None,
             video_second,
         })
     }
@@ -395,6 +409,23 @@ impl Scan {
                     rows[i].score = Some(score);
                     rows[i].calibrated = review::logit_of(score);
                     rows[i].second_opinion = true;
+                }
+            }
+        }
+        if let Some(weights) = self.options.edit_check.clone() {
+            if !warm {
+                // One chunk only: make room for the edit network.
+                self.photo = None;
+                self.photo_second_det = None;
+            }
+            if self.edit_det.is_none() {
+                let batch = if warm { 64 } else { 64.min(paths.len()) };
+                self.edit_det = Some(detector::load_edit_check(&weights, batch, self.device)?);
+            }
+            let edit = self.edit_det.as_ref().unwrap();
+            for (row, logit) in rows.iter_mut().zip(detector::edit_check_with(edit, paths, threads).0) {
+                if row.score.is_some() {
+                    row.edit_logit = logit.filter(|l| l.is_finite());
                 }
             }
         }
@@ -818,6 +849,9 @@ struct Row {
     threshold_logit: Option<f32>,
     profile: &'static str,
     second_opinion: bool,
+    /// Logit of the edit model (`--edit-check`); above the cutoff it makes
+    /// the verdict AI-generated whatever the score says.
+    edit_logit: Option<f32>,
     /// Scored in turbo mode (adds `"mode": "turbo"` to JSON output).
     turbo: bool,
     views: Option<usize>,
@@ -843,6 +877,7 @@ impl Row {
             threshold_logit: None,
             profile,
             second_opinion: false,
+            edit_logit: None,
             turbo: false,
             views: None,
             coverage: None,
@@ -885,9 +920,10 @@ impl Row {
             }
             return Ok(());
         };
+        let edit_flagged = self.edit_logit.is_some_and(|l| l > detector::EDIT_CHECK_CUTOFF);
         let (verdict, label) = match self.coverage {
             Some(c) if !c.complete => ("inconclusive", "INCONCLUSIVE"),
-            _ if score > 0.5 => ("ai-generated", "AI-GENERATED"),
+            _ if score > 0.5 || edit_flagged => ("ai-generated", "AI-GENERATED"),
             _ => ("likely-real", "likely real"),
         };
         if json {
@@ -904,6 +940,11 @@ impl Row {
             }
             if let Some(views) = self.views {
                 object["views"] = views.into();
+            }
+            if let Some(logit) = self.edit_logit {
+                object["edit_logit"] = logit.into();
+                object["edit_cutoff"] = detector::EDIT_CHECK_CUTOFF.into();
+                object["edit_flagged"] = edit_flagged.into();
             }
             if let Some(c) = self.coverage {
                 object["frames"] = c.frames.into();
@@ -952,6 +993,9 @@ impl Row {
                     c.frames, c.frames_expected
                 )?;
             }
+        }
+        if edit_flagged {
+            write!(out, "  [edit check: {:.2}]", self.edit_logit.unwrap_or(f32::NAN))?;
         }
         if let Some(Some(reason)) = self.review {
             write!(out, "  [needs review: {}]", reason.name().replace('_', " "))?;

@@ -22,6 +22,7 @@ pub enum ViewSpec {
     NativeRich { crop: u32, rank: u32 },
     FitPillow { resize: u32, crop: u32 },
     SquashPillow { size: u32 },
+    ShortPillowBicubic { size: u32 },
     CenterPad { crop: u32 },
 }
 
@@ -34,6 +35,7 @@ impl From<ViewSpec> for View {
             ViewSpec::NativeRich { crop, rank } => View::NativeRich { crop, rank },
             ViewSpec::FitPillow { resize, crop } => View::FitPillow { resize, crop },
             ViewSpec::SquashPillow { size } => View::SquashPillow { size },
+            ViewSpec::ShortPillowBicubic { size } => View::ShortPillowBicubic { size },
             ViewSpec::CenterPad { crop } => View::CenterPad { crop },
         }
     }
@@ -270,6 +272,24 @@ pub fn load_photo_second(weights2: &Path, batch: usize, device: Device) -> Resul
     Detector::load(weights2, Some(ModelSpec::commfor(384)), batch.max(1), device)
 }
 
+/// Cutoff of the local-edit check, on the edit model's logit. Frozen on
+/// development data before the blind reads (research `EDIT-HEAD.md`): a
+/// photo is flagged when the usual decision flags it or this logit is
+/// above the cutoff.
+pub const EDIT_CHECK_CUTOFF: f32 = 3.2845;
+
+/// The local-edit network (see [`ModelSpec::edit_check`]), loaded for
+/// batches of up to `batch` photos.
+pub fn load_edit_check(weights: &Path, batch: usize, device: Device) -> Result<Detector> {
+    Detector::load(weights, Some(ModelSpec::edit_check()), batch.max(1), device)
+}
+
+/// The edit model's logit for each photo that could be read.
+pub fn edit_check_with(det: &Detector, paths: &[PathBuf], threads: usize) -> (Vec<Option<f32>>, Timing) {
+    let (res, t) = det.score_files(paths, threads);
+    (res.into_iter().map(|r| r.map(|l| l[0])).collect(), t)
+}
+
 /// [`photo_second_opinion`] with the second network already loaded.
 pub fn photo_second_opinion_with(det: &Detector, band: &PhotoSecondOpinion, paths: &[PathBuf], first: &[Option<f32>], threads: usize) -> (Vec<(usize, f32)>, usize, Timing) {
     let pick: Vec<usize> = (0..paths.len()).filter(|&i| first[i].is_some_and(|z| band.wanted(z))).collect();
@@ -417,6 +437,13 @@ impl ModelSpec {
             arch: "vit_base_patch14_reg4_dinov2".into(),
             uncalibrated: None,
         }
+    }
+
+    /// The local-edit model (`--edit-check`): a DINOv2 ViT-B/14 with
+    /// registers at 224 px, one logit, on the shorter side resized to 224
+    /// with Pillow's bicubic filter and centre-cropped.
+    pub fn edit_check() -> Self {
+        Self { img: 224, views: vec![ViewSpec::ShortPillowBicubic { size: 224 }], prefix: String::new(), arch: "vit_base_patch14_reg4_dinov2".into(), ..Self::commfor(224) }
     }
 
     /// The Community Forensics baseline's own preprocessing.

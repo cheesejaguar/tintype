@@ -686,3 +686,37 @@ are not exercised: hosted runners have no GPU that the Apple GPU engine can use.
   Human-Animal-Cartoon, Kinetics, UCF101 and the gameplay set are clips of
   third-party footage gathered by their curators; they are used here only as
   examples of real video and are not redistributed.
+
+## Edit check
+
+`--edit-check <weights>` (opt-in, `detect` and `batch`, Apple GPU only) runs a
+second network trained to find locally edited photographs: a DINOv2 ViT-B/14
+with registers at 224 px, one logit, on the shorter side resized to 224 px
+with Pillow's bicubic filter and centre-cropped. A photo is flagged when the
+usual decision flags it or this logit is above 3.2845, a cutoff frozen on
+development data before the blind reads below. The weights are not part of
+this repository or of a release; the flag takes the path of a file converted
+from the research checkpoint.
+
+What was measured, with the rule applied to the default decision:
+
+| Blind batch | Rule | Precision | Recall | Authentic flagged | Locally edited found |
+|---|---|---|---|---|---|
+| Fresh OpenSDI draw, 5,000 + 5,000 | default | 99.18% | 50.74% | 0.42% | 8.0% |
+| | default or edit check | 98.41% | 65.54% | 1.06% | 37.2% |
+| Semi-Truths-Evalset, 5,000 + 5,550 | default | 99.38% | 75.21% | 0.52% | |
+| | arm L2 fused, without and with the edit check | 99.52% / 99.50% | 74.49% / 74.77% | 0.40% / 0.42% | |
+
+Limits. The gain is on edits made with the Stable Diffusion family OpenSDI
+uses; on Semi-Truths the edit model adds 0.3 points, and Flux.1 edits are
+found 11 to 14% of the time. Authentic photos flagged rise by about 0.6
+points on the OpenSDI draw. The Semi-Truths rows were read with a research
+arm, not the shipped default, as the base decision. The check runs a second
+ViT-B on every photo. In the runtime, `tintype batch --json` over the 10,000
+photos of the OpenSDI draw on one Apple GPU, three alternating rounds: 74,
+75 and 73 photos per second without the flag, 31, 32 and 32 with it (another
+job shared the machine, so both are lower bounds; the ratio is the result).
+Against the research scorer's full-precision scores, 27 of 10,000 edit
+decisions differ: the runtime runs half precision and decodes JPEG with its
+own decoder (PNG scores agree to 0.004 logit on average, JPEG to 0.08).
+It is off unless asked for.
