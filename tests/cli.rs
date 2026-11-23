@@ -1452,3 +1452,21 @@ fn the_demo_scores_one_real_photo_and_reports_its_limits() {
     child.kill().unwrap();
     child.wait().unwrap();
 }
+
+/// `--edit-check` names a second network that only the Apple GPU engine
+/// runs, and it cannot be combined with turbo: both are refused before any
+/// file is read, with a message that says why.
+#[test]
+fn edit_check_is_refused_on_the_cpu_engine_and_with_turbo() {
+    let dir = common::scratch("edit-check");
+    let png = dir.join("a.png");
+    common::write_fixture(&png);
+    let weights = common::photo_weights();
+    let base = ["detect", "--json", "--weights", weights.to_str().unwrap(), "--edit-check", "missing-edit-model.safetensors"];
+    let cpu = bin().args(base).args(["--device", "cpu"]).arg(&png).current_dir(common::repo()).output().unwrap();
+    assert!(!cpu.status.success());
+    assert!(String::from_utf8_lossy(&cpu.stderr).contains("--edit-check runs on the Apple GPU engine only"), "{}", String::from_utf8_lossy(&cpu.stderr));
+    let turbo = bin().args(base).arg("--turbo").arg(&png).current_dir(common::repo()).output().unwrap();
+    assert!(!turbo.status.success());
+    assert!(String::from_utf8_lossy(&turbo.stderr).contains("cannot be used with"), "{}", String::from_utf8_lossy(&turbo.stderr));
+}
