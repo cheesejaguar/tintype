@@ -750,3 +750,62 @@ Against the research scorer's full-precision scores, 27 of 10,000 edit
 decisions differ: the runtime runs half precision and decodes JPEG with its
 own decoder (PNG scores agree to 0.004 logit on average, JPEG to 0.08).
 It is off unless asked for.
+
+## Face check
+
+`--face-check <weights> --face-finder-model <yunet.onnx>` (opt-in, `detect`
+and `batch`, photos only, off by default) looks for manipulated faces such
+as face swaps. For each photo that the usual decision (and the edit check,
+if it is on) has not flagged, it finds the largest face with YuNet on a copy
+of the photo with a long side of 640 px, cuts a square around that face from
+the photo at full size, and scores the square with a face model: a DINOv2
+ViT-B/14 with registers at 224 px, one logit. The photo is flagged when that
+logit is above 6.328. The score and logit of the usual decision are not
+changed; the check is reported beside them (see [API.md](API.md)). Photos
+with no face found, or with a face square under 32 px, are left as they
+were. Videos are not checked. It runs on the CPU engine and on the Apple
+GPU engine, whichever the run uses; the face finder always runs on the CPU.
+
+Neither file is part of this repository or of a release.
+
+- **The face model's weights are not distributed.** They are research
+  weights trained on FaceForensics++, Celeb-DF v2 and WildDeepfake; whether
+  and under what licence they can be distributed is undecided. Whoever uses
+  the flag supplies the file.
+- **The face finder** is `face_detection_yunet_2023mar.onnx` from the
+  [OpenCV Zoo](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet)
+  (MIT). Tintype reads that file with its own code; it does not need OpenCV
+  or an ONNX runtime.
+
+What was measured. **None of this is a blind whole-photo test.** The cutoff
+and the rule for the square were chosen on development data, and
+confirmation batch 9 had been read before.
+
+| Confirmation batch 9, without OpenFake (not blind) | Precision | Recall | Authentic flagged | Face-swap frames found, of 450 |
+|---|---|---|---|---|
+| default | 98.96% | 93.34% | 1.15% | 124 |
+| default or face check | 98.87% | 94.70% | 1.27% | 305 |
+
+Nearly all of the gain is on the face-swap frames: the face check alone
+finds 245 of the 450, and the default or the face check 305, against 124
+for the default alone. On other kinds of generated photo it adds little.
+
+The one blind figure is for the face model on face crops, not for the check
+on whole photos: on a separate blind set of DFDC face crops, at the same
+cutoff, the model flagged 0.12% of real faces and found about 12% of
+manipulated ones. So on face manipulations unlike those it was trained on
+it finds few.
+
+Limits. There is no blind test of the check on whole photos, so the table
+above is the upper end of what to expect. It flags more authentic photos
+(1.27% against 1.15% on batch 9). It costs speed: every photo not already
+flagged is decoded a second time and searched for a face, and each face
+found goes through a second ViT-B. On a loaded machine the stage alone ran
+at roughly 70 to 85% of the default's rate; there is no figure from a quiet
+machine yet. It looks at the largest face only. `serve` does not offer it.
+It is off unless asked for, and without the two flags nothing is loaded and
+the output is what it was.
+
+The experimental `tintype face-stage` and `tintype yunet-boxes` subcommands
+remain for measuring the stage against its PyTorch reference (and, on
+macOS, against Apple Vision as the face finder). They are research tools.

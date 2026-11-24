@@ -1032,7 +1032,8 @@ enum Cmd {
     /// engines against the PyTorch reference and for timing. With
     /// `--detect` the files are whole photos: the largest face is found
     /// (Apple Vision, macOS) and cut out first. Writes `path status logit
-    /// flagged [left top width height]`. Not used by `detect` or `serve`.
+    /// flagged [left top width height]`. The opt-in `--face-check` of
+    /// `detect` and `batch` is this stage with the YuNet finder.
     FaceStage {
         /// The face model's weights (timm state dict as safetensors).
         #[arg(long)]

@@ -4,7 +4,8 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use tintype::detector::{self, Detector, Device, ModelSpec};
 use tintype::review::{self, Reason, Review, ReviewArgs};
-use tintype::{ingest, video};
+use tintype::yunet::YuNet;
+use tintype::{face, ingest, video};
 
 const CHUNK: usize = 256;
 
@@ -158,6 +159,17 @@ pub struct ScanOptions {
     /// long.
     #[arg(long, value_name = "N", default_value_t = 1, value_parser = parse_edit_views, requires = "edit_check")]
     edit_views: usize,
+    /// Opt-in check for manipulated faces (face swaps): weights of the face
+    /// model (not bundled or distributed). In each photo the usual decision
+    /// does not flag, the largest face is found and scored, and the photo is
+    /// flagged when the face model's logit is above its fixed cutoff. Needs
+    /// `--face-finder-model`. Slower; the score is unchanged.
+    #[arg(long, value_name = "WEIGHTS", requires = "face_finder_model")]
+    face_check: Option<PathBuf>,
+    /// The face finder of `--face-check`: `face_detection_yunet_2023mar.onnx`
+    /// from the OpenCV Zoo (not bundled).
+    #[arg(long, value_name = "ONNX", requires = "face_check")]
+    face_finder_model: Option<PathBuf>,
     #[command(flatten)]
     review: ReviewArgs,
 }
@@ -267,6 +279,10 @@ struct Scan {
     photo_second_det: Option<Detector>,
     /// The edit model of `--edit-check`, kept between the chunks of `batch`.
     edit_det: Option<Detector>,
+    /// The face finder of `--face-check`, read when the scan starts.
+    face_finder: Option<YuNet>,
+    /// The face model of `--face-check`, kept between the chunks of `batch`.
+    face_det: Option<Detector>,
     video_second: Option<PathBuf>,
 }
 
@@ -299,6 +315,15 @@ impl Scan {
             options.edit_check.is_none() || !device.is_cpu(),
             "--edit-check runs on the Apple GPU engine only"
         );
+        // Both files of the face check are opened before any photo is read.
+        let face_finder = match (&options.face_check, &options.face_finder_model) {
+            (Some(weights), Some(finder)) => {
+                std::fs::File::open(weights).with_context(|| format!("--face-check: cannot read {}", weights.display()))?;
+                Some(YuNet::load(finder).context("--face-finder-model")?)
+            }
+            (None, None) => None,
+            _ => anyhow::bail!("--face-check and --face-finder-model are given together"),
+        };
         let photo_device = if options.turbo { Device::CpuInt8 } else { device };
         if options.turbo && !device.is_cpu() {
             eprintln!("note: turbo runs photos on the eight-bit CPU engine; on this Mac the default GPU engine is faster");
@@ -319,6 +344,8 @@ impl Scan {
             photo_second_bundled: false,
             photo_second_det: None,
             edit_det: None,
+            face_finder,
+            face_det: None,
             video_second,
         })
     }
@@ -442,6 +469,33 @@ impl Scan {
                 if row.score.is_some() {
                     row.edit_logit = logit.filter(|l| l.is_finite());
                     row.edit_views = self.options.edit_views;
+                }
+            }
+        }
+        if let (Some(weights), Some(finder)) = (self.options.face_check.clone(), self.face_finder.as_ref()) {
+            // Only photos nothing has flagged yet are looked at.
+            let pick: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].score.is_some() && !rows[i].flagged()).collect();
+            for row in rows.iter_mut().filter(|r| r.score.is_some()) {
+                row.face = Some(FaceCheck::Skipped);
+            }
+            if !pick.is_empty() {
+                if !warm {
+                    // One chunk only: make room for the face network.
+                    self.photo = None;
+                    self.photo_second_det = None;
+                    self.edit_det = None;
+                }
+                if self.face_det.is_none() {
+                    let batch = if warm { 64 } else { 64.min(pick.len()) };
+                    // The run's engine; faces have no eight-bit path, so an
+                    // explicit `cpu-int8` run scores them on the plain CPU engine.
+                    let device = if self.device == Device::CpuInt8 { Device::Cpu } else { self.device };
+                    self.face_det = Some(face::load(&weights, batch, device).with_context(|| format!("--face-check: loading {}", weights.display()))?);
+                }
+                let picked: Vec<PathBuf> = pick.iter().map(|&i| paths[i].clone()).collect();
+                let found = face::check(self.face_det.as_ref().unwrap(), finder, &picked, threads)?;
+                for (i, found) in pick.into_iter().zip(found) {
+                    rows[i].face = Some(FaceCheck::of(&found));
                 }
             }
         }
@@ -855,6 +909,57 @@ struct Covered {
     windows: Vec<Segment>,
 }
 
+/// What the face check (`--face-check`) made of one photo.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FaceCheck {
+    /// Already flagged by the usual decision or the edit check: not looked at.
+    Skipped,
+    /// No face was found.
+    NoFace,
+    /// The largest face's square is too small to score.
+    Small,
+    /// The photo could not be read again for the check.
+    Error,
+    /// The face model's logit on the largest face's square.
+    Scored(f32),
+}
+
+impl FaceCheck {
+    fn of(row: &face::Row) -> Self {
+        match (row.status, row.logit) {
+            ("ok", Some(logit)) if logit.is_finite() => Self::Scored(logit),
+            ("noface", _) => Self::NoFace,
+            ("small", _) => Self::Small,
+            _ => Self::Error,
+        }
+    }
+
+    fn flagged(self) -> bool {
+        matches!(self, Self::Scored(logit) if logit > face::FACE_CUTOFF)
+    }
+
+    /// `status` and `flagged` always; `found` and `cutoff` when the photo
+    /// was looked at; `logit` when a face was scored.
+    fn json(self) -> serde_json::Value {
+        let status = match self {
+            Self::Skipped => "skipped",
+            Self::NoFace => "no-face",
+            Self::Small => "too-small",
+            Self::Error => "error",
+            Self::Scored(_) => "scored",
+        };
+        let mut object = serde_json::json!({"status": status, "flagged": self.flagged()});
+        if !matches!(self, Self::Skipped | Self::Error) {
+            object["found"] = (!matches!(self, Self::NoFace)).into();
+            object["cutoff"] = face::FACE_CUTOFF.into();
+        }
+        if let Self::Scored(logit) = self {
+            object["logit"] = logit.into();
+        }
+        object
+    }
+}
+
 /// One file's result. When a second opinion contributes, the logit and
 /// threshold still describe the primary model and the score describes the blend.
 struct Row {
@@ -870,6 +975,10 @@ struct Row {
     edit_logit: Option<f32>,
     /// Views behind `edit_logit` (1 or 3); it picks the cutoff.
     edit_views: usize,
+    /// What the face check (`--face-check`) made of a photo; a face above
+    /// the cutoff makes the verdict AI-generated whatever the score says.
+    /// `None` without the flag: the output then has no face fields.
+    face: Option<FaceCheck>,
     /// Scored in turbo mode (adds `"mode": "turbo"` to JSON output).
     turbo: bool,
     views: Option<usize>,
@@ -897,6 +1006,7 @@ impl Row {
             second_opinion: false,
             edit_logit: None,
             edit_views: 1,
+            face: None,
             turbo: false,
             views: None,
             coverage: None,
@@ -924,6 +1034,17 @@ impl Row {
         }
     }
 
+    /// The edit check's logit is above the cutoff of its views.
+    fn edit_flagged(&self) -> bool {
+        self.edit_logit.is_some_and(|l| l > detector::edit_check_cutoff(self.edit_views))
+    }
+
+    /// Flagged by the usual decision or the edit check: the face check does
+    /// not look at such a photo.
+    fn flagged(&self) -> bool {
+        self.score.is_some_and(|s| s > 0.5) || self.edit_flagged()
+    }
+
     fn write(&self, out: &mut impl Write, json: bool) -> Result<()> {
         let path = self.path.to_string_lossy();
         let Some(score) = self.score else {
@@ -940,10 +1061,11 @@ impl Row {
             return Ok(());
         };
         let edit_cutoff = detector::edit_check_cutoff(self.edit_views);
-        let edit_flagged = self.edit_logit.is_some_and(|l| l > edit_cutoff);
+        let edit_flagged = self.edit_flagged();
+        let face_flagged = self.face.is_some_and(|f| f.flagged());
         let (verdict, label) = match self.coverage {
             Some(c) if !c.complete => ("inconclusive", "INCONCLUSIVE"),
-            _ if score > 0.5 || edit_flagged => ("ai-generated", "AI-GENERATED"),
+            _ if score > 0.5 || edit_flagged || face_flagged => ("ai-generated", "AI-GENERATED"),
             _ => ("likely-real", "likely real"),
         };
         if json {
@@ -966,6 +1088,9 @@ impl Row {
                 object["edit_cutoff"] = edit_cutoff.into();
                 object["edit_views"] = self.edit_views.into();
                 object["edit_flagged"] = edit_flagged.into();
+            }
+            if let Some(face) = self.face {
+                object["face_check"] = face.json();
             }
             if let Some(c) = self.coverage {
                 object["frames"] = c.frames.into();
@@ -1018,6 +1143,9 @@ impl Row {
         if edit_flagged {
             write!(out, "  [edit check: {:.2}]", self.edit_logit.unwrap_or(f32::NAN))?;
         }
+        if let Some(FaceCheck::Scored(logit)) = self.face.filter(|f| f.flagged()) {
+            write!(out, "  [face check: {logit:.2}]")?;
+        }
         if let Some(Some(reason)) = self.review {
             write!(out, "  [needs review: {}]", reason.name().replace('_', " "))?;
         }
@@ -1034,5 +1162,102 @@ impl Row {
         }
         writeln!(out)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn photo(score: f32) -> Row {
+        let mut row = Row::empty(Path::new("a.jpg"), "image", "default");
+        row.set_score(score, 0.25, 1.5);
+        row.views = Some(1);
+        row
+    }
+
+    fn written(row: &Row, json: bool) -> String {
+        let mut out = Vec::new();
+        row.write(&mut out, json).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// Without `--face-check` a row is written as before the flag existed:
+    /// the lines are pinned here, key for key.
+    #[test]
+    fn a_row_without_the_face_check_is_written_as_before() {
+        let row = photo(0.25);
+        assert_eq!(written(&row, true), "{\"kind\":\"image\",\"logit\":0.25,\"path\":\"a.jpg\",\"profile\":\"default\",\"score\":0.25,\"second_opinion\":false,\"threshold_logit\":1.5,\"verdict\":\"likely-real\",\"views\":1}\n");
+        assert_eq!(written(&row, false), "likely real    0.250  a.jpg\n");
+    }
+
+    /// A face above the cutoff changes the verdict and nothing else: the
+    /// score, logit and threshold are the ones the usual decision gave.
+    #[test]
+    fn a_flagged_face_changes_the_verdict_and_leaves_the_score() {
+        let plain: serde_json::Value = serde_json::from_str(&written(&photo(0.25), true)).unwrap();
+        let mut row = photo(0.25);
+        row.face = Some(FaceCheck::Scored(7.5));
+        let v: serde_json::Value = serde_json::from_str(&written(&row, true)).unwrap();
+        assert_eq!(v["verdict"], "ai-generated");
+        for key in ["score", "logit", "threshold_logit", "views", "second_opinion", "profile"] {
+            assert_eq!(v[key], plain[key], "{key}");
+        }
+        assert_eq!(v["face_check"]["status"], "scored");
+        assert_eq!(v["face_check"]["found"], true);
+        assert_eq!(v["face_check"]["flagged"], true);
+        assert_eq!(v["face_check"]["logit"], 7.5);
+        assert!((v["face_check"]["cutoff"].as_f64().unwrap() - 6.328).abs() < 1e-6);
+        assert_eq!(written(&row, false), "AI-GENERATED   0.250  a.jpg  [face check: 7.50]\n");
+    }
+
+    /// At or under the cutoff, with no face, or with a face too small, the
+    /// verdict stays; the outcome is still reported.
+    #[test]
+    fn a_face_under_the_cutoff_or_no_face_leaves_the_verdict() {
+        for (face, status, found) in [
+            (FaceCheck::Scored(face::FACE_CUTOFF), "scored", Some(true)),
+            (FaceCheck::NoFace, "no-face", Some(false)),
+            (FaceCheck::Small, "too-small", Some(true)),
+            (FaceCheck::Error, "error", None),
+        ] {
+            let mut row = photo(0.25);
+            row.face = Some(face);
+            let v: serde_json::Value = serde_json::from_str(&written(&row, true)).unwrap();
+            assert_eq!(v["verdict"], "likely-real", "{status}");
+            assert_eq!(v["face_check"]["status"], status);
+            assert_eq!(v["face_check"]["flagged"], false, "{status}");
+            assert_eq!(v["face_check"].get("found").and_then(|f| f.as_bool()), found, "{status}");
+            assert_eq!(v["face_check"].get("logit").is_some(), status == "scored");
+            assert_eq!(written(&row, false), "likely real    0.250  a.jpg\n", "{status}");
+        }
+    }
+
+    /// A photo the usual decision or the edit check already flags is not
+    /// looked at, and says so.
+    #[test]
+    fn an_already_flagged_photo_is_not_looked_at() {
+        assert!(photo(0.75).flagged());
+        assert!(!photo(0.5).flagged());
+        let mut edited = photo(0.25);
+        edited.edit_logit = Some(detector::EDIT_CHECK_CUTOFF + 0.5);
+        assert!(edited.flagged());
+        edited.edit_logit = Some(detector::EDIT_CHECK_CUTOFF);
+        assert!(!edited.flagged());
+        let mut row = photo(0.75);
+        row.face = Some(FaceCheck::Skipped);
+        let v: serde_json::Value = serde_json::from_str(&written(&row, true)).unwrap();
+        assert_eq!(v["verdict"], "ai-generated");
+        assert_eq!(v["face_check"], serde_json::json!({"status": "skipped", "flagged": false}));
+    }
+
+    #[test]
+    fn the_face_stage_rows_map_onto_the_check() {
+        let row = |status, logit| face::Row { path: PathBuf::new(), status, logit, crop: None, reencoded: None, face: None };
+        assert_eq!(FaceCheck::of(&row("ok", Some(7.0))), FaceCheck::Scored(7.0));
+        assert_eq!(FaceCheck::of(&row("ok", Some(f32::NAN))), FaceCheck::Error);
+        assert_eq!(FaceCheck::of(&row("noface", None)), FaceCheck::NoFace);
+        assert_eq!(FaceCheck::of(&row("small", None)), FaceCheck::Small);
+        assert_eq!(FaceCheck::of(&row("unreadable", None)), FaceCheck::Error);
     }
 }

@@ -1,11 +1,14 @@
-//! EXPERIMENTAL, research only: a "face stage" measurement prototype.
+//! The face stage: per photo, find the largest face, cut a square around it
+//! and score the square with a face model (a DINOv2 ViT-B/14 with registers
+//! at 224 px, one logit).
 //!
-//! Per photo: find the largest face (Apple Vision, macOS only), cut a square
-//! around it with a margin, and score the square with a face model (a DINOv2
-//! ViT-B/14 with registers at 224 px, one logit). Nothing in `detect`,
-//! `batch` or `serve` uses this; it exists so that the stage's agreement
-//! with its PyTorch reference and its speed can be measured (`tintype
-//! face-stage`). The cutoff is not calibrated for release.
+//! `detect` and `batch` use it only with the opt-in `--face-check` (see
+//! [`check`]): the YuNet finder on every platform, on photos nothing else
+//! has flagged. Everything else here is EXPERIMENTAL and research only: the
+//! `tintype face-stage` subcommand measures the stage's agreement with its
+//! PyTorch reference and its speed, and can find faces with Apple Vision
+//! (macOS) instead. The face model's weights are not distributed, and the
+//! cutoff is a research value with no blind whole-photo test.
 use crate::detector::{Detector, Device, ModelSpec, Timing};
 use crate::image_io::{self, Rgb};
 use anyhow::{Context, Result};
@@ -65,7 +68,7 @@ pub fn crop_rect(face: &FaceBox, width: u32, height: u32) -> Option<(u32, u32, u
     let ((x0, x1), (y0, y1)) = (span(cx, w)?, span(cy, h)?);
     let (cw, ch) = ((x1 - x0) as u32, (y1 - y0) as u32);
     // Vision counts rows from the bottom; pixels are stored from the top.
-    (cw >= MIN_CROP && ch >= MIN_CROP).then(|| (x0 as u32, (h - y1) as u32, cw, ch))
+    (cw >= MIN_CROP && ch >= MIN_CROP).then_some((x0 as u32, (h - y1) as u32, cw, ch))
 }
 
 /// The corrected square for a YuNet box: YuNet's boxes are tighter than
@@ -204,7 +207,7 @@ mod vision {
     unsafe fn largest(handler: &AnyObject) -> Result<Option<FaceBox>> {
         {
             let request: Retained<AnyObject> = msg_send![class(c"VNDetectFaceRectanglesRequest")?, new];
-            let requests = NSArray::from_retained_slice(&[request.clone()]);
+            let requests = NSArray::from_retained_slice(std::slice::from_ref(&request));
             let done: Result<(), Retained<NSError>> = msg_send![handler, performRequests: &*requests, error: _];
             if let Err(e) = done {
                 bail!("Vision: {}", e.localizedDescription());
@@ -379,6 +382,17 @@ pub fn run(det: &Detector, paths: &[PathBuf], options: Options<'_>) -> Result<(V
     }
     spent.wall_s = start.elapsed().as_secs_f64();
     Ok((rows, spent))
+}
+
+/// The face check of `detect` and `batch` (`--face-check`): for each photo,
+/// YuNet's largest face on a copy with a long side of
+/// [`crate::yunet::DETECT_SIDE`], [`yunet_square`] cut from the photo at full
+/// size, and the face model's logit on it. One row per path, in order; a row
+/// is flagged above [`FACE_CUTOFF`]. The same path through [`run`] as
+/// `face-stage --detect --face-finder yunet`.
+pub fn check(det: &Detector, finder: &crate::yunet::YuNet, paths: &[PathBuf], threads: usize) -> Result<Vec<Row>> {
+    let options = Options { detect: Some(FaceInput::Pixels), reencode: None, detect_side: None, yunet: Some(finder), threads };
+    Ok(run(det, paths, options)?.0)
 }
 
 /// The rows as a table: `path status logit flagged [left top width height
