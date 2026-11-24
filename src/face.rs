@@ -91,21 +91,18 @@ pub fn largest_face(_img: &Rgb) -> Result<Option<FaceBox>> {
     anyhow::bail!("face detection uses Apple's Vision framework and needs macOS")
 }
 
-/// `VNDetectFaceRectanglesRequest` on pixels this crate decoded, so that the
-/// box is in the coordinates of the image the square is then cut from.
+/// `VNDetectFaceRectanglesRequest`, on pixels this crate decoded or on the
+/// file as Core Image reads it.
 #[cfg(target_os = "macos")]
 mod vision {
     use super::FaceBox;
     use crate::image_io::Rgb;
     use anyhow::{anyhow, bail, Result};
+    use std::ffi::c_void;
     use objc2::rc::{autoreleasepool, Retained};
     use objc2::runtime::{AnyClass, AnyObject};
     use objc2::msg_send;
-    use objc2_core_foundation::{CFRetained, CGRect};
-    use objc2_core_video::{
-        kCVPixelFormatType_32BGRA, CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
-        CVPixelBufferUnlockBaseAddress,
-    };
+    use objc2_core_foundation::CGRect;
     use objc2_foundation::{NSArray, NSDictionary, NSError, NSString, NSURL};
 
     #[link(name = "Vision", kind = "framework")]
@@ -117,31 +114,50 @@ mod vision {
         AnyClass::get(name).ok_or_else(|| anyhow!("the Vision framework has no class {name:?}"))
     }
 
+    /// A Core Graphics object, for the Objective-C runtime's type check.
+    #[repr(C)]
+    pub struct CGImage {
+        _opaque: [u8; 0],
+    }
+    unsafe impl objc2::RefEncode for CGImage {
+        const ENCODING_REF: objc2::Encoding = objc2::Encoding::Pointer(&objc2::Encoding::Struct("CGImage", &[]));
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        static kCGColorSpaceSRGB: *const c_void;
+        fn CGColorSpaceCreateWithName(name: *const c_void) -> *mut c_void;
+        fn CGColorSpaceRelease(space: *mut c_void);
+        fn CGDataProviderCreateWithData(info: *mut c_void, data: *const c_void, size: usize, release: *const c_void) -> *mut c_void;
+        fn CGDataProviderRelease(provider: *mut c_void);
+        #[allow(clippy::too_many_arguments)]
+        fn CGImageCreate(width: usize, height: usize, bits_per_component: usize, bits_per_pixel: usize, bytes_per_row: usize, space: *mut c_void, bitmap_info: u32, provider: *mut c_void, decode: *const f64, interpolate: bool, intent: i32) -> *mut CGImage;
+        fn CGImageRelease(image: *mut CGImage);
+    }
+    /// The largest face in `img`, shown to Vision as a `CGImage` over its
+    /// own bytes (8-bit RGB tagged sRGB; nothing is copied).
     pub fn largest_face(img: &Rgb) -> Result<Option<FaceBox>> {
         let (w, h) = (img.w as usize, img.h as usize);
         if w == 0 || h == 0 {
             return Ok(None);
         }
         autoreleasepool(|_| unsafe {
-            let mut raw: *mut CVPixelBuffer = std::ptr::null_mut();
-            if CVPixelBufferCreate(None, w, h, kCVPixelFormatType_32BGRA, None, std::ptr::NonNull::from(&mut raw)) != 0 {
-                bail!("cannot allocate a pixel buffer");
+            let space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+            let provider = CGDataProviderCreateWithData(std::ptr::null_mut(), img.data.as_ptr() as *const c_void, img.data.len(), std::ptr::null());
+            // 8 bits a component, 24 a pixel, no alpha, default rendering intent.
+            let image = CGImageCreate(w, h, 8, 24, w * 3, space, 0, provider, std::ptr::null(), false, 0);
+            CGDataProviderRelease(provider);
+            CGColorSpaceRelease(space);
+            if image.is_null() {
+                bail!("cannot wrap the pixels for Vision");
             }
-            let Some(raw) = std::ptr::NonNull::new(raw) else { bail!("cannot allocate a pixel buffer") };
-            let pb = CFRetained::from_raw(raw);
-            CVPixelBufferLockBaseAddress(&pb, CVPixelBufferLockFlags::empty());
-            let (base, stride) = (CVPixelBufferGetBaseAddress(&pb) as *mut u8, CVPixelBufferGetBytesPerRow(&pb));
-            for y in 0..h {
-                let row = std::slice::from_raw_parts_mut(base.add(y * stride), w * 4);
-                for (px, rgb) in row.chunks_exact_mut(4).zip(img.data[y * w * 3..].chunks_exact(3)) {
-                    px.copy_from_slice(&[rgb[2], rgb[1], rgb[0], 255]);
-                }
-            }
-            CVPixelBufferUnlockBaseAddress(&pb, CVPixelBufferLockFlags::empty());
-
             let options = NSDictionary::<NSString, AnyObject>::new();
-            let handler: Retained<AnyObject> = msg_send![msg_send![class(c"VNImageRequestHandler")?, alloc], initWithCVPixelBuffer: &*pb, options: &*options];
-            largest(&handler)
+            let found = (|| {
+                let handler: Retained<AnyObject> = msg_send![msg_send![class(c"VNImageRequestHandler")?, alloc], initWithCGImage: image, options: &*options];
+                largest(&handler)
+            })();
+            CGImageRelease(image);
+            found
         })
     }
 
@@ -204,8 +220,9 @@ pub enum FaceInput {
     /// The file as Core Image reads it: what `tools/facecrop.swift` does,
     /// and the boxes it gets. Costs a second decode of the photo.
     File,
-    /// The pixels this crate decoded. Cheaper, but Vision then gives
-    /// slightly different boxes for the same photo.
+    /// The pixels this crate decoded (one decode). Vision then gives
+    /// slightly different boxes for the same photo: a JPEG decodes to
+    /// slightly different pixels here than in Core Image.
     Pixels,
 }
 
@@ -219,6 +236,11 @@ pub struct Options {
     /// decoding it again (the reference crops were stored as JPEG). The
     /// flag stays on the square as cut; this only adds a column.
     pub reencode: Option<u8>,
+    /// With [`FaceInput::Pixels`]: look for the face on a copy of the photo
+    /// scaled down so that its longer side is this many pixels (photos
+    /// already that small are looked at as they are). The square is still
+    /// cut from the photo at full size.
+    pub detect_side: Option<u32>,
     pub threads: usize,
 }
 
@@ -265,7 +287,15 @@ pub fn run(det: &Detector, paths: &[PathBuf], options: Options) -> Result<(Vec<R
                     let mut square = None;
                     if let Ok(img) = image_io::load(p) {
                         let face = match input {
-                            FaceInput::Pixels => largest_face(&img),
+                            FaceInput::Pixels => match options.detect_side.filter(|&side| side > 0 && side < img.w.max(img.h)) {
+                                // The box is in fractions of the image, so it needs no mapping back.
+                                Some(side) => {
+                                    let scale = side as f64 / img.w.max(img.h) as f64;
+                                    let small = |v: u32| ((v as f64 * scale).round() as u32).max(1);
+                                    largest_face(&img.resize(small(img.w), small(img.h), image_io::Filter::Bilinear))
+                                }
+                                None => largest_face(&img),
+                            },
                             // Core Image must see the image the square is cut from.
                             FaceInput::File => largest_face_in_file(p).and_then(|f| match f {
                                 Some((_, w, h)) if (w, h) != (img.w, img.h) => anyhow::bail!("Core Image reads {w}x{h}, this crate {}x{}", img.w, img.h),
