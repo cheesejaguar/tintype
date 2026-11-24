@@ -713,6 +713,16 @@ photos per second against 193 to 198 for one view. In development reads
 three views gave no gain on Semi-Truths or MagicBrush edits. It is an
 option, not the default.
 
+**Re-saved photos are flagged more often.** The authentic-flagged rates in
+this section are for photos as stored in the test sets. On 2,500 authentic
+photos from a development draw, the edit model alone was above its cutoff
+on 0.72% as stored and on 1.32%, 1.72%, 1.76% and 1.84% after one JPEG
+re-save at quality 95, 90, 85 and 75 (one view); with three views, 1.16% as
+stored and 1.60%, 2.28%, 2.64% and 2.68%. So a photo that has been through
+an upload or an export is roughly twice as likely to be flagged by the edit
+check as the tables here suggest. (Pillow re-save at full size, photos
+already read in development; not a blind result.)
+
 What was measured, with the rule applied to the default decision:
 
 | Blind batch | Rule | Precision | Recall | Authentic flagged | Locally edited found |
