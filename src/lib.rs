@@ -39,3 +39,4 @@ pub mod partial;
 pub mod stats;
 pub mod exit_probe;
 pub mod distill;
+pub mod face;

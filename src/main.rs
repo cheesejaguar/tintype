@@ -1027,6 +1027,38 @@ enum Cmd {
         #[arg(long, default_value_t = 4)]
         threads: usize,
     },
+    /// EXPERIMENTAL, research only: score face squares with a face model
+    /// (DINOv2 ViT-B/14 with registers, 224 px, one logit), for checking the
+    /// engines against the PyTorch reference and for timing. With
+    /// `--detect` the files are whole photos: the largest face is found
+    /// (Apple Vision, macOS) and cut out first. Writes `path status logit
+    /// flagged [left top width height]`. Not used by `detect` or `serve`.
+    FaceStage {
+        /// The face model's weights (timm state dict as safetensors).
+        #[arg(long)]
+        weights: PathBuf,
+        /// Files to score: the first tab-separated column of each line.
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// Find and cut out the largest face of each file first.
+        #[arg(long)]
+        detect: bool,
+        /// Score only the first N files.
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long, default_value_t = 64)]
+        batch: usize,
+        #[arg(long, default_value = "auto")]
+        device: String,
+        /// Decode (and face-finding) threads.
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
+        /// Afterwards, time the network alone on N full batches of the first files' squares.
+        #[arg(long, value_name = "N")]
+        bench: Option<usize>,
+    },
     /// Compare pooling rules on a partial-edit store at equal authentic
     /// false-positive rates, and measure how well the grid windows above the
     /// cutoff match the masks. Reads a `score-windows` file.
@@ -2008,6 +2040,47 @@ fn main() -> Result<()> {
             let items = load_manifests(&manifest)?;
             anyhow::ensure!(!items.is_empty(), "the manifests list no items");
             tintype::partial::score_windows(&weights, &items, &out, parse_device(&device)?, &tintype::partial::WindowOptions { stride, max_windows, batch, threads })
+        }
+        Cmd::FaceStage { weights, manifest, out, detect, limit, batch, device, threads, bench } => {
+            use tintype::face;
+            let mut paths = face::manifest_paths(&manifest)?;
+            paths.truncate(limit.unwrap_or(usize::MAX));
+            anyhow::ensure!(!paths.is_empty(), "the manifest lists no files");
+            let device = parse_device(&device)?;
+            let loading = std::time::Instant::now();
+            let det = face::load(&weights, batch, device)?;
+            eprintln!("experimental face stage on {device:?}: model loaded in {:.1} s", loading.elapsed().as_secs_f64());
+            let (rows, spent) = face::run(&det, &paths, detect, threads)?;
+            std::fs::write(&out, face::table(&rows))?;
+            let flagged = rows.iter().filter(|r| r.flagged()).count();
+            println!("{} files, {} scored, {flagged} above {}", rows.len(), spent.scored, face::FACE_CUTOFF);
+            println!("wall {:.2} s ({:.1} files/s end to end, {threads} threads); in the network {:.2} s ({:.1} squares/s)", spent.wall_s, rows.len() as f64 / spent.wall_s, spent.model_s, spent.scored as f64 / spent.model_s.max(1e-9));
+            if detect {
+                println!("decoding, finding and cutting out faces: {:.1} ms per file on one thread", 1000.0 * spent.find_s / rows.len() as f64);
+            }
+            if let Some(runs) = bench {
+                let vl = 3 * det.spec.img * det.spec.img;
+                let pre = det.preprocessor();
+                let mut views = vec![0u8; batch * vl];
+                let mut filled = 0;
+                for p in &paths {
+                    if filled == batch {
+                        break;
+                    }
+                    if let Ok(img) = tintype::image_io::load(p) {
+                        pre.apply(&img, &mut views[filled * vl..(filled + 1) * vl]);
+                        filled += 1;
+                    }
+                }
+                let _ = det.logits(&views);
+                let t = std::time::Instant::now();
+                for _ in 0..runs.max(1) {
+                    std::hint::black_box(det.logits(&views));
+                }
+                let s = t.elapsed().as_secs_f64();
+                println!("network alone: {} batches of {batch} in {s:.2} s, {:.1} squares/s", runs.max(1), (runs.max(1) * batch) as f64 / s);
+            }
+            Ok(())
         }
         Cmd::PartialReport { scores, manifest, edits, fpr, top_k, overlap, cutoff_on, disjoint_cutoff, out, freeze_cutoffs, cutoffs } => {
             use tintype::partial;
