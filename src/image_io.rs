@@ -306,6 +306,18 @@ impl Rgb {
         resized.as_ref().unwrap_or(self).crop(((w - size) / 2) as i64, ((h - size) / 2) as i64, size, size)
     }
 
+    /// [`Rgb::short_pillow_bicubic`] with the square placed along the longer
+    /// side: `at` thousandths of the free margin from its start (0 = the
+    /// first `size` pixels, 1000 = the last, 500 = the centre square).
+    pub fn short_pillow_bicubic_at(&self, size: u32, at: u32) -> Rgb {
+        let scale = size as f64 / self.w.min(self.h) as f64;
+        let side = |v: u32| ((v as f64 * scale).round_ties_even() as u32).max(size);
+        let (w, h) = (side(self.w), side(self.h));
+        let resized = if (w, h) == (self.w, self.h) { None } else { Some(self.resize_pillow(w, h, PillowFilter::Bicubic)) };
+        let origin = |full: u32| ((full - size) as u64 * at.min(1000) as u64 / 1000) as i64;
+        resized.as_ref().unwrap_or(self).crop(origin(w), origin(h), size, size)
+    }
+
     /// torchvision `Resize(short)` on a PIL image (bilinear, aspect kept).
     pub fn resize_short_pillow(&self, short: u32) -> Rgb {
         let (w, h) = if self.w <= self.h {
@@ -684,6 +696,9 @@ pub enum View {
     /// longer side rounded as Python's `round`), then the centre `size`
     /// square with a floored origin: the edit model's training pipeline.
     ShortPillowBicubic { size: u32 },
+    /// The same resize, with the square `at` thousandths of the way along
+    /// the longer side (0 and 1000 are its two ends).
+    ShortPillowBicubicAt { size: u32, at: u32 },
     /// Centre crop with zero padding and no resampling at all.
     CenterPad { crop: u32 },
     /// The `rank`-th most textured native-resolution window (0 = richest).
@@ -697,7 +712,7 @@ impl View {
         match self {
             View::Fit { crop, .. } | View::Native { crop } | View::NativeAt { crop, .. } | View::NativeRich { crop, .. } => crop,
             View::FitPillow { crop, .. } | View::CenterPad { crop } => crop,
-            View::SquashPillow { size } | View::ShortPillowBicubic { size } => size,
+            View::SquashPillow { size } | View::ShortPillowBicubic { size } | View::ShortPillowBicubicAt { size, .. } => size,
         }
     }
 
@@ -742,6 +757,7 @@ impl View {
             View::FitPillow { resize, crop } => Pixels::FitPillow { resize, crop },
             View::SquashPillow { size } => Pixels::SquashPillow { size },
             View::ShortPillowBicubic { size } => Pixels::ShortPillowBicubic { size },
+            View::ShortPillowBicubicAt { size, at } => Pixels::ShortPillowBicubicAt { size, at },
             View::CenterPad { crop } => {
                 let (x, y) = img.center_origin_torchvision(crop);
                 Pixels::Window { x, y, size: crop }
@@ -787,6 +803,8 @@ pub enum Pixels {
     SquashPillow { size: u32 },
     /// Shorter side to `size` (Pillow bicubic), then the centre `size` square.
     ShortPillowBicubic { size: u32 },
+    /// The same, with the square placed along the longer side.
+    ShortPillowBicubicAt { size: u32, at: u32 },
 }
 
 impl Pixels {
@@ -800,6 +818,7 @@ impl Pixels {
             Pixels::FitPillow { resize, crop } => img.resize_short_pillow(resize).center_crop_torchvision(crop),
             Pixels::SquashPillow { size } => img.resize_pillow(size, size, PillowFilter::Bicubic),
             Pixels::ShortPillowBicubic { size } => img.short_pillow_bicubic(size),
+            Pixels::ShortPillowBicubicAt { size, at } => img.short_pillow_bicubic_at(size, at),
         };
         crate::stats::VIEWS_TIME.since(start);
         out
@@ -982,6 +1001,7 @@ mod tests {
             View::FitPillow { resize, crop } => img.resize_short_pillow(resize).center_crop_torchvision(crop),
             View::SquashPillow { size } => img.resize_pillow(size, size, PillowFilter::Bicubic),
             View::ShortPillowBicubic { size } => img.short_pillow_bicubic(size),
+            View::ShortPillowBicubicAt { size, at } => img.short_pillow_bicubic_at(size, at),
             View::CenterPad { crop } => img.center_crop_torchvision(crop),
             View::Native { crop } => {
                 if img.w.min(img.h) < crop {
@@ -1009,7 +1029,7 @@ mod tests {
         let mut v = vec![View::Fit { resize: 256, crop: 224 }, View::Native { crop: 224 }];
         v.extend((0..4).map(|rank| View::NativeRich { crop: 224, rank }));
         v.extend([(280, 280), (500, 500), (720, 720), (1000, 0)].map(|(fx, fy)| View::NativeAt { crop: 224, fx, fy }));
-        v.extend([View::Fit { resize: 224, crop: 224 }, View::FitPillow { resize: 256, crop: 224 }, View::SquashPillow { size: 224 }, View::ShortPillowBicubic { size: 224 }, View::CenterPad { crop: 224 }]);
+        v.extend([View::Fit { resize: 224, crop: 224 }, View::FitPillow { resize: 256, crop: 224 }, View::SquashPillow { size: 224 }, View::ShortPillowBicubic { size: 224 }, View::ShortPillowBicubicAt { size: 224, at: 0 }, View::ShortPillowBicubicAt { size: 224, at: 1000 }, View::CenterPad { crop: 224 }]);
         v
     }
 
@@ -1119,6 +1139,26 @@ mod tests {
             assert_eq!((v.w, v.h), (224, 224));
             let got: u64 = v.data.iter().enumerate().map(|(i, &b)| b as u64 * (i as u64 % 251 + 1)).sum();
             assert_eq!(got, sum, "{w}x{h}");
+        }
+    }
+
+    /// The placed square: 500 is the centre view, and 0 and 1000 are the
+    /// first and last `size` pixels of the longer side of the same resize.
+    #[test]
+    fn short_pillow_bicubic_at_places_the_square_along_the_longer_side() {
+        for (w, h) in [(300u32, 200u32), (200, 300), (224, 224), (1000, 333), (100, 160), (513, 224)] {
+            let mut img = Rgb { w, h, data: vec![0; (w * h * 3) as usize] };
+            for (i, b) in img.data.iter_mut().enumerate() {
+                *b = ((i as u32).wrapping_mul(2654435761) >> 24) as u8;
+            }
+            assert_eq!(View::ShortPillowBicubicAt { size: 224, at: 500 }.apply(&img).data, View::ShortPillowBicubic { size: 224 }.apply(&img).data, "{w}x{h}");
+            let scale = 224.0 / w.min(h) as f64;
+            let side = |v: u32| ((v as f64 * scale).round_ties_even() as u32).max(224);
+            let full = img.resize_pillow(side(w), side(h), PillowFilter::Bicubic);
+            let first = View::ShortPillowBicubicAt { size: 224, at: 0 }.apply(&img);
+            let last = View::ShortPillowBicubicAt { size: 224, at: 1000 }.apply(&img);
+            assert_eq!(first.data, full.crop(0, 0, 224, 224).data, "{w}x{h}");
+            assert_eq!(last.data, full.crop((full.w - 224) as i64, (full.h - 224) as i64, 224, 224).data, "{w}x{h}");
         }
     }
 

@@ -1470,3 +1470,19 @@ fn edit_check_is_refused_on_the_cpu_engine_and_with_turbo() {
     assert!(!turbo.status.success());
     assert!(String::from_utf8_lossy(&turbo.stderr).contains("cannot be used with"), "{}", String::from_utf8_lossy(&turbo.stderr));
 }
+
+/// `--edit-views` takes 1 or 3 and belongs to `--edit-check`: any other
+/// count, and the flag without the edit model, are refused before any file
+/// is read.
+#[test]
+fn edit_views_takes_one_or_three_and_needs_the_edit_check() {
+    let dir = common::scratch("edit-views");
+    let png = dir.join("a.png");
+    common::write_fixture(&png);
+    let two = bin().args(["detect", "--edit-check", "missing-edit-model.safetensors", "--edit-views", "2"]).arg(&png).current_dir(common::repo()).output().unwrap();
+    assert!(!two.status.success());
+    assert!(String::from_utf8_lossy(&two.stderr).contains("the edit check scores 1 or 3 views"), "{}", String::from_utf8_lossy(&two.stderr));
+    let alone = bin().args(["detect", "--edit-views", "3"]).arg(&png).current_dir(common::repo()).output().unwrap();
+    assert!(!alone.status.success());
+    assert!(String::from_utf8_lossy(&alone.stderr).contains("--edit-check"), "{}", String::from_utf8_lossy(&alone.stderr));
+}

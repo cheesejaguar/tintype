@@ -151,8 +151,23 @@ pub struct ScanOptions {
     /// partly regenerated photos and flags more authentic ones.
     #[arg(long, value_name = "WEIGHTS", conflicts_with = "turbo")]
     edit_check: Option<PathBuf>,
+    /// Views the edit check scores per photo: 1 (the centre square) or 3
+    /// (both ends of the longer side and the centre, the highest logit
+    /// against its own cutoff). Three finds more edits away from the
+    /// centre, flags more authentic photos and takes about three times as
+    /// long.
+    #[arg(long, value_name = "N", default_value_t = 1, value_parser = parse_edit_views, requires = "edit_check")]
+    edit_views: usize,
     #[command(flatten)]
     review: ReviewArgs,
+}
+
+fn parse_edit_views(value: &str) -> Result<usize, String> {
+    match value {
+        "1" => Ok(1),
+        "3" => Ok(3),
+        _ => Err("the edit check scores 1 or 3 views".into()),
+    }
 }
 
 fn parse_frames(value: &str) -> Result<usize, String> {
@@ -420,12 +435,13 @@ impl Scan {
             }
             if self.edit_det.is_none() {
                 let batch = if warm { 64 } else { 64.min(paths.len()) };
-                self.edit_det = Some(detector::load_edit_check(&weights, batch, self.device)?);
+                self.edit_det = Some(detector::load_edit_check(&weights, batch, self.device, self.options.edit_views)?);
             }
             let edit = self.edit_det.as_ref().unwrap();
             for (row, logit) in rows.iter_mut().zip(detector::edit_check_with(edit, paths, threads).0) {
                 if row.score.is_some() {
                     row.edit_logit = logit.filter(|l| l.is_finite());
+                    row.edit_views = self.options.edit_views;
                 }
             }
         }
@@ -852,6 +868,8 @@ struct Row {
     /// Logit of the edit model (`--edit-check`); above the cutoff it makes
     /// the verdict AI-generated whatever the score says.
     edit_logit: Option<f32>,
+    /// Views behind `edit_logit` (1 or 3); it picks the cutoff.
+    edit_views: usize,
     /// Scored in turbo mode (adds `"mode": "turbo"` to JSON output).
     turbo: bool,
     views: Option<usize>,
@@ -878,6 +896,7 @@ impl Row {
             profile,
             second_opinion: false,
             edit_logit: None,
+            edit_views: 1,
             turbo: false,
             views: None,
             coverage: None,
@@ -920,7 +939,8 @@ impl Row {
             }
             return Ok(());
         };
-        let edit_flagged = self.edit_logit.is_some_and(|l| l > detector::EDIT_CHECK_CUTOFF);
+        let edit_cutoff = detector::edit_check_cutoff(self.edit_views);
+        let edit_flagged = self.edit_logit.is_some_and(|l| l > edit_cutoff);
         let (verdict, label) = match self.coverage {
             Some(c) if !c.complete => ("inconclusive", "INCONCLUSIVE"),
             _ if score > 0.5 || edit_flagged => ("ai-generated", "AI-GENERATED"),
@@ -943,7 +963,8 @@ impl Row {
             }
             if let Some(logit) = self.edit_logit {
                 object["edit_logit"] = logit.into();
-                object["edit_cutoff"] = detector::EDIT_CHECK_CUTOFF.into();
+                object["edit_cutoff"] = edit_cutoff.into();
+                object["edit_views"] = self.edit_views.into();
                 object["edit_flagged"] = edit_flagged.into();
             }
             if let Some(c) = self.coverage {
