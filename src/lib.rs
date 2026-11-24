@@ -40,3 +40,4 @@ pub mod stats;
 pub mod exit_probe;
 pub mod distill;
 pub mod face;
+pub mod yunet;

@@ -1051,6 +1051,15 @@ enum Cmd {
         /// With `--face-input pixels`: look for the face on a copy scaled down to this longer side (the square is still cut at full size).
         #[arg(long, value_name = "PIXELS", requires = "detect")]
         detect_side: Option<u32>,
+        /// What finds the face: `vision` (Apple Vision, macOS) or `yunet` (the YuNet network on the CPU, on this crate's pixels scaled down to `--detect-side`, 640 by default, with its own square rule; needs `--yunet-model`).
+        #[arg(long, default_value = "vision", requires = "detect")]
+        face_finder: String,
+        /// `face_detection_yunet_2023mar.onnx` of the OpenCV Zoo, for `--face-finder yunet`.
+        #[arg(long, value_name = "ONNX")]
+        yunet_model: Option<PathBuf>,
+        /// With `--face-finder yunet`: also write each photo's largest face before the square rule, `path x y w h score`.
+        #[arg(long, value_name = "FILE")]
+        face_boxes: Option<PathBuf>,
         /// Also score each square after a JPEG round trip at this quality (1-100), in one more column; the flag stays on the square as cut.
         #[arg(long, value_name = "QUALITY", requires = "detect")]
         reencode_crop: Option<u8>,
@@ -1067,6 +1076,25 @@ enum Cmd {
         /// Afterwards, time the network alone on N full batches of the first files' squares.
         #[arg(long, value_name = "N")]
         bench: Option<usize>,
+    },
+    /// EXPERIMENTAL, research only: the largest face YuNet finds in each
+    /// photo, for checking this crate's YuNet against OpenCV's and for
+    /// timing. Writes `path width height x y w h score` (the box in pixels
+    /// of the photo, from the top left), or `path width height noface`.
+    YunetBoxes {
+        /// `face_detection_yunet_2023mar.onnx` of the OpenCV Zoo.
+        #[arg(long, value_name = "ONNX")]
+        model: PathBuf,
+        /// Photos: the first tab-separated column of each line.
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// The longer side of the copy the network looks at (photos are never enlarged).
+        #[arg(long, default_value_t = 640)]
+        side: u32,
+        #[arg(long, default_value_t = 4)]
+        threads: usize,
     },
     /// Compare pooling rules on a partial-edit store at equal authentic
     /// false-positive rates, and measure how well the grid windows above the
@@ -2050,7 +2078,41 @@ fn main() -> Result<()> {
             anyhow::ensure!(!items.is_empty(), "the manifests list no items");
             tintype::partial::score_windows(&weights, &items, &out, parse_device(&device)?, &tintype::partial::WindowOptions { stride, max_windows, batch, threads })
         }
-        Cmd::FaceStage { weights, manifest, out, detect, face_input, detect_side, reencode_crop, limit, batch, device, threads, bench } => {
+        Cmd::YunetBoxes { model, manifest, out, side, threads } => {
+            use rayon::prelude::*;
+            use tintype::{image_io, yunet};
+            let paths = tintype::face::manifest_paths(&manifest)?;
+            let net = yunet::YuNet::load(&model)?;
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads.max(1)).build()?;
+            let start = std::time::Instant::now();
+            // Per photo: the line, then seconds decoding, scaling down and in the network.
+            let rows: Vec<(String, [f64; 3])> = pool.install(|| {
+                paths
+                    .par_iter()
+                    .map(|p| {
+                        let t0 = std::time::Instant::now();
+                        let Ok(img) = image_io::load(p) else { return (format!("{}\t0\t0\tunreadable\n", p.display()), [0.0; 3]) };
+                        let t1 = std::time::Instant::now();
+                        let small = yunet::shrink(&img, side);
+                        let t2 = std::time::Instant::now();
+                        let face = net.largest_in(small.as_ref().unwrap_or(&img), img.w, img.h);
+                        let t3 = std::time::Instant::now();
+                        let found = face.map_or_else(|| "noface".to_string(), |f| format!("{}\t{}\t{}\t{}\t{}", f[0], f[1], f[2], f[3], f[4]));
+                        (format!("{}\t{}\t{}\t{found}\n", p.display(), img.w, img.h), [(t1 - t0).as_secs_f64(), (t2 - t1).as_secs_f64(), (t3 - t2).as_secs_f64()])
+                    })
+                    .collect()
+            });
+            let wall = start.elapsed().as_secs_f64();
+            std::fs::write(&out, rows.iter().map(|r| r.0.as_str()).collect::<String>())?;
+            let n = rows.len().max(1) as f64;
+            let ms = |k: usize| 1000.0 * rows.iter().map(|r| r.1[k]).sum::<f64>() / n;
+            let mut net_ms: Vec<f64> = rows.iter().map(|r| 1000.0 * (r.1[1] + r.1[2])).collect();
+            net_ms.sort_by(|a, b| a.total_cmp(b));
+            println!("{} photos, {} with a face, long side {side}, {threads} threads, wall {wall:.2} s ({:.1} photos/s)", rows.len(), rows.iter().filter(|r| !r.0.ends_with("noface\n") && !r.0.ends_with("unreadable\n")).count(), rows.len() as f64 / wall);
+            println!("per photo on one thread: decode {:.2} ms, scaling down {:.2} ms, YuNet {:.2} ms; scaling down + YuNet mean {:.2} ms, median {:.2} ms", ms(0), ms(1), ms(2), ms(1) + ms(2), net_ms[net_ms.len() / 2]);
+            Ok(())
+        }
+        Cmd::FaceStage { weights, manifest, out, detect, face_input, detect_side, face_finder, yunet_model, face_boxes, reencode_crop, limit, batch, device, threads, bench } => {
             use tintype::face;
             let mut paths = face::manifest_paths(&manifest)?;
             paths.truncate(limit.unwrap_or(usize::MAX));
@@ -2064,9 +2126,18 @@ fn main() -> Result<()> {
                 "pixels" => face::FaceInput::Pixels,
                 other => anyhow::bail!("unknown --face-input `{other}` (use file or pixels)"),
             };
-            anyhow::ensure!(detect_side.is_none() || input == face::FaceInput::Pixels, "--detect-side goes with --face-input pixels");
-            let (rows, spent) = face::run(&det, &paths, face::Options { detect: detect.then_some(input), reencode: reencode_crop, detect_side, threads })?;
+            let yunet = match face_finder.as_str() {
+                "vision" => None,
+                "yunet" => Some(tintype::yunet::YuNet::load(&yunet_model.ok_or_else(|| anyhow::anyhow!("--face-finder yunet needs --yunet-model"))?)?),
+                other => anyhow::bail!("unknown --face-finder `{other}` (use vision or yunet)"),
+            };
+            anyhow::ensure!(detect_side.is_none() || yunet.is_some() || input == face::FaceInput::Pixels, "--detect-side goes with --face-input pixels or --face-finder yunet");
+            anyhow::ensure!(face_boxes.is_none() || yunet.is_some(), "--face-boxes goes with --face-finder yunet");
+            let (rows, spent) = face::run(&det, &paths, face::Options { detect: detect.then_some(input), reencode: reencode_crop, detect_side, yunet: yunet.as_ref(), threads })?;
             std::fs::write(&out, face::table(&rows))?;
+            if let Some(file) = &face_boxes {
+                std::fs::write(file, face::boxes_table(&rows))?;
+            }
             let flagged = rows.iter().filter(|r| r.flagged()).count();
             println!("{} files, {} scored, {flagged} above {}", rows.len(), spent.scored, face::FACE_CUTOFF);
             println!("wall {:.2} s ({:.1} files/s end to end, {threads} threads); in the network {:.2} s ({:.1} squares/s)", spent.wall_s, rows.len() as f64 / spent.wall_s, spent.model_s, spent.scored as f64 / spent.model_s.max(1e-9));

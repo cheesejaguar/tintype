@@ -68,6 +68,30 @@ pub fn crop_rect(face: &FaceBox, width: u32, height: u32) -> Option<(u32, u32, u
     (cw >= MIN_CROP && ch >= MIN_CROP).then(|| (x0 as u32, (h - y1) as u32, cw, ch))
 }
 
+/// The corrected square for a YuNet box: YuNet's boxes are tighter than
+/// Vision's and sit higher on the face, so the square's side is
+/// [`YUNET_SIDE`] times the box's longer side and its centre the box's
+/// centre moved by [`YUNET_SHIFT`] of the box's width and height (a fit of
+/// YuNet's boxes to Vision's squares on half of batch 9, `yunet_fit.json`).
+pub const YUNET_SIDE: f64 = 1.3679375958824505;
+pub const YUNET_SHIFT: (f64, f64) = (-0.0006086781692796835, 0.07559445756403477);
+
+/// The square for a YuNet box `(x, y, w, h)` in pixels from the top left of
+/// a `width` by `height` image, as `(left, top, width, height)`: clipped to
+/// the image and widened to whole pixels, `None` under [`MIN_CROP`] on a
+/// side. `corrected` of the Python reference (`yunet_corr.py`).
+pub fn yunet_square(face: &[f32], width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
+    let (x, y, bw, bh) = (face[0] as f64, face[1] as f64, face[2] as f64, face[3] as f64);
+    let side = YUNET_SIDE * bw.max(bh);
+    let (cx, cy) = (x + bw / 2.0 + YUNET_SHIFT.0 * bw, y + bh / 2.0 + YUNET_SHIFT.1 * bh);
+    let span = |c: f64, full: f64| {
+        let (lo, hi) = ((c - side / 2.0).max(0.0), (c + side / 2.0).min(full));
+        (hi > lo).then(|| (lo.floor() as u32, hi.ceil().min(full) as u32))
+    };
+    let ((x0, x1), (y0, y1)) = (span(cx, width as f64)?, span(cy, height as f64)?);
+    (x1 - x0 >= MIN_CROP && y1 - y0 >= MIN_CROP).then(|| (x0, y0, x1 - x0, y1 - y0))
+}
+
 /// The largest face in `img`, if Vision finds one.
 #[cfg(target_os = "macos")]
 pub fn largest_face(img: &Rgb) -> Result<Option<FaceBox>> {
@@ -212,6 +236,9 @@ pub struct Row {
     pub crop: Option<(u32, u32, u32, u32)>,
     /// The logit of the same square after a JPEG round trip, when asked for.
     pub reencoded: Option<f32>,
+    /// With the YuNet finder: the largest face's box `x, y, w, h` in pixels
+    /// from the top left, and its score.
+    pub face: Option<[f32; 5]>,
 }
 
 /// What Vision is shown when a face is looked for.
@@ -227,8 +254,8 @@ pub enum FaceInput {
 }
 
 /// Options of [`run`].
-#[derive(Clone, Copy, Debug)]
-pub struct Options {
+#[derive(Clone, Copy)]
+pub struct Options<'a> {
     /// Find and cut out the largest face first; `None` takes each file to
     /// be a face square already.
     pub detect: Option<FaceInput>,
@@ -241,6 +268,11 @@ pub struct Options {
     /// already that small are looked at as they are). The square is still
     /// cut from the photo at full size.
     pub detect_side: Option<u32>,
+    /// Find faces with YuNet on this crate's pixels instead of Vision
+    /// (`detect` must be set; what it holds is not used). The copy looked
+    /// at has `detect_side` as its longer side, 640 if not given, and the
+    /// square is [`yunet_square`]'s.
+    pub yunet: Option<&'a crate::yunet::YuNet>,
     pub threads: usize,
 }
 
@@ -263,12 +295,12 @@ pub struct Spent {
 /// Score `paths` with the face model. Without `detect` each file is taken
 /// to be a face square already and goes straight to the model; with it,
 /// the largest face of each photo is found and cut out first.
-pub fn run(det: &Detector, paths: &[PathBuf], options: Options) -> Result<(Vec<Row>, Spent)> {
+pub fn run(det: &Detector, paths: &[PathBuf], options: Options<'_>) -> Result<(Vec<Row>, Spent)> {
     let start = std::time::Instant::now();
     let threads = options.threads;
     let Some(input) = options.detect else {
         let (res, t): (_, Timing) = det.score_files(paths, threads);
-        let rows: Vec<Row> = paths.iter().zip(res).map(|(p, r)| Row { path: p.clone(), status: if r.is_some() { "ok" } else { "unreadable" }, logit: r.map(|l| l[0]), crop: None, reencoded: None }).collect();
+        let rows: Vec<Row> = paths.iter().zip(res).map(|(p, r)| Row { path: p.clone(), status: if r.is_some() { "ok" } else { "unreadable" }, logit: r.map(|l| l[0]), crop: None, reencoded: None, face: None }).collect();
         let scored = rows.iter().filter(|r| r.logit.is_some()).count();
         return Ok((rows, Spent { wall_s: start.elapsed().as_secs_f64(), model_s: t.model_s, find_s: 0.0, scored }));
     };
@@ -283,34 +315,38 @@ pub fn run(det: &Detector, paths: &[PathBuf], options: Options) -> Result<(Vec<R
                 .par_iter()
                 .map(|p| {
                     let t = std::time::Instant::now();
-                    let mut row = Row { path: p.clone(), status: "unreadable", logit: None, crop: None, reencoded: None };
+                    let mut row = Row { path: p.clone(), status: "unreadable", logit: None, crop: None, reencoded: None, face: None };
                     let mut square = None;
                     if let Ok(img) = image_io::load(p) {
-                        let face = match input {
-                            FaceInput::Pixels => match options.detect_side.filter(|&side| side > 0 && side < img.w.max(img.h)) {
-                                // The box is in fractions of the image, so it needs no mapping back.
-                                Some(side) => {
-                                    let scale = side as f64 / img.w.max(img.h) as f64;
-                                    let small = |v: u32| ((v as f64 * scale).round() as u32).max(1);
-                                    largest_face(&img.resize(small(img.w), small(img.h), image_io::Filter::Bilinear))
-                                }
-                                None => largest_face(&img),
-                            },
-                            // Core Image must see the image the square is cut from.
-                            FaceInput::File => largest_face_in_file(p).and_then(|f| match f {
-                                Some((_, w, h)) if (w, h) != (img.w, img.h) => anyhow::bail!("Core Image reads {w}x{h}, this crate {}x{}", img.w, img.h),
-                                f => Ok(f.map(|f| f.0)),
-                            }),
+                        let rect = if let Some(net) = options.yunet {
+                            row.face = net.largest_face(&img, options.detect_side.unwrap_or(crate::yunet::DETECT_SIDE));
+                            Ok(row.face.map(|f| yunet_square(&f, img.w, img.h)))
+                        } else {
+                            let face = match input {
+                                FaceInput::Pixels => match options.detect_side.filter(|&side| side > 0 && side < img.w.max(img.h)) {
+                                    // The box is in fractions of the image, so it needs no mapping back.
+                                    Some(side) => {
+                                        let scale = side as f64 / img.w.max(img.h) as f64;
+                                        let small = |v: u32| ((v as f64 * scale).round() as u32).max(1);
+                                        largest_face(&img.resize(small(img.w), small(img.h), image_io::Filter::Bilinear))
+                                    }
+                                    None => largest_face(&img),
+                                },
+                                // Core Image must see the image the square is cut from.
+                                FaceInput::File => largest_face_in_file(p).and_then(|f| match f {
+                                    Some((_, w, h)) if (w, h) != (img.w, img.h) => anyhow::bail!("Core Image reads {w}x{h}, this crate {}x{}", img.w, img.h),
+                                    f => Ok(f.map(|f| f.0)),
+                                }),
+                            };
+                            face.map(|f| f.map(|f| crop_rect(&f, img.w, img.h)))
                         };
-                        match face {
-                            Ok(Some(face)) => match crop_rect(&face, img.w, img.h) {
-                                Some((x, y, w, h)) => {
-                                    row.status = "ok";
-                                    row.crop = Some((x, y, w, h));
-                                    square = Some(img.crop(x as i64, y as i64, w, h));
-                                }
-                                None => row.status = "small",
-                            },
+                        match rect {
+                            Ok(Some(Some((x, y, w, h)))) => {
+                                row.status = "ok";
+                                row.crop = Some((x, y, w, h));
+                                square = Some(img.crop(x as i64, y as i64, w, h));
+                            }
+                            Ok(Some(None)) => row.status = "small",
                             Ok(None) => row.status = "noface",
                             Err(_) => row.status = "error",
                         }
@@ -359,6 +395,19 @@ pub fn table(rows: &[Row]) -> String {
             }
         }
         out.push('\n');
+    }
+    out
+}
+
+/// With the YuNet finder, the largest face of each photo before the square
+/// rule: `path x y w h score`, or `path` and the status where none was found.
+pub fn boxes_table(rows: &[Row]) -> String {
+    let mut out = String::new();
+    for r in rows {
+        match r.face {
+            Some(f) => out.push_str(&format!("{}\t{}\t{}\t{}\t{}\t{}\n", r.path.display(), f[0], f[1], f[2], f[3], f[4])),
+            None => out.push_str(&format!("{}\t{}\n", r.path.display(), r.status)),
+        }
     }
     out
 }
@@ -418,6 +467,21 @@ mod tests {
         // 20 pixels of box give exactly 32 of square.
         let just = FaceBox { x: 0.5, y: 0.5, w: 0.01953125, h: 0.01953125 };
         assert_eq!(crop_rect(&just, 1024, 1024), Some((506, 1024 - 538, 32, 32)));
+    }
+
+    #[test]
+    fn a_yunet_box_gets_the_corrected_square() {
+        // A 100 by 120 box at (400, 300) in a 1000 by 800 image: side 1.368 * 120 = 164.15,
+        // centre (450 - 0.06, 360 + 9.07) = (449.94, 369.07).
+        assert_eq!(yunet_square(&[400.0, 300.0, 100.0, 120.0, 0.95], 1000, 800), Some((367, 286, 166, 166)));
+        // Clipped at the top left corner.
+        assert_eq!(yunet_square(&[-5.0, 2.0, 60.0, 60.0], 1000, 800), Some((0, 0, 67, 78)));
+        // Under 32 pixels it is not scored: a 20-pixel box gives 27.4, widened to 29.
+        assert_eq!(yunet_square(&[100.0, 100.0, 20.0, 20.0], 1000, 800), None);
+        // A 24-pixel box gives 32.8: columns 95.6..128.4 and rows 97.4..130.2, widened to 34.
+        assert_eq!(yunet_square(&[100.0, 100.0, 24.0, 24.0], 1000, 800), Some((95, 97, 34, 34)));
+        // Wholly outside the image there is nothing to cut.
+        assert_eq!(yunet_square(&[-300.0, 10.0, 100.0, 100.0], 1000, 800), None);
     }
 
     #[test]
