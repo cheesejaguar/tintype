@@ -74,6 +74,18 @@ pub fn largest_face(img: &Rgb) -> Result<Option<FaceBox>> {
     vision::largest_face(img)
 }
 
+/// The largest face of the file at `path`, read by Core Image, with the
+/// image's width and height as Core Image has them.
+#[cfg(target_os = "macos")]
+pub fn largest_face_in_file(path: &Path) -> Result<Option<(FaceBox, u32, u32)>> {
+    vision::largest_face_in_file(path)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn largest_face_in_file(_path: &Path) -> Result<Option<(FaceBox, u32, u32)>> {
+    anyhow::bail!("face detection uses Apple's Vision framework and needs macOS")
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn largest_face(_img: &Rgb) -> Result<Option<FaceBox>> {
     anyhow::bail!("face detection uses Apple's Vision framework and needs macOS")
@@ -94,9 +106,11 @@ mod vision {
         kCVPixelFormatType_32BGRA, CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
         CVPixelBufferUnlockBaseAddress,
     };
-    use objc2_foundation::{NSArray, NSDictionary, NSError, NSString};
+    use objc2_foundation::{NSArray, NSDictionary, NSError, NSString, NSURL};
 
     #[link(name = "Vision", kind = "framework")]
+    extern "C" {}
+    #[link(name = "CoreImage", kind = "framework")]
     extern "C" {}
 
     fn class(name: &std::ffi::CStr) -> Result<&'static AnyClass> {
@@ -125,11 +139,33 @@ mod vision {
             }
             CVPixelBufferUnlockBaseAddress(&pb, CVPixelBufferLockFlags::empty());
 
-            let request: Retained<AnyObject> = msg_send![class(c"VNDetectFaceRectanglesRequest")?, new];
             let options = NSDictionary::<NSString, AnyObject>::new();
             let handler: Retained<AnyObject> = msg_send![msg_send![class(c"VNImageRequestHandler")?, alloc], initWithCVPixelBuffer: &*pb, options: &*options];
+            largest(&handler)
+        })
+    }
+
+    /// The largest face of the image file at `path` as Core Image reads it
+    /// (what `tools/facecrop.swift` hands to Vision), with the width and
+    /// height Core Image gives the image.
+    pub fn largest_face_in_file(path: &std::path::Path) -> Result<Option<(FaceBox, u32, u32)>> {
+        autoreleasepool(|_| unsafe {
+            let url = NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy()));
+            let image: Option<Retained<AnyObject>> = msg_send![class(c"CIImage")?, imageWithContentsOfURL: &*url];
+            let Some(image) = image else { bail!("Core Image cannot read {}", path.display()) };
+            let extent: CGRect = msg_send![&image, extent];
+            let options = NSDictionary::<NSString, AnyObject>::new();
+            let handler: Retained<AnyObject> = msg_send![msg_send![class(c"VNImageRequestHandler")?, alloc], initWithCIImage: &*image, options: &*options];
+            Ok(largest(&handler)?.map(|b| (b, extent.size.width as u32, extent.size.height as u32)))
+        })
+    }
+
+    /// Run the face request through `handler` and pick the largest box.
+    unsafe fn largest(handler: &AnyObject) -> Result<Option<FaceBox>> {
+        {
+            let request: Retained<AnyObject> = msg_send![class(c"VNDetectFaceRectanglesRequest")?, new];
             let requests = NSArray::from_retained_slice(&[request.clone()]);
-            let done: Result<(), Retained<NSError>> = msg_send![&handler, performRequests: &*requests, error: _];
+            let done: Result<(), Retained<NSError>> = msg_send![handler, performRequests: &*requests, error: _];
             if let Err(e) = done {
                 bail!("Vision: {}", e.localizedDescription());
             }
@@ -144,7 +180,7 @@ mod vision {
                 }
             }
             Ok(best)
-        })
+        }
     }
 }
 
@@ -152,11 +188,38 @@ mod vision {
 #[derive(Clone, Debug)]
 pub struct Row {
     pub path: PathBuf,
-    /// `ok`, `noface`, `small` (a square under [`MIN_CROP`]) or `unreadable`.
+    /// `ok`, `noface`, `small` (a square under [`MIN_CROP`]), `error`
+    /// (Vision or Core Image failed, or read another size) or `unreadable`.
     pub status: &'static str,
     pub logit: Option<f32>,
     /// The square that was scored: left, top, width, height.
     pub crop: Option<(u32, u32, u32, u32)>,
+    /// The logit of the same square after a JPEG round trip, when asked for.
+    pub reencoded: Option<f32>,
+}
+
+/// What Vision is shown when a face is looked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FaceInput {
+    /// The file as Core Image reads it: what `tools/facecrop.swift` does,
+    /// and the boxes it gets. Costs a second decode of the photo.
+    File,
+    /// The pixels this crate decoded. Cheaper, but Vision then gives
+    /// slightly different boxes for the same photo.
+    Pixels,
+}
+
+/// Options of [`run`].
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    /// Find and cut out the largest face first; `None` takes each file to
+    /// be a face square already.
+    pub detect: Option<FaceInput>,
+    /// Also score each square after encoding it as JPEG at this quality and
+    /// decoding it again (the reference crops were stored as JPEG). The
+    /// flag stays on the square as cut; this only adds a column.
+    pub reencode: Option<u8>,
+    pub threads: usize,
 }
 
 impl Row {
@@ -178,14 +241,15 @@ pub struct Spent {
 /// Score `paths` with the face model. Without `detect` each file is taken
 /// to be a face square already and goes straight to the model; with it,
 /// the largest face of each photo is found and cut out first.
-pub fn run(det: &Detector, paths: &[PathBuf], detect: bool, threads: usize) -> Result<(Vec<Row>, Spent)> {
+pub fn run(det: &Detector, paths: &[PathBuf], options: Options) -> Result<(Vec<Row>, Spent)> {
     let start = std::time::Instant::now();
-    if !detect {
+    let threads = options.threads;
+    let Some(input) = options.detect else {
         let (res, t): (_, Timing) = det.score_files(paths, threads);
-        let rows: Vec<Row> = paths.iter().zip(res).map(|(p, r)| Row { path: p.clone(), status: if r.is_some() { "ok" } else { "unreadable" }, logit: r.map(|l| l[0]), crop: None }).collect();
+        let rows: Vec<Row> = paths.iter().zip(res).map(|(p, r)| Row { path: p.clone(), status: if r.is_some() { "ok" } else { "unreadable" }, logit: r.map(|l| l[0]), crop: None, reencoded: None }).collect();
         let scored = rows.iter().filter(|r| r.logit.is_some()).count();
         return Ok((rows, Spent { wall_s: start.elapsed().as_secs_f64(), model_s: t.model_s, find_s: 0.0, scored }));
-    }
+    };
     use rayon::prelude::*;
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads.max(1)).build().context("starting the face-finding threads")?;
     let mut rows = Vec::with_capacity(paths.len());
@@ -197,10 +261,18 @@ pub fn run(det: &Detector, paths: &[PathBuf], detect: bool, threads: usize) -> R
                 .par_iter()
                 .map(|p| {
                     let t = std::time::Instant::now();
-                    let mut row = Row { path: p.clone(), status: "unreadable", logit: None, crop: None };
+                    let mut row = Row { path: p.clone(), status: "unreadable", logit: None, crop: None, reencoded: None };
                     let mut square = None;
                     if let Ok(img) = image_io::load(p) {
-                        match largest_face(&img) {
+                        let face = match input {
+                            FaceInput::Pixels => largest_face(&img),
+                            // Core Image must see the image the square is cut from.
+                            FaceInput::File => largest_face_in_file(p).and_then(|f| match f {
+                                Some((_, w, h)) if (w, h) != (img.w, img.h) => anyhow::bail!("Core Image reads {w}x{h}, this crate {}x{}", img.w, img.h),
+                                f => Ok(f.map(|f| f.0)),
+                            }),
+                        };
+                        match face {
                             Ok(Some(face)) => match crop_rect(&face, img.w, img.h) {
                                 Some((x, y, w, h)) => {
                                     row.status = "ok";
@@ -217,14 +289,23 @@ pub fn run(det: &Detector, paths: &[PathBuf], detect: bool, threads: usize) -> R
                 })
                 .collect()
         });
-        let squares: Vec<Rgb> = found.iter().filter_map(|(_, s, _)| s.as_ref().map(|s| s.crop(0, 0, s.w, s.h))).collect();
+        let mut squares: Vec<Rgb> = found.iter().filter_map(|(_, s, _)| s.as_ref().map(|s| s.crop(0, 0, s.w, s.h))).collect();
+        let cut = squares.len();
+        if let Some(quality) = options.reencode {
+            // A square that cannot make the round trip is scored as it is.
+            let again: Vec<Rgb> = pool.install(|| squares.par_iter().map(|s| s.jpeg_roundtrip(quality).unwrap_or_else(|_| s.crop(0, 0, s.w, s.h))).collect());
+            squares.extend(again);
+        }
         let t = std::time::Instant::now();
-        let mut logits = det.score_images(&squares).into_iter();
+        let logits: Vec<f32> = det.score_images(&squares).into_iter().map(|l| l[0]).collect();
         spent.model_s += t.elapsed().as_secs_f64();
+        let mut k = 0;
         for (mut row, square, took) in found {
             spent.find_s += took;
             if square.is_some() {
-                row.logit = logits.next().map(|l| l[0]);
+                row.logit = Some(logits[k]);
+                row.reencoded = options.reencode.map(|_| logits[cut + k]);
+                k += 1;
                 spent.scored += 1;
             }
             rows.push(row);
@@ -234,7 +315,8 @@ pub fn run(det: &Detector, paths: &[PathBuf], detect: bool, threads: usize) -> R
     Ok((rows, spent))
 }
 
-/// The rows as a table: `path status logit flagged [left top width height]`.
+/// The rows as a table: `path status logit flagged [left top width height
+/// [reencoded logit]]`.
 pub fn table(rows: &[Row]) -> String {
     let mut out = String::new();
     for r in rows {
@@ -242,6 +324,9 @@ pub fn table(rows: &[Row]) -> String {
         out.push_str(&format!("{}\t{}\t{logit}\t{}", r.path.display(), r.status, r.flagged() as u8));
         if let Some((x, y, w, h)) = r.crop {
             out.push_str(&format!("\t{x}\t{y}\t{w}\t{h}"));
+            if let Some(z) = r.reencoded {
+                out.push_str(&format!("\t{z:.6}"));
+            }
         }
         out.push('\n');
     }
@@ -278,6 +363,22 @@ mod tests {
         // At the bottom left, rows count from the top of the image.
         let low = FaceBox { x: 0.0, y: 0.0, w: 0.125, h: 0.125 };
         assert_eq!(crop_rect(&low, 1024, 512), Some((0, 512 - 135, 167, 135)));
+    }
+
+    #[test]
+    fn vision_counts_rows_from_the_bottom_and_pixels_from_the_top() {
+        // A face in the upper left of a tall image: Vision's `y` is the
+        // distance of the box's lower edge from the bottom, as a fraction.
+        let face = FaceBox { x: 0.125, y: 0.75, w: 0.25, h: 0.125 };
+        // 128 by 128 pixels in 512 by 1024, centred 128 from the left and
+        // 832 from the bottom, so 192 from the top; side 204.8.
+        let (left, top, w, h) = crop_rect(&face, 512, 1024).unwrap();
+        assert_eq!((left, top, w, h), (25, 89, 206, 206));
+        // The square's centre is the face's, measured from the top.
+        assert_eq!((left + w / 2, top + h / 2), (128, 192));
+        // The same box mirrored top to bottom lands as far from the bottom edge.
+        let mirrored = FaceBox { y: 1.0 - face.y - face.h, ..face };
+        assert_eq!(crop_rect(&mirrored, 512, 1024), Some((25, 1024 - 89 - 206, 206, 206)));
     }
 
     #[test]

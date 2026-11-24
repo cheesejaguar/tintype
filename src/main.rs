@@ -1045,6 +1045,12 @@ enum Cmd {
         /// Find and cut out the largest face of each file first.
         #[arg(long)]
         detect: bool,
+        /// What Vision is shown: `file` (the file as Core Image reads it, the boxes of the reference crop tool) or `pixels` (this crate's decode: one decode less, slightly different boxes).
+        #[arg(long, default_value = "file", requires = "detect")]
+        face_input: String,
+        /// Also score each square after a JPEG round trip at this quality (1-100), in one more column; the flag stays on the square as cut.
+        #[arg(long, value_name = "QUALITY", requires = "detect")]
+        reencode_crop: Option<u8>,
         /// Score only the first N files.
         #[arg(long)]
         limit: Option<usize>,
@@ -2041,7 +2047,7 @@ fn main() -> Result<()> {
             anyhow::ensure!(!items.is_empty(), "the manifests list no items");
             tintype::partial::score_windows(&weights, &items, &out, parse_device(&device)?, &tintype::partial::WindowOptions { stride, max_windows, batch, threads })
         }
-        Cmd::FaceStage { weights, manifest, out, detect, limit, batch, device, threads, bench } => {
+        Cmd::FaceStage { weights, manifest, out, detect, face_input, reencode_crop, limit, batch, device, threads, bench } => {
             use tintype::face;
             let mut paths = face::manifest_paths(&manifest)?;
             paths.truncate(limit.unwrap_or(usize::MAX));
@@ -2050,7 +2056,12 @@ fn main() -> Result<()> {
             let loading = std::time::Instant::now();
             let det = face::load(&weights, batch, device)?;
             eprintln!("experimental face stage on {device:?}: model loaded in {:.1} s", loading.elapsed().as_secs_f64());
-            let (rows, spent) = face::run(&det, &paths, detect, threads)?;
+            let input = match face_input.as_str() {
+                "file" => face::FaceInput::File,
+                "pixels" => face::FaceInput::Pixels,
+                other => anyhow::bail!("unknown --face-input `{other}` (use file or pixels)"),
+            };
+            let (rows, spent) = face::run(&det, &paths, face::Options { detect: detect.then_some(input), reencode: reencode_crop, threads })?;
             std::fs::write(&out, face::table(&rows))?;
             let flagged = rows.iter().filter(|r| r.flagged()).count();
             println!("{} files, {} scored, {flagged} above {}", rows.len(), spent.scored, face::FACE_CUTOFF);
