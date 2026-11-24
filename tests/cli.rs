@@ -1486,3 +1486,90 @@ fn edit_views_takes_one_or_three_and_needs_the_edit_check() {
     assert!(!alone.status.success());
     assert!(String::from_utf8_lossy(&alone.stderr).contains("--edit-check"), "{}", String::from_utf8_lossy(&alone.stderr));
 }
+
+/// `--face-check` and `--face-finder-model` go together, and both files are
+/// opened before any photo is read: one without the other, a face model
+/// that is not there, and a finder that is missing or is not YuNet are each
+/// refused with a message that names the flag.
+#[test]
+fn face_check_needs_both_of_its_files_and_refuses_unreadable_ones() {
+    let dir = common::scratch("face-check-flags");
+    let png = dir.join("a.png");
+    common::write_fixture(&png);
+    let weights = common::photo_weights();
+    let run = |extra: &[&str]| {
+        let o = bin().args(["detect", "--device", "cpu", "--json", "--weights", weights.to_str().unwrap()]).args(extra).arg(&png).current_dir(common::repo()).output().unwrap();
+        assert!(!o.status.success(), "{extra:?} was accepted");
+        assert!(o.stdout.is_empty(), "{extra:?} wrote a result");
+        String::from_utf8_lossy(&o.stderr).into_owned()
+    };
+    let face_only = run(&["--face-check", "face.safetensors"]);
+    assert!(face_only.contains("--face-finder-model"), "{face_only}");
+    let finder_only = run(&["--face-finder-model", "yunet.onnx"]);
+    assert!(finder_only.contains("--face-check"), "{finder_only}");
+    let (missing, garbage) = (dir.join("missing.safetensors"), dir.join("not-yunet.onnx"));
+    std::fs::write(&garbage, b"not an ONNX file").unwrap();
+    // The face model is missing: said before the finder is looked at.
+    let no_model = run(&["--face-check", missing.to_str().unwrap(), "--face-finder-model", garbage.to_str().unwrap()]);
+    assert!(no_model.contains("--face-check: cannot read") && no_model.contains("missing.safetensors"), "{no_model}");
+    // The face model can be opened (any file will do here); the finder cannot.
+    let present = weights.to_str().unwrap();
+    let no_finder = run(&["--face-check", present, "--face-finder-model", dir.join("missing.onnx").to_str().unwrap()]);
+    assert!(no_finder.contains("--face-finder-model") && no_finder.contains("missing.onnx"), "{no_finder}");
+    let bad_finder = run(&["--face-check", present, "--face-finder-model", garbage.to_str().unwrap()]);
+    assert!(bad_finder.contains("--face-finder-model") && bad_finder.contains("not-yunet.onnx"), "{bad_finder}");
+    // `batch` takes the same pair.
+    let batch = bin().args(["batch", "--device", "cpu", "--face-check", "face.safetensors"]).arg(&dir).current_dir(common::repo()).output().unwrap();
+    assert!(!batch.status.success());
+    assert!(String::from_utf8_lossy(&batch.stderr).contains("--face-finder-model"));
+}
+
+/// Without `--face-check` nothing of the face check shows: a photo's JSON
+/// row has exactly the keys it had before the flag existed, the text line
+/// is the verdict, the score and the path, and `detect` and `batch` write
+/// the same row twice over.
+#[test]
+fn without_the_face_check_the_output_is_what_it_was() {
+    let dir = common::scratch("face-check-off");
+    let png = dir.join("a.png");
+    common::write_fixture(&png);
+    let first = detect(&[&png], &["--json"]);
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    assert_eq!(stdout(&first), stdout(&detect(&[&png], &["--json"])), "two runs differ");
+    let row = &json_lines(&first)[0];
+    let keys: Vec<&str> = row.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["kind", "logit", "path", "profile", "score", "second_opinion", "threshold_logit", "verdict", "views"]);
+    let text = stdout(&detect(&[&png], &[]));
+    let verdict = if score_of(row).unwrap() > 0.5 { "AI-GENERATED" } else { "likely real" };
+    assert_eq!(text, format!("{verdict:<14} {:>5.3}  {}\n", score_of(row).unwrap(), png.display()));
+    let weights = common::photo_weights();
+    let batch = tintype(&["batch", "--device", "cpu", "--no-photo-second-opinion", "--json", "--weights", weights.to_str().unwrap(), dir.to_str().unwrap()]);
+    assert!(batch.status.success(), "{}", String::from_utf8_lossy(&batch.stderr));
+    assert_eq!(&json_lines(&batch)[0], row);
+    assert!(!stdout(&batch).contains("face_check"));
+}
+
+/// The face check end to end, on the CPU engine. The face model's weights
+/// are not distributed and the YuNet file is not in the repository, so this
+/// runs only when asked for, with both named:
+/// `TINTYPE_FACE_MODEL=... TINTYPE_YUNET_MODEL=... cargo test --release --test cli -- --ignored face_check_end_to_end`.
+/// The fixture has no face: the row keeps every field of the run without
+/// the flag and gains a `face_check` that found nothing.
+#[test]
+#[ignore]
+fn face_check_end_to_end() {
+    let face = std::env::var("TINTYPE_FACE_MODEL").expect("TINTYPE_FACE_MODEL names the face model's weights");
+    let finder = std::env::var("TINTYPE_YUNET_MODEL").expect("TINTYPE_YUNET_MODEL names face_detection_yunet_2023mar.onnx");
+    let dir = common::scratch("face-check-on");
+    let png = dir.join("a.png");
+    common::write_fixture(&png);
+    let plain = json_lines(&detect(&[&png], &["--json"])).remove(0);
+    let checked = detect(&[&png], &["--json", "--face-check", &face, "--face-finder-model", &finder]);
+    assert!(checked.status.success(), "{}", String::from_utf8_lossy(&checked.stderr));
+    let mut row = json_lines(&checked).remove(0);
+    let face_check = row.as_object_mut().unwrap().remove("face_check").expect("no face_check field");
+    assert_eq!(row, plain);
+    let expected = if score_of(&plain).unwrap() > 0.5 { "skipped" } else { "no-face" };
+    assert_eq!(face_check["status"], expected, "{face_check}");
+    assert_eq!(face_check["flagged"], false);
+}

@@ -15,6 +15,10 @@ Third-party work this project builds on:
   released weights; the weights are downloaded by `tintype data baselines`
   and are not redistributed. WaveRep's weights also serve as the optional
   second opinion for video (`detect --second-opinion`).
+- **YuNet** (`face_detection_yunet_2023mar.onnx`, OpenCV Zoo; MIT) is the
+  face finder of the opt-in `--face-check`. The network is re-implemented
+  here in Rust to run that file, which is supplied by the user and is not
+  redistributed.
 - **rust_h264** and **rust_h265** (MIT OR Apache-2.0) decode video where
   there is no system decoder, and **gemm** (MIT) multiplies matrices for the
   CPU engine off macOS. H.264 and HEVC are covered by patents in some
