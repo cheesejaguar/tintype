@@ -698,6 +698,21 @@ development data before the blind reads below. The weights are not part of
 this repository or of a release; the flag takes the path of a file converted
 from the research checkpoint.
 
+`--edit-views 3` scores three squares of the same resize, both ends of the
+longer side and the centre, and compares the highest of the three logits
+with 3.5492 (frozen the same way before its own blind read). On a
+1024 x 577 photo the centre square covers 56% of the width, so an edit near
+either end is never shown to the single view. On a further fresh OpenSDI
+draw (5,000 + 5,000, research blind batch 14), with a research arm as the
+base decision, three views found 38.7% of locally edited images against
+33.7% for one view (+5.0 points, 95% interval 4.0 to 6.0) and flagged 1.24%
+of authentic photos against 0.88%; with the shipped default as the base
+decision the pair found 39.7% and flagged 1.48%. The edit model then runs
+three times per photo: alone, in half precision on the Apple GPU, 52 to 71
+photos per second against 193 to 198 for one view. In development reads
+three views gave no gain on Semi-Truths or MagicBrush edits. It is an
+option, not the default.
+
 What was measured, with the rule applied to the default decision:
 
 | Blind batch | Rule | Precision | Recall | Authentic flagged | Locally edited found |

@@ -23,6 +23,7 @@ pub enum ViewSpec {
     FitPillow { resize: u32, crop: u32 },
     SquashPillow { size: u32 },
     ShortPillowBicubic { size: u32 },
+    ShortPillowBicubicAt { size: u32, at: u32 },
     CenterPad { crop: u32 },
 }
 
@@ -36,6 +37,7 @@ impl From<ViewSpec> for View {
             ViewSpec::FitPillow { resize, crop } => View::FitPillow { resize, crop },
             ViewSpec::SquashPillow { size } => View::SquashPillow { size },
             ViewSpec::ShortPillowBicubic { size } => View::ShortPillowBicubic { size },
+            ViewSpec::ShortPillowBicubicAt { size, at } => View::ShortPillowBicubicAt { size, at },
             ViewSpec::CenterPad { crop } => View::CenterPad { crop },
         }
     }
@@ -278,16 +280,28 @@ pub fn load_photo_second(weights2: &Path, batch: usize, device: Device) -> Resul
 /// above the cutoff.
 pub const EDIT_CHECK_CUTOFF: f32 = 3.2845;
 
-/// The local-edit network (see [`ModelSpec::edit_check`]), loaded for
-/// batches of up to `batch` photos.
-pub fn load_edit_check(weights: &Path, batch: usize, device: Device) -> Result<Detector> {
-    Detector::load(weights, Some(ModelSpec::edit_check()), batch.max(1), device)
+/// Cutoff of the three-view edit check (`--edit-views 3`), on the highest
+/// of the three logits. Frozen on development data before its blind read
+/// (research `EDIT-HEAD.md`, `BLIND14.md`).
+pub const EDIT_CHECK_CUTOFF_THREE: f32 = 3.5492;
+
+/// The cutoff that goes with `views` views of the edit model.
+pub fn edit_check_cutoff(views: usize) -> f32 {
+    if views == 3 { EDIT_CHECK_CUTOFF_THREE } else { EDIT_CHECK_CUTOFF }
 }
 
-/// The edit model's logit for each photo that could be read.
+/// The local-edit network (see [`ModelSpec::edit_check`]), loaded for
+/// batches of up to `batch` photos, each scored on `views` views (1 or 3).
+pub fn load_edit_check(weights: &Path, batch: usize, device: Device, views: usize) -> Result<Detector> {
+    let spec = if views == 3 { ModelSpec::edit_check_three() } else { ModelSpec::edit_check() };
+    Detector::load(weights, Some(spec), batch.max(1), device)
+}
+
+/// The edit model's logit for each photo that could be read: the highest
+/// over the views the network was loaded with.
 pub fn edit_check_with(det: &Detector, paths: &[PathBuf], threads: usize) -> (Vec<Option<f32>>, Timing) {
     let (res, t) = det.score_files(paths, threads);
-    (res.into_iter().map(|r| r.map(|l| l[0])).collect(), t)
+    (res.into_iter().map(|r| r.map(|l| l.iter().copied().fold(f32::NEG_INFINITY, f32::max))).collect(), t)
 }
 
 /// [`photo_second_opinion`] with the second network already loaded.
@@ -444,6 +458,14 @@ impl ModelSpec {
     /// with Pillow's bicubic filter and centre-cropped.
     pub fn edit_check() -> Self {
         Self { img: 224, views: vec![ViewSpec::ShortPillowBicubic { size: 224 }], prefix: String::new(), arch: "vit_base_patch14_reg4_dinov2".into(), ..Self::commfor(224) }
+    }
+
+    /// [`ModelSpec::edit_check`] on three squares of the same resize: both
+    /// ends of the longer side and the centre (`--edit-views 3`). An edit
+    /// near an end of a wide or tall photo is outside the centre square.
+    pub fn edit_check_three() -> Self {
+        let views = vec![ViewSpec::ShortPillowBicubicAt { size: 224, at: 0 }, ViewSpec::ShortPillowBicubic { size: 224 }, ViewSpec::ShortPillowBicubicAt { size: 224, at: 1000 }];
+        Self { views, ..Self::edit_check() }
     }
 
     /// The Community Forensics baseline's own preprocessing.
