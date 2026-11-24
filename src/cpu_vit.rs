@@ -393,6 +393,17 @@ struct Block {
     norm2: Norm,
     fc1: Lin,
     fc2: Lin,
+    /// Per-channel scaling of the two residual branches (`ls1.gamma`,
+    /// `ls2.gamma`), for networks that have it (DINOv2).
+    ls1: Option<Vec<f32>>,
+    ls2: Option<Vec<f32>>,
+}
+
+/// Multiply each row of `y` by `gamma`, channel by channel; nothing without one.
+fn layer_scale(y: &mut [f32], gamma: &Option<Vec<f32>>) {
+    if let Some(g) = gamma {
+        y.par_chunks_mut(g.len()).for_each(|row| row.iter_mut().zip(g).for_each(|(v, g)| *v *= g));
+    }
 }
 
 /// Logits together with token embeddings read out of the network part-way
@@ -413,6 +424,8 @@ pub struct CpuVit {
     cfg: VitConfig,
     patch: Lin,
     cls: Vec<f32>,
+    /// Register tokens (`[reg_tokens, dim]`), empty for networks without.
+    reg: Vec<f32>,
     pos: Vec<f32>,
     blocks: Vec<Block>,
     norm: Norm,
@@ -464,7 +477,12 @@ impl CpuVit {
     }
 
     fn load(w: &Weights, cfg: VitConfig) -> Result<Self> {
-        anyhow::ensure!(cfg.reg_tokens == 0 && !cfg.layer_scale && !cfg.pos_on_patches_only, "this architecture runs on the GPU engine only");
+        anyhow::ensure!(cfg.reg_tokens == 0 || cfg.pos_on_patches_only, "register tokens with a position embedding over every token are not supported");
+        let gamma = |name: String| -> Result<Option<Vec<f32>>> { Ok(if cfg.layer_scale { Some(w.get(&name)?.0.clone()) } else { None }) };
+        let reg = if cfg.reg_tokens > 0 { w.get("reg_token")?.0.clone() } else { Vec::new() };
+        let side = cfg.img / cfg.patch;
+        let positions = side * side + if cfg.pos_on_patches_only { 0 } else { 1 };
+        anyhow::ensure!(reg.len() == cfg.reg_tokens * cfg.dim && w.get("pos_embed")?.0.len() == positions * cfg.dim, "the weights do not fit a {}-pixel network of this architecture", cfg.img);
         let blocks = (0..cfg.depth)
             .map(|i| {
                 let p = format!("blocks.{i}");
@@ -475,6 +493,8 @@ impl CpuVit {
                     norm2: Norm::load(w, &format!("{p}.norm2"))?,
                     fc1: Lin::load(w, &format!("{p}.mlp.fc1"))?,
                     fc2: Lin::load(w, &format!("{p}.mlp.fc2"))?,
+                    ls1: gamma(format!("{p}.ls1.gamma"))?,
+                    ls2: gamma(format!("{p}.ls2.gamma"))?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -482,6 +502,7 @@ impl CpuVit {
             cfg,
             patch: Lin::load(w, "patch_embed.proj")?,
             cls: w.get("cls_token")?.0.clone(),
+            reg,
             pos: w.get("pos_embed")?.0.clone(),
             blocks,
             norm: Norm::load(w, "norm")?,
@@ -563,10 +584,11 @@ impl CpuVit {
         Ok(self.split(x, blocks, false))
     }
 
-    /// Tokens of one view: the class token and the patch tokens.
+    /// Tokens of one view: the class token, any register tokens and the
+    /// patch tokens.
     pub fn tokens_per_view(&self) -> usize {
         let side = self.cfg.img / self.cfg.patch;
-        side * side + 1
+        side * side + self.cfg.prefix_tokens()
     }
 
     /// [`CpuVit::run`], one view to a thread when there are several.
@@ -592,7 +614,7 @@ impl CpuVit {
     fn run(&self, x: &[u8], taps: &[usize], tokens: bool) -> Tapped {
         let c = &self.cfg;
         let (p, side, d) = (c.patch, c.img / c.patch, c.dim);
-        let (np, n) = (side * side, side * side + 1);
+        let (np, n) = (side * side, side * side + c.prefix_tokens());
         let view = 3 * c.img * c.img;
         let b = x.len() / view;
         // Timed on this thread from here on: one pass, however many views it holds.
@@ -624,9 +646,13 @@ impl CpuVit {
 
         let mut t = vec![0f32; b * n * d];
         t.par_chunks_mut(n * d).zip(emb.par_chunks(np * d)).for_each(|(o, e)| {
+            let first = (n - np) * d;
             o[..d].copy_from_slice(&self.cls);
-            o[d..].copy_from_slice(e);
-            for (v, pe) in o.iter_mut().zip(&self.pos) {
+            o[d..first].copy_from_slice(&self.reg);
+            o[first..].copy_from_slice(e);
+            // timm's `no_embed_class`: positions for the patch tokens only.
+            let positioned = if c.pos_on_patches_only { &mut o[first..] } else { &mut o[..] };
+            for (v, pe) in positioned.iter_mut().zip(&self.pos) {
                 *v += pe;
             }
         });
@@ -720,6 +746,7 @@ impl CpuVit {
             attention_took(at, [spent[0], spent[1]], spent[2]);
             self.round_input(Layer::Proj, att, d, n);
             PROJ_TIME.time(|| blk.proj.apply(att, y, rows));
+            layer_scale(y, &blk.ls1);
             RESIDUAL_TIME.time(|| t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b));
 
             NORM_TIME.time(|| blk.norm2.apply(t, y));
@@ -728,6 +755,7 @@ impl CpuVit {
             GELU_TIME.time(|| gelu_inplace(hid));
             self.round_input(Layer::Fc2, hid, d * c.mlp_ratio, n);
             FC2_TIME.time(|| blk.fc2.apply(hid, y, rows));
+            layer_scale(y, &blk.ls2);
             RESIDUAL_TIME.time(|| t.par_iter_mut().zip(y.par_iter()).for_each(|(a, b)| *a += b));
         };
         for (i, blk) in self.blocks[..last].iter().enumerate() {
@@ -771,6 +799,7 @@ impl CpuVit {
         // One token to a view from here on, so a view's range is that token's.
         self.round_input(Layer::Proj, &mut cls_att, d, 1);
         PROJ_TIME.time(|| blk.proj.apply(&cls_att, &mut yc, b));
+        layer_scale(&mut yc, &blk.ls1);
         cls.iter_mut().zip(&yc).for_each(|(a, v)| *a += v);
         NORM_TIME.time(|| blk.norm2.apply(&cls, &mut yc));
         self.round_input(Layer::Fc1, &mut yc, d, 1);
@@ -779,6 +808,7 @@ impl CpuVit {
         GELU_TIME.time(|| gelu_inplace(&mut hc));
         self.round_input(Layer::Fc2, &mut hc, d * c.mlp_ratio, 1);
         FC2_TIME.time(|| blk.fc2.apply(&hc, &mut yc, b));
+        layer_scale(&mut yc, &blk.ls2);
         cls.iter_mut().zip(&yc).for_each(|(a, v)| *a += v);
         if tokens {
             FORWARD_TIME.since(started);
@@ -939,6 +969,90 @@ mod tests {
         // The patch tokens of two different views differ, and block 0 differs from block 3.
         assert!(tapped.tokens[0][d..2 * d] != tapped.tokens[0][n * d + d..][..d]);
         assert!(tapped.tokens[0][..n * d] != tapped.tokens[1][..n * d]);
+    }
+
+    /// [`tiny`]'s shape with register tokens, LayerScale and positions on
+    /// the patch tokens only (the DINOv2 layout); `gamma` fills every
+    /// LayerScale vector when given, otherwise they are random.
+    fn tiny_with_registers(gamma: Option<f32>) -> (CpuVit, Weights, VitConfig) {
+        let cfg = VitConfig { img: 28, patch: 14, dim: 24, depth: 3, heads: 2, mlp_ratio: 4, reg_tokens: 2, layer_scale: true, pos_on_patches_only: true };
+        let mut rng = crate::rng::Rng::new(7);
+        let mut w = Weights::default();
+        let mut put = |name: &str, shape: &[usize], scale: f32, offset: f32| {
+            let data = (0..shape.iter().product::<usize>()).map(|_| offset + scale * (rng.f32() - 0.5)).collect();
+            w.insert(name, data, shape.to_vec());
+        };
+        let d = cfg.dim;
+        put("patch_embed.proj.weight", &[d, 3, cfg.patch, cfg.patch], 0.2, 0.0);
+        put("patch_embed.proj.bias", &[d], 0.2, 0.0);
+        put("cls_token", &[1, 1, d], 0.5, 0.0);
+        put("reg_token", &[1, 2, d], 0.5, 0.0);
+        put("pos_embed", &[1, 4, d], 0.5, 0.0);
+        for i in 0..cfg.depth {
+            for (name, out, inp) in [("attn.qkv", 3 * d, d), ("attn.proj", d, d), ("mlp.fc1", 4 * d, d), ("mlp.fc2", d, 4 * d)] {
+                put(&format!("blocks.{i}.{name}.weight"), &[out, inp], 0.6, 0.0);
+                put(&format!("blocks.{i}.{name}.bias"), &[out], 0.2, 0.0);
+            }
+            for norm in ["norm1", "norm2"] {
+                put(&format!("blocks.{i}.{norm}.weight"), &[d], 0.2, 1.0);
+                put(&format!("blocks.{i}.{norm}.bias"), &[d], 0.2, 0.0);
+            }
+            for ls in ["ls1", "ls2"] {
+                match gamma {
+                    Some(g) => put(&format!("blocks.{i}.{ls}.gamma"), &[d], 0.0, g),
+                    None => put(&format!("blocks.{i}.{ls}.gamma"), &[d], 1.0, 0.5),
+                }
+            }
+        }
+        put("norm.weight", &[d], 0.2, 1.0);
+        put("norm.bias", &[d], 0.2, 0.0);
+        put("head.weight", &[1, d], 1.0, 0.0);
+        put("head.bias", &[1], 0.2, 0.0);
+        (CpuVit::new(&w, cfg).unwrap(), w, cfg)
+    }
+
+    #[test]
+    fn register_tokens_and_layer_scale_run_on_the_cpu_engine() {
+        let (vit, w, cfg) = tiny_with_registers(None);
+        // Class token, two registers, four patches.
+        assert_eq!(vit.tokens_per_view(), 7);
+        let x = views(2, &cfg);
+        let tapped = vit.forward_tokens(&x, &[3]).unwrap();
+        let (n, d) = (vit.tokens_per_view(), cfg.dim);
+        assert_eq!(tapped.tokens[0].len(), 2 * n * d);
+        for v in 0..2 {
+            // The last block in full gives the class token its shortcut gives.
+            let mut z = vec![0f32; 1];
+            vit.head.apply(&tapped.tokens[0][v * n * d..][..d], &mut z, 1);
+            assert!((z[0] - tapped.logits[v]).abs() < 1e-4, "view {v}: {} vs {}", z[0], tapped.logits[v]);
+        }
+        assert!((tapped.logits[0] - tapped.logits[1]).abs() > 1e-4, "different views should score differently");
+        // The registers and the LayerScale vectors are part of the result.
+        for name in ["reg_token", "blocks.1.ls1.gamma", "blocks.2.ls2.gamma"] {
+            let mut changed = w.clone();
+            // Not the same amount everywhere: layer norm would take a uniform shift of a token out again.
+            changed.0.get_mut(name).unwrap().0.iter_mut().enumerate().for_each(|(i, v)| *v += 0.25 * (i % 3) as f32);
+            let other = CpuVit::new(&changed, cfg).unwrap().forward(&x);
+            assert!((other[0] - tapped.logits[0]).abs() > 1e-5, "{name} does not reach the logit");
+        }
+        // Weights missing what the layout needs are refused.
+        let mut without = w.clone();
+        without.0.remove("blocks.0.ls1.gamma");
+        assert!(CpuVit::new(&without, cfg).is_err());
+        assert!(CpuVit::new(&w, VitConfig { img: 42, ..cfg }).is_err());
+    }
+
+    #[test]
+    fn with_layer_scale_at_zero_the_class_token_passes_through_untouched() {
+        // Every residual branch is scaled to nothing, and the class token
+        // gets no position: the logit is the head on the normalised class
+        // token whatever the image shows.
+        let (vit, w, cfg) = tiny_with_registers(Some(0.0));
+        let logits = vit.forward(&views(2, &cfg));
+        let want = vit.read_out(&w.get("cls_token").unwrap().0)[0];
+        for z in logits {
+            assert!((z - want).abs() < 1e-6, "{z} against {want}");
+        }
     }
 
     #[test]
