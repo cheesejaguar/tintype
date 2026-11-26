@@ -412,8 +412,12 @@ Images are decoded and resized in Rust (`image`, `zune-jpeg`,
 `fast_image_resize`) on all cores and fed to the engine through a bounded
 queue. Video is decoded in-process by AVFoundation on macOS, with a pure-Rust
 fallback that also runs on Linux and Windows (an MP4/MOV parser written for
-this project feeding the `rust_h264` and `rust_h265` decoders). The YCbCr→RGB conversion
-is done in Rust either way.
+this project feeding the `rust_h264`, `rust_h265` and `filmcraft-vp9`
+decoders, and a WebM/Matroska reader on `matroska-demuxer` feeding
+`filmcraft-vp9` and `filmcraft-vp8`). VP9 and WebM go to the fallback on
+macOS too, since AVFoundation reads neither; its VP9 and VP8 frames match
+libvpx's bit for bit ([check](docs/results/vp9-decode/README.md)). The
+YCbCr→RGB conversion is done in Rust either way.
 
 The GPU engine compiles the photo network ahead of time. It compiles one
 network for the job's batch size, plus batches of 16 and 32 views for runs
@@ -685,11 +689,14 @@ tintype evaluate confirm4 --baselines
 - The GPU engine, training, the evaluation commands and the video second
   opinion are Apple-only.
 - Video containers and codecs: on macOS the system decoder reads MP4 and MOV
-  with H.264, HEVC or MPEG-4 Part 2; AVI and WebM do not work. On Linux and
-  Windows the pure-Rust reader takes MP4 and MOV with H.264 or HEVC in 4:2:0
-  only – not lossless H.264, MPEG-4 Part 2 or fragmented files – and such
-  clips are reported as unreadable. `TINTYPE_DECODER=rust` selects that reader on
-  macOS too.
+  with H.264, HEVC or MPEG-4 Part 2, and the pure-Rust reader takes over for
+  what it cannot read. That reader, the only one on Linux and Windows, takes
+  MP4 and MOV with H.264, HEVC or VP9, and WebM and Matroska with VP9 or VP8,
+  all in 4:2:0 only – not lossless H.264, MPEG-4 Part 2, VP9 in 4:2:2 or
+  4:4:4, or fragmented files – and such clips are reported as unreadable.
+  AVI does not work anywhere. `TINTYPE_DECODER=rust` selects that reader on
+  macOS for everything. The HTTP API takes MP4 and MOV uploads with H.264 or
+  HEVC only.
 
 ## 📜 Licence
 

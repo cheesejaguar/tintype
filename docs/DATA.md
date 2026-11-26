@@ -198,7 +198,9 @@ of Sakugabooru (846 of the 1,053): 1,707 of the roughly 67,000 training clips.
 The H.264 re-encoding augmentation also changed encoder, from x264 to the
 system's. HEVC files tagged `hev1`, which the system decoder refuses as they
 are (all of GenBuster, some AIGVDBench clips), are read through a temporary
-copy with the tag corrected.
+copy with the tag corrected. The pure-Rust reader has since learned WebM
+with VP8 and VP9, but the plans are unchanged, so the training sets are still
+the ones described here.
 
 ### Phase 6 (8,000 steps; plan `phase6`) – the released photo weights
 

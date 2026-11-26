@@ -188,7 +188,7 @@ curl --fail-with-body \
 | Request body | 64 MiB including multipart metadata |
 | Filename | 1–255 UTF-8 bytes |
 | Images | JPEG, PNG, WebP, GIF, BMP, TIFF. Up to 50 million pixels, 16,384 pixels per side, and a 32:1 aspect ratio. Images are scored at full resolution, never downscaled |
-| Videos | Progressive MP4/MOV/M4V with one H.264 or HEVC video track in 4:2:0. Up to 2.2 million pixels per frame, 4,096 pixels per side, and a 32:1 aspect ratio. Container index up to 4 MiB, with up to 8,192 samples of up to 8 MiB each |
+| Videos | Progressive MP4/MOV/M4V with one H.264 or HEVC video track in 4:2:0. Up to 2.2 million pixels per frame, 4,096 pixels per side, and a 32:1 aspect ratio. Container index up to 4 MiB, with up to 8,192 samples of up to 8 MiB each. VP9 and WebM, which the local commands read, are not accepted as uploads |
 | Concurrent inference requests | Four across uploading, waiting, and scoring. One model worker processes jobs sequentially and batches work within each request |
 | Deadlines | 20 seconds for upload and 90 seconds for queueing plus inference |
 
