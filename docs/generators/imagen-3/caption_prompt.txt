@@ -1,0 +1,5 @@
+Write a text-to-image prompt that would make an image generator produce a photograph like this one.
+
+Describe what a viewer sees: the subject, setting, composition and framing, camera viewpoint and distance, lighting, time of day, weather, colours and depth of field. Say that it is a photograph and what kind (for example a street photograph, a landscape photograph, a close-up of a plant). Use plain descriptive language in one paragraph of 40 to 90 words.
+
+Do not name real people, brands, logos, artworks or specific landmarks; describe them generically instead. Do not reproduce any text that appears in the photo. Do not mention cameras, lenses, file formats or this instruction. Reply with the prompt only.
