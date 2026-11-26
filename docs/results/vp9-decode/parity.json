@@ -1,0 +1,606 @@
+{
+ "ffmpeg": "ffmpeg version 9.0.2 Copyright (c) 2000-2026 the FFmpeg developers",
+ "platform": "Darwin 27.2.0 arm64",
+ "clips": [
+  {
+   "clip": "a_vp9_360p.mp4",
+   "codec": "vp9",
+   "pix_fmt": "yuv420p",
+   "size": [
+    640,
+    360
+   ],
+   "bytes": 908948,
+   "reader_frames": 120,
+   "reader_tags_bt709_full_range": [
+    false,
+    false
+   ],
+   "stream_colour": {
+    "color_space": null,
+    "color_range": "tv",
+    "color_primaries": null
+   },
+   "max_time_difference_s": 0.0,
+   "ffprobe_frames": 120,
+   "decoders": {
+    "libvpx-vp9": {
+     "frames": 120,
+     "identical": 120,
+     "first_difference": null
+    },
+    "vp9": {
+     "frames": 120,
+     "identical": 120,
+     "first_difference": null
+    }
+   },
+   "pixels_and_times_match": true,
+   "control": {
+    "bytes": 6061170,
+    "decodes_to_source_planes": true,
+    "same_times": true,
+    "default": {
+     "identical": true,
+     "fields_that_differ": [],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      4.0,
+      4.0
+     ],
+     "vp9_logit": 2.0770773887634277,
+     "control_logit": 2.0770773887634277,
+     "verdicts": [
+      "ai-generated",
+      "ai-generated"
+     ]
+    },
+    "every_frame": {
+     "identical": true,
+     "fields_that_differ": [],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      4.0,
+      4.0
+     ],
+     "vp9_logit": 2.0770773887634277,
+     "control_logit": 2.0770773887634277,
+     "verdicts": [
+      "ai-generated",
+      "ai-generated"
+     ]
+    }
+   }
+  },
+  {
+   "clip": "b_vp9_720p_audio.webm",
+   "codec": "vp9",
+   "pix_fmt": "yuv420p",
+   "size": [
+    1280,
+    720
+   ],
+   "bytes": 2412878,
+   "reader_frames": 72,
+   "reader_tags_bt709_full_range": [
+    true,
+    false
+   ],
+   "stream_colour": {
+    "color_space": null,
+    "color_range": "tv",
+    "color_primaries": null
+   },
+   "max_time_difference_s": 0.0,
+   "ffprobe_frames": 72,
+   "decoders": {
+    "libvpx-vp9": {
+     "frames": 72,
+     "identical": 72,
+     "first_difference": null
+    },
+    "vp9": {
+     "frames": 72,
+     "identical": 72,
+     "first_difference": null
+    }
+   },
+   "pixels_and_times_match": true,
+   "control": {
+    "bytes": 15702909,
+    "decodes_to_source_planes": true,
+    "same_times": true,
+    "default": {
+     "identical": false,
+     "fields_that_differ": [
+      "analysed_until_s"
+     ],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      2.999666666,
+      2.999
+     ],
+     "vp9_logit": 1.2895548343658447,
+     "control_logit": 1.2895548343658447,
+     "verdicts": [
+      "likely-real",
+      "likely-real"
+     ]
+    },
+    "every_frame": {
+     "identical": false,
+     "fields_that_differ": [
+      "analysed_until_s"
+     ],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      2.999666666,
+      2.999
+     ],
+     "vp9_logit": 1.2895548343658447,
+     "control_logit": 1.2895548343658447,
+     "verdicts": [
+      "likely-real",
+      "likely-real"
+     ]
+    }
+   }
+  },
+  {
+   "clip": "c_vp9_odd_bt709.webm",
+   "codec": "vp9",
+   "pix_fmt": "yuv420p",
+   "size": [
+    347,
+    251
+   ],
+   "bytes": 332744,
+   "reader_frames": 75,
+   "reader_tags_bt709_full_range": [
+    true,
+    false
+   ],
+   "stream_colour": {
+    "color_space": "bt709",
+    "color_range": "tv",
+    "color_primaries": null
+   },
+   "max_time_difference_s": 0.0,
+   "ffprobe_frames": 75,
+   "decoders": {
+    "libvpx-vp9": {
+     "frames": 75,
+     "identical": 75,
+     "first_difference": null
+    },
+    "vp9": {
+     "frames": 75,
+     "identical": 75,
+     "first_difference": null
+    }
+   },
+   "pixels_and_times_match": true,
+   "control": "not made: x264 encodes 4:2:0 only at even dimensions"
+  },
+  {
+   "clip": "d_vp9_720p_bt709.mp4",
+   "codec": "vp9",
+   "pix_fmt": "yuv420p",
+   "size": [
+    1280,
+    720
+   ],
+   "bytes": 1538190,
+   "reader_frames": 60,
+   "reader_tags_bt709_full_range": [
+    true,
+    false
+   ],
+   "stream_colour": {
+    "color_space": "bt709",
+    "color_range": "tv",
+    "color_primaries": null
+   },
+   "max_time_difference_s": 0.0,
+   "ffprobe_frames": 60,
+   "decoders": {
+    "libvpx-vp9": {
+     "frames": 60,
+     "identical": 60,
+     "first_difference": null
+    },
+    "vp9": {
+     "frames": 60,
+     "identical": 60,
+     "first_difference": null
+    }
+   },
+   "pixels_and_times_match": true,
+   "control": {
+    "bytes": 7565967,
+    "decodes_to_source_planes": true,
+    "same_times": true,
+    "default": {
+     "identical": true,
+     "fields_that_differ": [],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      2.0,
+      2.0
+     ],
+     "vp9_logit": 1.5145972967147827,
+     "control_logit": 1.5145972967147827,
+     "verdicts": [
+      "likely-real",
+      "likely-real"
+     ]
+    },
+    "every_frame": {
+     "identical": true,
+     "fields_that_differ": [],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      2.0,
+      2.0
+     ],
+     "vp9_logit": 1.5145972967147827,
+     "control_logit": 1.5145972967147827,
+     "verdicts": [
+      "likely-real",
+      "likely-real"
+     ]
+    }
+   }
+  },
+  {
+   "clip": "e_vp9_fullrange.mp4",
+   "codec": "vp9",
+   "pix_fmt": "yuv420p",
+   "size": [
+    480,
+    270
+   ],
+   "bytes": 580449,
+   "reader_frames": 75,
+   "reader_tags_bt709_full_range": [
+    false,
+    true
+   ],
+   "stream_colour": {
+    "color_space": "smpte170m",
+    "color_range": "pc",
+    "color_primaries": null
+   },
+   "max_time_difference_s": 0.0,
+   "ffprobe_frames": 75,
+   "decoders": {
+    "libvpx-vp9": {
+     "frames": 75,
+     "identical": 75,
+     "first_difference": null
+    },
+    "vp9": {
+     "frames": 75,
+     "identical": 75,
+     "first_difference": null
+    }
+   },
+   "pixels_and_times_match": true,
+   "control": {
+    "bytes": 4006945,
+    "decodes_to_source_planes": true,
+    "same_times": true,
+    "default": {
+     "identical": true,
+     "fields_that_differ": [],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      3.0,
+      3.0
+     ],
+     "vp9_logit": 0.6186797022819519,
+     "control_logit": 0.6186797022819519,
+     "verdicts": [
+      "likely-real",
+      "likely-real"
+     ]
+    },
+    "every_frame": {
+     "identical": true,
+     "fields_that_differ": [],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      3.0,
+      3.0
+     ],
+     "vp9_logit": 0.6186797022819519,
+     "control_logit": 0.6186797022819519,
+     "verdicts": [
+      "likely-real",
+      "likely-real"
+     ]
+    }
+   }
+  },
+  {
+   "clip": "f_vp9.mkv",
+   "codec": "vp9",
+   "pix_fmt": "yuv420p",
+   "size": [
+    320,
+    240
+   ],
+   "bytes": 167483,
+   "reader_frames": 60,
+   "reader_tags_bt709_full_range": [
+    false,
+    false
+   ],
+   "stream_colour": {
+    "color_space": null,
+    "color_range": "tv",
+    "color_primaries": null
+   },
+   "max_time_difference_s": 0.0,
+   "ffprobe_frames": 60,
+   "decoders": {
+    "libvpx-vp9": {
+     "frames": 60,
+     "identical": 60,
+     "first_difference": null
+    },
+    "vp9": {
+     "frames": 60,
+     "identical": 60,
+     "first_difference": null
+    }
+   },
+   "pixels_and_times_match": true,
+   "control": {
+    "bytes": 1005285,
+    "decodes_to_source_planes": true,
+    "same_times": true,
+    "default": {
+     "identical": true,
+     "fields_that_differ": [],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      2.0,
+      2.0
+     ],
+     "vp9_logit": 2.874054431915283,
+     "control_logit": 2.874054431915283,
+     "verdicts": [
+      "ai-generated",
+      "ai-generated"
+     ]
+    },
+    "every_frame": {
+     "identical": true,
+     "fields_that_differ": [],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      2.0,
+      2.0
+     ],
+     "vp9_logit": 2.8740549087524414,
+     "control_logit": 2.8740549087524414,
+     "verdicts": [
+      "ai-generated",
+      "ai-generated"
+     ]
+    }
+   }
+  },
+  {
+   "clip": "g_vp8_360p.webm",
+   "codec": "vp8",
+   "pix_fmt": "yuv420p",
+   "size": [
+    640,
+    360
+   ],
+   "bytes": 373885,
+   "reader_frames": 90,
+   "reader_tags_bt709_full_range": [
+    false,
+    false
+   ],
+   "stream_colour": {
+    "color_space": null,
+    "color_range": "tv",
+    "color_primaries": null
+   },
+   "max_time_difference_s": 0.0,
+   "ffprobe_frames": 90,
+   "decoders": {
+    "libvpx": {
+     "frames": 90,
+     "identical": 90,
+     "first_difference": null
+    },
+    "vp8": {
+     "frames": 90,
+     "identical": 90,
+     "first_difference": null
+    }
+   },
+   "pixels_and_times_match": true,
+   "control": {
+    "bytes": 2977994,
+    "decodes_to_source_planes": true,
+    "same_times": true,
+    "default": {
+     "identical": true,
+     "fields_that_differ": [],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      3.0,
+      3.0
+     ],
+     "vp9_logit": 1.9700207710266113,
+     "control_logit": 1.9700207710266113,
+     "verdicts": [
+      "ai-generated",
+      "ai-generated"
+     ]
+    },
+    "every_frame": {
+     "identical": true,
+     "fields_that_differ": [],
+     "frame_logits_identical": true,
+     "sampled_times_identical": true,
+     "durations_s": [
+      3.0,
+      3.0
+     ],
+     "vp9_logit": 1.9700207710266113,
+     "control_logit": 1.9700207710266113,
+     "verdicts": [
+      "ai-generated",
+      "ai-generated"
+     ]
+    }
+   }
+  },
+  {
+   "clip": "h_vp9_10bit.mp4",
+   "codec": "vp9",
+   "pix_fmt": "yuv420p10le",
+   "size": [
+    320,
+    180
+   ],
+   "bytes": 148215,
+   "reader_frames": 60,
+   "reader_tags_bt709_full_range": [
+    false,
+    false
+   ],
+   "stream_colour": {
+    "color_space": null,
+    "color_range": "tv",
+    "color_primaries": null
+   },
+   "max_time_difference_s": 0.0,
+   "ffprobe_frames": 60,
+   "decoders": {
+    "libvpx-vp9": {
+     "frames": 60,
+     "identical": 60,
+     "first_difference": null
+    },
+    "vp9": {
+     "frames": 60,
+     "identical": 60,
+     "first_difference": null
+    }
+   },
+   "pixels_and_times_match": true,
+   "control": "not made: the reader reduces deeper samples to 8 bits itself"
+  }
+ ],
+ "rust_path_matches_default": {
+  "a_vp9_360p.mp4": true,
+  "b_vp9_720p_audio.webm": true,
+  "c_vp9_odd_bt709.webm": true,
+  "d_vp9_720p_bt709.mp4": true,
+  "e_vp9_fullrange.mp4": true,
+  "f_vp9.mkv": true,
+  "g_vp8_360p.webm": true,
+  "h_vp9_10bit.mp4": true
+ },
+ "scores": {
+  "a_vp9_360p.mp4": {
+   "logit": 2.0770773887634277,
+   "score": 0.6114608645439148,
+   "verdict": "ai-generated",
+   "frames": 16,
+   "frames_expected": 16,
+   "complete": true,
+   "analysed_until_s": 3.75,
+   "duration_s": 4.0
+  },
+  "b_vp9_720p_audio.webm": {
+   "logit": 1.2895548343658447,
+   "score": 0.41845154762268066,
+   "verdict": "likely-real",
+   "frames": 16,
+   "frames_expected": 16,
+   "complete": true,
+   "analysed_until_s": 2.812187499375,
+   "duration_s": 2.999666666
+  },
+  "c_vp9_odd_bt709.webm": {
+   "logit": 3.542421817779541,
+   "score": 0.8709768652915955,
+   "verdict": "ai-generated",
+   "frames": 16,
+   "frames_expected": 16,
+   "complete": true,
+   "analysed_until_s": 2.8125,
+   "duration_s": 3.0
+  },
+  "d_vp9_720p_bt709.mp4": {
+   "logit": 1.5145972967147827,
+   "score": 0.47364944219589233,
+   "verdict": "likely-real",
+   "frames": 16,
+   "frames_expected": 16,
+   "complete": true,
+   "analysed_until_s": 1.875,
+   "duration_s": 2.0
+  },
+  "e_vp9_fullrange.mp4": {
+   "logit": 0.6186797022819519,
+   "score": 0.26976677775382996,
+   "verdict": "likely-real",
+   "frames": 16,
+   "frames_expected": 16,
+   "complete": true,
+   "analysed_until_s": 2.8125,
+   "duration_s": 3.0
+  },
+  "f_vp9.mkv": {
+   "logit": 2.874054431915283,
+   "score": 0.7765099406242371,
+   "verdict": "ai-generated",
+   "frames": 16,
+   "frames_expected": 16,
+   "complete": true,
+   "analysed_until_s": 1.875,
+   "duration_s": 2.0
+  },
+  "g_vp8_360p.webm": {
+   "logit": 1.9700207710266113,
+   "score": 0.5859071016311646,
+   "verdict": "ai-generated",
+   "frames": 16,
+   "frames_expected": 16,
+   "complete": true,
+   "analysed_until_s": 2.8125,
+   "duration_s": 3.0
+  },
+  "h_vp9_10bit.mp4": {
+   "logit": 1.6583232879638672,
+   "score": 0.5093303918838501,
+   "verdict": "ai-generated",
+   "frames": 16,
+   "frames_expected": 16,
+   "complete": true,
+   "analysed_until_s": 1.875,
+   "duration_s": 2.0
+  }
+ }
+}

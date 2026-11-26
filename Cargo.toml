@@ -13,9 +13,14 @@ candle-core = "0.11"
 clap = { version = "4.6.7", features = ["derive"] }
 crossbeam-channel = "0.5.17"
 fast_image_resize = "6.1.0"
+# VP8 and VP9 decoding; clips are decoded one per worker thread, so the VP9
+# decoder's own thread pool is left out.
+filmcraft-vp8 = "=0.9.0"
+filmcraft-vp9 = { version = "=0.9.0", default-features = false }
 flate2 = "1.1.11"
 gemm = "0.19"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+matroska-demuxer = "=0.8.1"
 parquet = { version = "60.1.0", default-features = false, features = ["snap", "zstd", "lz4", "flate2", "brotli", "flate2-rust_backend"] }
 rayon = "1.12.0"
 rust_h264 = "0.6.1"

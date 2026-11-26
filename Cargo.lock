@@ -1574,6 +1574,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "filmcraft-bitstream"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08f8be9fae696d78e233591b4d57871c39f15ac0ac7445168356cda705efa499"
+
+[[package]]
+name = "filmcraft-vp8"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24060c4863c8266f8bc524aa2d11d47e2e75e2f8f9da30d4b6c58bbf37d261de"
+dependencies = [
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "filmcraft-vp9"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a249ac83276e0f3da68570eb7e4956833accb5a99aa87a222ead00591046698"
+dependencies = [
+ "filmcraft-bitstream",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2469,6 +2494,12 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
+
+[[package]]
+name = "matroska-demuxer"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cbf36668475a45a46bf8710e927e7458b7c387e7c46ddb5457ae0c71cf5e817"
 
 [[package]]
 name = "memchr"
@@ -4478,10 +4509,13 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "fast_image_resize",
+ "filmcraft-vp8",
+ "filmcraft-vp9",
  "flate2",
  "gemm",
  "half",
  "image",
+ "matroska-demuxer",
  "objc2",
  "objc2-av-foundation",
  "objc2-core-foundation",

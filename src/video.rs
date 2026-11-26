@@ -1,9 +1,11 @@
 //! Video support: frame sampling and clip-level aggregation.
 //!
 //! Frames are decoded in-process: by the system decoder on macOS
-//! ([`crate::avf`]) and by a pure-Rust reader elsewhere ([`crate::swdec`],
-//! MP4 and MOV with H.264 or HEVC). `TINTYPE_DECODER=rust` selects the
-//! pure-Rust reader on macOS too. No external tool is called.
+//! ([`crate::avf`]), and by a pure-Rust reader elsewhere and for what the
+//! system decoder cannot read ([`crate::swdec`]: MP4 and MOV with H.264,
+//! HEVC or VP9; WebM and Matroska with VP9 or VP8). `TINTYPE_DECODER=rust`
+//! selects the pure-Rust reader on macOS for everything. No external tool is
+//! called.
 use crate::image_io::Rgb;
 use anyhow::Result;
 use std::path::Path;
