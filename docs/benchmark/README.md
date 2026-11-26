@@ -14,7 +14,7 @@ The current version is **v1**, frozen on 2026-11-25.
 |---|---|---|---|---|---|
 | [`open`](v1/open.tsv.gz) | 24,961 | 13,475 | 11,486 | 27 | No: read in research before Tintype's shipped calibration was fitted |
 | [`openfake`](v1/openfake.tsv.gz) | 6,990 | 3,520 | 3,470 | 1 | No; Tintype trains on other shards of the same collection |
-| [`blind`](v1/blind.tsv.gz) | see [the blind read](v1/BLIND-RESULT.md) | | | | Yes: registered in [BLIND-PROTOCOL.md](v1/BLIND-PROTOCOL.md) before any detector scored it |
+| [`blind`](v1/blind.tsv.gz) | 23,843 | 13,244 | 10,599 | 27 | Yes: registered in [BLIND-PROTOCOL.md](v1/BLIND-PROTOCOL.md) before any file was listed, and scored once ([result](v1/BLIND-RESULT.md)) |
 
 - **`open`** is the pool behind the website's table: Tintype's photo
   batch 9 without its OpenFake shard. Its 27 sets come from three
@@ -101,6 +101,21 @@ Each detector is at its own shipped cutoff. All runs used an Apple M6.
 | Community Forensics (384) | 95.24% | 84.12% | 4.94% | 70.93% |
 | SwinV2 detector | 83.83% | 48.84% | 11.05% | 28.27% |
 
-### v1 `blind`
+### v1 `blind` (23,843 files)
 
-See [v1/BLIND-RESULT.md](v1/BLIND-RESULT.md).
+| Detector | Precision | Recall | Real flagged | Recall at 1% FPR |
+|---|---|---|---|---|
+| Tintype v0.4.0 default | 98.98% | 93.01% | 1.20% | 92.49% |
+| GPTTrace flag-pec-v3 | 99.21% | 74.93% | 0.75% | 78.41% |
+| Community Forensics (384) | 95.25% | 84.03% | 5.24% | 69.96% |
+| SwinV2 detector | 85.92% | 49.71% | 10.18% | 28.94% |
+
+Tintype's blind figures are within 0.31 points of its open-split figures,
+and every difference's interval includes zero. Intervals, paired
+comparisons and per-set results are in
+[v1/BLIND-RESULT.md](v1/BLIND-RESULT.md).
+
+Per-file scores: [v1/blind-scores.tsv.gz](v1/blind-scores.tsv.gz) for
+the blind split, and
+[../results/batch9-gpttrace/scores.tsv.gz](../results/batch9-gpttrace/scores.tsv.gz)
+for the open split.
