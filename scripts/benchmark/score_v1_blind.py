@@ -70,7 +70,12 @@ def main():
                 p = subprocess.run(argv(root / st, store, o), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             dt = time.time() - t0
             if p.returncode:
-                sys.exit(f"{st} {name}: exit {p.returncode}\n{p.stderr[-2000:]}")
+                # `tintype batch` exits 1 when some inputs could not be decoded; those rows carry an
+                # `error` and count as not flagged (Amendment 1). Anything else stops the run.
+                if "could not be scored" in p.stderr:
+                    print(f"{st} {name}: {p.stderr.strip().splitlines()[-1]}", flush=True)
+                else:
+                    sys.exit(f"{st} {name}: exit {p.returncode}\n{p.stderr[-2000:]}")
             timing["seconds"][name] = timing["seconds"].get(name, 0) + dt
             print(f"{st}: {name} {len(items)} files in {dt:.1f} s", flush=True)
         shutil.rmtree(root)

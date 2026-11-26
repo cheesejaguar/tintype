@@ -229,8 +229,9 @@ def main():
                     drop_train += 1
                 else:
                     hashes.add(h)
-                    ext = "png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "jpg" if data[:2] == b"\xff\xd8" else \
-                        "webp" if data[8:12] == b"WEBP" else "bin"
+                    ext = ("png" if data[:8] == b"\x89PNG\r\n\x1a\n" else "jpg" if data[:2] == b"\xff\xd8" else
+                           "webp" if data[8:12] == b"WEBP" else "tif" if data[:4] in (b"II*\0", b"MM\0*") else
+                           "gif" if data[:3] == b"GIF" else "bmp" if data[:2] == b"BM" else "bin")
                     label = "1" if lab == "FULL_SYNTHETIC" else "0"
                     out.append({"path": f"sofake-ood/test_image-{x}-of-00046/{i:07d}.{ext}", "label": label,
                                 "set": "sofake-ood", "generator": (gen or "unknown") if label == "1" else f"real:{plat or 'sofake-ood'}",

@@ -151,3 +151,26 @@ reported too.
 - **GPTTrace's training data cannot be checked against these files.** The
   split is blind for GPTTrace only to the extent its training excludes
   them.
+
+## Amendment 1 (2026-11-26, after scoring stopped on the last set, before any score was read)
+
+The scoring run stopped on the So-Fake-OOD set, the last of 27. No score
+from any set had been read.
+
+1. **Three files were misnamed.** They are GIFs: rows 444 of shard 00002,
+   and 844 and 1860 of shard 00044. The builder's table of formats had no
+   GIF, so it named them `.bin`; the data plans' ingest names them `.gif`.
+   Neither `tintype batch` run picked them up.
+   - Their manifest paths now end in `.gif`.
+   - Bytes and SHA-256 are unchanged.
+2. **One file is too large for GPTTrace's decoder.** Row 1221 of shard
+   00044 is an 8000 × 12000 JPEG. The research build that runs GPTTrace
+   refused it, because the estimated decode memory (576 MB) is over its
+   512 MB limit. The v0.4.0 default scored it.
+3. **Rule for unreadable files, fixed now for every detector:** a file a
+   detector reports it cannot decode counts as **not flagged** for that
+   detector (score 0). The count per detector is reported with the
+   results. A file with no output row at all still stops the read.
+4. **The So-Fake-OOD set is scored again** with the corrected paths. The
+   rows from the stopped run are discarded without being read. The other
+   26 sets keep their scores.

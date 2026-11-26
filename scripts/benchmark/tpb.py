@@ -258,26 +258,34 @@ def cmd_verify(a):
 # ---------------------------------------------------------------- scoring
 
 def load_scores(path, keys):
-    """Map detector output to manifest paths by longest suffix."""
+    """Map detector output to manifest paths by longest suffix.
+
+    A row the detector marks as an error (JSON with `error` and no `score`)
+    is an unreadable file: it counts as not flagged (score 0) and is listed.
+    """
     by_suffix = {k: k for k in keys}
-    out = {}
+    out, unreadable = {}, []
     with open(path) as f:
         first = f.readline()
         f.seek(0)
         if first.lstrip().startswith("{"):
-            rows = ((d.get("path", ""), d.get("score")) for d in (json.loads(l) for l in f if l.strip()))
+            rows = ((d.get("path", ""), d.get("score"), "error" in d) for d in (json.loads(l) for l in f if l.strip()))
         else:
-            rows = (tuple(l.rstrip("\n").split("\t")[:2]) for l in f if l.strip())
-        for p, s in rows:
-            if s is None:
+            rows = ((*l.rstrip("\n").split("\t")[:2], False) for l in f if l.strip())
+        for p, s, err in rows:
+            if s is None and not err:
                 continue
             parts = p.replace("\\", "/").split("/")
             for i in range(len(parts)):
                 k = "/".join(parts[i:])
                 if k in by_suffix:
-                    out[k] = float(s)
+                    if s is None:
+                        out[k] = 0.0
+                        unreadable.append(k)
+                    else:
+                        out[k] = float(s)
                     break
-    return out
+    return out, unreadable
 
 
 def metrics(labels, scores):
@@ -322,15 +330,17 @@ def cmd_score(a):
     sets = [r["set"] for r in rows]
     systems, result = {}, {"manifest": str(a.manifest), "files": len(rows), "systems": {}}
     times = dict(x.split("=", 1) for x in a.time or [])
+    unreadable = {}
     for spec in a.system:
         name, path = spec.split("=", 1)
-        sc = load_scores(path, keys)
+        sc, unreadable[name] = load_scores(path, keys)
         missing = [k for k in keys if k not in sc]
         if missing:
             sys.exit(f"{name}: {len(missing)} of {len(keys)} manifest files have no score, e.g. {missing[:3]}")
         systems[name] = [sc[k] for k in keys]
     for name, s in systems.items():
         m = metrics(labels, s)
+        m["unreadable"] = unreadable[name]
         boots = bootstrap(labels, lambda idx: metrics([labels[i] for i in idx], [s[i] for i in idx]))
         m["intervals"] = {k: interval([b[k] for b in boots]) for k in KEYS}
         if name in times:
@@ -366,6 +376,9 @@ def print_result(res):
         cell = lambda k: f"{m[k]:.2f} ({ci[k][0]:.2f}–{ci[k][1]:.2f})"
         ms = f"{m['ms_per_image']:.1f}" if "ms_per_image" in m else "–"
         print(f"| {name} | {cell('precision')} | {cell('recall')} | {cell('fpr')}% | {cell('recall_at_1pct_fpr')} | {ms} |")
+    for name, m in res["systems"].items():
+        if m.get("unreadable"):
+            print(f"{name}: {len(m['unreadable'])} unreadable file(s) counted as not flagged: {', '.join(m['unreadable'])}")
     for pair, iv in res.get("paired", {}).items():
         print(f"{pair}: " + ", ".join(f"{k} {lo:+.2f} to {hi:+.2f}" for k, (lo, hi) in iv.items()))
 
