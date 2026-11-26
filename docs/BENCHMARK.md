@@ -45,7 +45,10 @@ precision 0.990 and recall 0.933 with 1.2% of real photos flagged, against
 GPTTrace flag-pec-v3, and 0.838, 0.488 and 11.0% for the SwinV2 detector.
 The default and GPTTrace are not separated on precision; GPTTrace's recall
 is 19 points lower, mostly on older generators
-([GPTTrace comparison](results/batch9-gpttrace/report.md)). On the batch 7 speed sample (2,096 photos, idle
+([GPTTrace comparison](results/batch9-gpttrace/report.md)). This pool is the
+`open` split of the [Tintype Photo Benchmark v1](benchmark/README.md). On its
+registered `blind` split (23,843 unused files from the same sets), the default
+scores 0.990, 0.930 and 1.2%, within 0.31 points of the figures above. On the batch 7 speed sample (2,096 photos, idle
 Apple GPU, five rounds) it runs at 300–364 photos/s, against 540–579
 without the second network and 284–298 for Community Forensics alone on
 this engine. Figures and caveats: the

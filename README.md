@@ -136,6 +136,13 @@ runs at its shipped threshold.
 > against these files. See the
 > [GPTTrace comparison](docs/results/batch9-gpttrace/report.md).
 >
+> This pool is now the `open` split of the
+> [Tintype Photo Benchmark v1](docs/benchmark/README.md). Its `blind`
+> split, 23,843 unused files from the same 27 sets registered before
+> scoring, gives the default 98.98% / 93.01% / 1.20%, with 92.49% recall
+> at 1% false positives. Every difference from the row above is within
+> its interval.
+>
 > On batch 9's OpenFake test shard (3,520 AI, 3,470 real) the new default
 > finds fewer: 74.18% recall at 0.14% flagged, against 76.48% at 0.17% for
 > the previous default and 81.08% at 0.32% without the second network.
