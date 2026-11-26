@@ -150,3 +150,16 @@ As in the playbook, step 4, with defaults:
 Retraining waits for the research session's current precision arms (P1,
 P2) to finish, so the GPU and data share are not shared between training
 runs.
+
+## Amendment 1 (2026-11-25, before any caption text existed)
+
+All 50 pilot caption requests to `gemini/gemini-3.8-flash` returned
+`402 RESOURCE_EXHAUSTED`: the Google project behind the gateway has no
+prepaid credits left. No caption text was produced. That log is kept as
+`captions-402.jsonl` beside the pool.
+
+The caption model is now `anthropic/claude-haiku-5-5`, through the same
+gateway with the same instruction file. Nothing else changes.
+
+Generation now has two blockers. The key does not allow Imagen models,
+and the Google project needs credits.
