@@ -101,6 +101,20 @@ Each detector is at its own shipped cutoff. All runs used an Apple M6.
 | Community Forensics (384) | 95.24% | 84.12% | 4.94% | 70.93% |
 | SwinV2 detector | 83.83% | 48.84% | 11.05% | 28.27% |
 
+### Time per image (matched, idle hardware)
+
+The speed sample is the 2,000 open-split files with the smallest SHA-256.
+The run used an idle Apple M6, read the files from a RAM disk, and took
+the median of three rotated rounds, with model loading included. The
+protocol and result are in [v1/speed/](v1/speed/RESULT.md).
+
+| Detector | ms per image | Images per second |
+|---|---|---|
+| Tintype v0.4.0 default | 2.57 | 389 |
+| Community Forensics (384, Tintype's engine) | 3.04 | 329 |
+| SwinV2 detector (Tintype's engine) | 13.52 | 74 |
+| GPTTrace flag-pec-v3 (Tintype's runtime) | 61.25 | 16 |
+
 ### v1 `blind` (23,843 files)
 
 | Detector | Precision | Recall | Real flagged | Recall at 1% FPR |

@@ -1,0 +1,13 @@
+round	detector	seconds	ms_per_image	load1
+1	Tintype v0.4.0 default	5.15	2.57	3.41
+1	GPTTrace flag-pec-v3	127.83	63.92	3.12
+1	Community Forensics 384	5.88	2.94	2.20
+1	SwinV2 detector	27.16	13.58	2.03
+2	GPTTrace flag-pec-v3	122.50	61.25	2.54
+2	Community Forensics 384	6.07	3.04	2.12
+2	SwinV2 detector	27.04	13.52	2.67
+2	Tintype v0.4.0 default	5.31	2.66	2.77
+3	Community Forensics 384	6.07	3.04	2.63
+3	SwinV2 detector	26.76	13.38	3.22
+3	Tintype v0.4.0 default	5.09	2.54	3.74
+3	GPTTrace flag-pec-v3	121.58	60.79	4.00
