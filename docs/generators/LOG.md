@@ -20,3 +20,16 @@ notes.
     for Imagen models.
   - The real photo pool and captions can proceed. Generation waits for the
     key.
+- 2026-11-25, later:
+  - **Pool:** 3,000 Wikimedia Commons Quality images kept, 633
+    blind-assigned and 2,367 train-assigned before grouping. The rest of
+    the 3,059 listed were excluded: 55 not photographs, 4 by licence.
+  - **Pilot captions:** 50 train-assigned photos captioned, giving 45
+    usable captions (median 79 words). The other 5 ran out of tokens and
+    are replaced by the next photos in order. The caption model is
+    `NVIDIA Build/nvidia/nemotron-3.5-super-vl-120b-a12b`
+    (amendments 1 and 2).
+  - **Gateway:** the Google provider has no credits left (402), and the
+    Anthropic provider key is invalid (401).
+  - **Generation is blocked on two things:** the key must allow Imagen
+    models, and the Google project needs credits.
