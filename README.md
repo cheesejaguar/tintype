@@ -127,11 +127,19 @@ runs at its shipped threshold.
 > | **This release, default (`detect`, `batch`, `serve`)** | **99.40% / 92.89% / 0.68%** | **98.95% / 93.31% / 1.16%** |
 > | This release, `--no-photo-second-opinion` | 98.75% / 92.94% / 1.43% | 98.46% / 93.03% / 1.71% |
 > | Community Forensics alone | 96.92% / 79.38% / 3.07% | 95.24% / 84.12% / 4.94% |
+> | GPTTrace flag-pec-v3 | not measured | 99.11% / 74.09% / 0.78% |
+>
+> GPTTrace's precision on batch 9 is not separated from the default's (95%
+> interval for the difference −0.09 to +0.40 points). Its recall is 19
+> points lower, mostly on older generators, and its recall at 1% false
+> positives is 76.51% against 92.29%. Its training data cannot be checked
+> against these files. See the
+> [GPTTrace comparison](docs/results/batch9-gpttrace/report.md).
 >
 > On batch 9's OpenFake test shard (3,520 AI, 3,470 real) the new default
 > finds fewer: 74.18% recall at 0.14% flagged, against 76.48% at 0.17% for
 > the previous default and 81.08% at 0.32% without the second network.
-> Neither batch was blind for this configuration: the weights were chosen
+> GPTTrace finds 76.48% there at 0.03% flagged. Neither batch was blind for this configuration: the weights were chosen
 > and the blend fitted on batch 7, then batches 8 and 9 were read in
 > research before the calibration shipped here was fitted. The second
 > network costs speed. On an idle Apple GPU, decode to verdict on 2,096

@@ -41,8 +41,11 @@ second opinion on photos whose first score is uncertain) has no blind
 batch yet. On batch 9 (13,475 AI and 11,486 real photos, read in research
 before the shipped calibration was fitted, so not a blind test) it scores
 precision 0.990 and recall 0.933 with 1.2% of real photos flagged, against
-0.952, 0.841 and 4.9% for Community Forensics and 0.838, 0.488 and 11.0%
-for the SwinV2 detector. On the batch 7 speed sample (2,096 photos, idle
+0.952, 0.841 and 4.9% for Community Forensics, 0.991, 0.741 and 0.8% for
+GPTTrace flag-pec-v3, and 0.838, 0.488 and 11.0% for the SwinV2 detector.
+The default and GPTTrace are not separated on precision; GPTTrace's recall
+is 19 points lower, mostly on older generators
+([GPTTrace comparison](results/batch9-gpttrace/report.md)). On the batch 7 speed sample (2,096 photos, idle
 Apple GPU, five rounds) it runs at 300–364 photos/s, against 540–579
 without the second network and 284–298 for Community Forensics alone on
 this engine. Figures and caveats: the
@@ -119,9 +122,10 @@ Where Tintype is not ahead, or the comparison needs a qualifier:
 |---|---|---|
 | **Community Forensics** (CVPR 2025) | ViT-S/16 at 384 px, 21.8 M parameters. Best open detector in the independent out-of-the-box study arXiv 2602.07814. | Official weights `OwensLab/commfor-model-384`, official transform (resize 440, centre crop 384), threshold 0.5, 32-bit floats. |
 | **SwinV2 detector** | `haywoodsloan/ai-image-detector-deploy`, SwinV2-L at 256 px, about 200 M parameters. Best open entry on the WasItAIGenerated frontier leaderboard. | Its own preprocessing (bicubic squash to 256 px), threshold 0.5, 32-bit floats. |
+| **GPTTrace flag-pec-v3** (batch 9 and the Arena only) | PE-Core-L/14 at 448 px, about 317 M parameters, CC BY-SA 4.0. | The model card's two views (centre crop and full-frame resize, raw logits averaged), flagged above the publisher's 3.562. Batch 9: pinned weights `nakas/gpttrace-img-flag-pec-v3@e5e2423e` on a native Metal port in a research build, which reproduced every flag of the ONNX export on WildAIGC. The Arena: the ONNX export ([EVIDENCE.md](EVIDENCE.md#gpttrace-comparison-on-the-same-arena-images)). |
 | **WaveRep** (NeurIPS 2025) | DINOv2 ViT-B/14 on 504 px crops of the first 64 frames. Published synthetic-video reference with released weights. | The authors' demo pipeline: mean frame logit above 0. Accuracy runs used 16-bit floats to save time; on 147 clips scored both ways no verdict changed. |
 
-The three networks and their preprocessing are re-implemented in Rust
+Community Forensics, SwinV2 and WaveRep and their preprocessing are re-implemented in Rust
 (`tintype score --reference commfor|swinv2`, `tintype score-video
 --reference waverep`) and load the authors' released weights. Each port was
 checked against the authors' PyTorch pipeline on the same files:
