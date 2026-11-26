@@ -7,7 +7,15 @@ use tintype::review::{self, Reason, Review, ReviewArgs};
 use tintype::yunet::YuNet;
 use tintype::{face, ingest, video};
 
-const CHUNK: usize = 256;
+/// `batch` scores its inputs in chunks and writes a chunk's rows when the
+/// chunk is done. Every chunk fills and drains the photo pipeline (decode
+/// workers feeding the network) once, and once more for the second opinion,
+/// with the network waiting each time, so photos go in large chunks. Rows
+/// and scores do not depend on the chunk size.
+const CHUNK: usize = 4096;
+/// A clip takes far longer than a photo, so a chunk is also closed at this
+/// many clips, and a folder of videos shows its rows as soon as it did.
+const VIDEO_CHUNK: usize = 256;
 
 #[derive(Args)]
 pub struct DemoOptions {
@@ -852,6 +860,7 @@ pub fn batch(roots: Vec<PathBuf>, options: ScanOptions, no_photo_second: bool) -
     let mut counts = Counts::default();
     let mut output = BufWriter::new(io::stdout().lock());
     let mut inputs = Vec::with_capacity(CHUNK);
+    let mut clips = 0;
     for root in roots {
         // Explicit file paths are attempted even with an unusual suffix.
         // Recursive scans match known media extensions and skip symlink entries.
@@ -875,9 +884,11 @@ pub fn batch(roots: Vec<PathBuf>, options: ScanOptions, no_photo_second: bool) -
                 Ok(_) => continue,
                 Err(e) => Input::Problem(e.path().unwrap_or(&root).to_owned(), e.to_string()),
             };
+            clips += usize::from(matches!(&input, Input::Media(p) if ingest::is_video(p)));
             inputs.push(input);
-            if inputs.len() == CHUNK {
+            if inputs.len() == CHUNK || clips == VIDEO_CHUNK {
                 scan.run_chunk(std::mem::take(&mut inputs), true, &mut output, &mut counts)?;
+                clips = 0;
             }
         }
     }
