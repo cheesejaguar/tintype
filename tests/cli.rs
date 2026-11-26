@@ -208,6 +208,39 @@ fn mixed_detection_preserves_input_order_and_describes_video_coverage() {
 }
 
 #[test]
+fn vp9_and_webm_clips_are_scored_like_any_other_video() {
+    let fixtures = common::repo().join("tests/fixtures");
+    // VP9 in MP4, VP9 in WebM beside a longer audio track, and VP8 in WebM.
+    let clips: Vec<_> = ["vp9.mp4", "vp9.webm", "vp8.webm"].iter().map(|n| fixtures.join(n)).collect();
+    let paths: Vec<&Path> = clips.iter().map(|p| p.as_path()).collect();
+    let run = |decoder: Option<&str>| {
+        let weights = common::photo_weights();
+        let mut c = bin();
+        c.args(["detect", "--device", "cpu", "--no-photo-second-opinion", "--weights", weights.to_str().unwrap(), "--json", "--all-views", "--frames", "4", "--max-seconds", "0"]);
+        c.args(&paths).current_dir(common::repo());
+        if let Some(d) = decoder {
+            c.env("TINTYPE_DECODER", d);
+        }
+        c.output().expect("running the tintype binary")
+    };
+    let o = run(None);
+    assert!(o.status.success(), "status {:?}, stderr: {}", o.status, String::from_utf8_lossy(&o.stderr));
+    let rows = json_lines(&o);
+    assert_eq!(rows.len(), 3);
+    for (row, clip) in rows.iter().zip(&clips) {
+        assert_eq!(row["path"].as_str(), clip.to_str());
+        assert_eq!(row["kind"], "video", "{row}");
+        assert!(row.get("error").is_none(), "{row}");
+        assert_eq!((row["frames"].as_u64(), row["complete"].as_bool()), (Some(4), Some(true)), "{row}");
+        assert!(score_of(row).is_some(), "{row}");
+    }
+    // The video timeline, not the longer audio track's.
+    assert_eq!(rows[1]["duration_s"], 1.375);
+    // The pure-Rust reader is what decodes these on macOS as well, so asking for it changes nothing.
+    assert_eq!(json_lines(&run(Some("rust"))), rows);
+}
+
+#[test]
 fn an_empty_model_dir_variable_counts_as_unset() {
     // PowerShell can leave a variable defined but empty; the lookup must then
     // fall through to the checkout's models/ directory instead of failing.

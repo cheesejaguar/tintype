@@ -42,6 +42,11 @@ impl Yuv {
         (self.bt709, self.full_range)
     }
 
+    /// The luma samples and the interleaved chroma samples, as decoded.
+    pub fn samples(&self) -> (&[u8], &[u8]) {
+        (&self.y, &self.uv)
+    }
+
     /// Largest absolute difference between the two frames' samples, or
     /// `None` when their sizes differ.
     pub fn max_difference(&self, other: &Yuv) -> Option<u8> {

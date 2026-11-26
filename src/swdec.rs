@@ -1,11 +1,16 @@
 //! Pure-Rust video reading: an MP4/MOV sample-table parser feeding the
-//! `rust_h264` and `rust_h265` decoders. This is the video decoder on
-//! platforms without AVFoundation; on macOS `TINTYPE_DECODER=rust` selects
-//! it in place of the system decoder.
+//! `rust_h264`, `rust_h265` and `filmcraft-vp9` decoders, and a WebM/Matroska
+//! reader ([`webm`]) feeding `filmcraft-vp9` and `filmcraft-vp8`. This is the
+//! video decoder on platforms without AVFoundation, and on macOS for what
+//! AVFoundation cannot read (VP9, WebM); `TINTYPE_DECODER=rust` selects it in
+//! place of the system decoder for everything.
 //!
-//! It reads progressive MP4 and MOV files with one H.264 or HEVC video track
-//! in 4:2:0. Fragmented files, other containers and other codecs are
-//! reported as unreadable.
+//! It reads progressive MP4 and MOV files with one H.264, HEVC or VP9 video
+//! track, and WebM and Matroska files with VP9 or VP8, all in 4:2:0.
+//! Fragmented files, other containers and other codecs are reported as
+//! unreadable. The HTTP upload preflight takes only H.264 and HEVC in MP4/MOV.
+#[path = "webm.rs"]
+mod webm;
 use crate::image_io::Rgb;
 use crate::video::VideoInfo;
 use crate::yuv::{self, Source, Yuv};
@@ -19,6 +24,7 @@ use std::path::Path;
 enum Codec {
     H264,
     Hevc,
+    Vp9,
 }
 
 struct Sample {
@@ -31,7 +37,7 @@ struct Sample {
 
 struct Track {
     codec: Codec,
-    /// `avcC` or `hvcC` payload.
+    /// `avcC`, `hvcC` or `vpcC` payload.
     config: Vec<u8>,
     /// `(colour primaries, matrix coefficients, full range)` from a `colr`
     /// box, when present.
@@ -122,7 +128,7 @@ fn read_moov(f: &mut File, path: &Path, max_index: u64, upload: bool) -> Result<
         ensure!(pos == len, "truncated top-level box");
         return Ok(moov);
     }
-    bail!("{} is not an MP4 or MOV file (other containers need the macOS system decoder)", path.display())
+    bail!("{} is not an MP4, MOV, WebM or Matroska file (other containers need the macOS system decoder)", path.display())
 }
 
 /// A full box's entries after its version/flags word and entry count.
@@ -150,12 +156,18 @@ fn parse_track(trak: &[u8], movie_timescale: u32, max_samples: usize, upload: bo
     let codec = match kind {
         b"avc1" | b"avc3" => Codec::H264,
         b"hvc1" | b"hev1" => Codec::Hevc,
-        other => bail!("video codec `{}` is not supported by this reader (H.264 and HEVC are)", String::from_utf8_lossy(other)),
+        b"vp09" => Codec::Vp9,
+        other => bail!("video codec `{}` is not supported by this reader (H.264, HEVC and VP9 are)", String::from_utf8_lossy(other)),
     };
     ensure!(entry.len() > 78, "truncated sample entry");
     let (width, height) = (u16::from_be_bytes([entry[24], entry[25]]) as u32, u16::from_be_bytes([entry[26], entry[27]]) as u32);
     let inner = &entry[78..];
-    let config = child(inner, if codec == Codec::H264 { b"avcC" } else { b"hvcC" }).ok_or_else(|| anyhow!("no decoder configuration"))?.to_vec();
+    let config_box = match codec {
+        Codec::H264 => b"avcC",
+        Codec::Hevc => b"hvcC",
+        Codec::Vp9 => b"vpcC",
+    };
+    let config = child(inner, config_box).ok_or_else(|| anyhow!("no decoder configuration"))?.to_vec();
     let colr = child(inner, b"colr").and_then(|c| match c.get(..4)? {
         b"nclx" if c.len() >= 11 => Some((u16::from_be_bytes([c[4], c[5]]), u16::from_be_bytes([c[8], c[9]]), Some(c[10] & 0x80 != 0))),
         b"nclc" if c.len() >= 10 => Some((u16::from_be_bytes([c[4], c[5]]), u16::from_be_bytes([c[8], c[9]]), None)),
@@ -329,6 +341,46 @@ fn read_track(f: &mut File, path: &Path, upload: bool) -> Result<Track> {
 enum Decoder {
     H264 { dec: Box<rust_h264::decoder::OrderedDecoder<f64>>, length_size: usize },
     Hevc { dec: Box<rust_h265::Decoder>, length_size: u8 },
+    /// Each sample is one frame or superframe; its index is passed as the
+    /// picture's time, so every picture is matched to the sample that showed it.
+    Vp9(Box<filmcraft_vp9::Decoder>),
+}
+
+/// The matrix-coefficients code (ISO/IEC 23091-2) a VP9 `color_space`
+/// stands for, as FFmpeg reads it; `None` when the stream does not say.
+fn vp9_matrix(color_space: u8) -> Option<u16> {
+    match color_space {
+        1 => Some(5), // BT.601
+        2 => Some(1), // BT.709
+        3 => Some(6), // SMPTE 170M
+        4 => Some(7), // SMPTE 240M
+        5 => Some(9), // BT.2020, non-constant luminance
+        7 => Some(0), // sRGB
+        _ => None,    // unknown or reserved
+    }
+}
+
+/// Whether frames are converted with the BT.709 matrix: the one the file
+/// states, else the one that goes with its stated primaries, else what the
+/// macOS decoder assumes for a file that states neither: BT.709 from 720
+/// pixels on the longer side and BT.601 below.
+fn assumed_bt709(matrix: Option<u16>, primaries: Option<u16>, width: u32, height: u32) -> bool {
+    match (matrix, primaries) {
+        (Some(m), _) => m == 1,
+        (None, Some(p)) => p == 1,
+        (None, None) => width.max(height) >= 720,
+    }
+}
+
+/// The bytes of one sample, after checking that the file holds them.
+fn read_sample(file: &mut File, file_len: u64, s: &Sample, index: usize) -> Result<Vec<u8>> {
+    let size = s.size as usize;
+    // Nothing is allocated for a sample the file is too short to hold.
+    ensure!(size <= 256 << 20 && s.offset.saturating_add(size as u64) <= file_len, "sample {index} lies outside the file");
+    let mut buf = vec![0u8; size];
+    file.seek(SeekFrom::Start(s.offset))?;
+    file.read_exact(&mut buf)?;
+    Ok(buf)
 }
 
 /// Interleave two chroma planes into `ceil(w / 2) * 2` bytes per row over
@@ -360,7 +412,15 @@ fn to8(v: u16, depth: u8) -> u8 {
     }
 }
 
-pub struct Reader {
+/// A pure-Rust reader for one clip: MP4/MOV, or WebM/Matroska.
+pub struct Reader(Kind);
+
+enum Kind {
+    Mp4(Box<Mp4Reader>),
+    Webm(Box<webm::Reader>),
+}
+
+struct Mp4Reader {
     file: File,
     file_len: u64,
     track: Track,
@@ -383,10 +443,21 @@ pub struct Reader {
     last_error: Option<String>,
 }
 
+/// Open a clip, read from the start or, with `start`, from the frame shown
+/// at that time (seconds).
 pub fn open(path: &Path, start: Option<f64>) -> Result<Reader> {
+    match open_mp4(path, start) {
+        Ok(r) => Ok(Reader(Kind::Mp4(Box::new(r)))),
+        // A file that is not MP4 is tried as WebM/Matroska whatever its name.
+        Err(e) => webm::open_if_matroska(path, start, e).map(|r| Reader(Kind::Webm(Box::new(r)))),
+    }
+}
+
+fn open_mp4(path: &Path, start: Option<f64>) -> Result<Mp4Reader> {
     let mut file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let track = read_track(&mut file, path, false)?;
     ensure!(!track.samples.is_empty(), "no frames in {}", path.display());
+    let file_len = file.metadata()?.len();
     // Colour tags: the container's `colr` box, else the stream's own.
     // The value 2 means "unspecified" in both fields.
     let stated = |v: u16| Some(v).filter(|&v| v != 2);
@@ -441,19 +512,41 @@ pub fn open(path: &Path, start: Option<f64>) -> Result<Reader> {
             }
             Decoder::Hevc { dec: Box::new(dec), length_size: (c[21] & 3) + 1 }
         }
+        Codec::Vp9 => {
+            // VPCodecConfigurationBox, version 1: profile and level, then bit
+            // depth (4 bits), chroma subsampling (3) and full range (1), then
+            // colour primaries, transfer and matrix codes. 0 and 1 are the two
+            // 4:2:0 chroma sitings.
+            let c = &track.config;
+            if c.first() == Some(&1) && c.len() >= 12 {
+                ensure!((c[6] >> 1) & 7 <= 1, "{} is not 4:2:0 video", path.display());
+                primaries = primaries.or(stated(c[7].into()));
+                matrix = matrix.or(stated(c[9].into()));
+                full_range = full_range.or(Some(c[6] & 1 == 1));
+            }
+            // Then the stream's own colour signalling, from its first key frame.
+            if let Some(k) = filmcraft_vp9::keyframe_info(&read_sample(&mut file, file_len, &track.samples[0], 0)?) {
+                ensure!(k.subsampling_x && k.subsampling_y, "{} is not 4:2:0 video", path.display());
+                matrix = matrix.or(vp9_matrix(k.color.color_space));
+                full_range = full_range.or(Some(k.color.full_range));
+            }
+            // A seek starts at the last key frame at or before the wanted
+            // time. The sync table says where key frames are, and each
+            // candidate is checked, since without one every sample is sync.
+            if let Some(t) = start {
+                first = (0..track.samples.len())
+                    .rev()
+                    .filter(|&i| track.samples[i].sync && track.samples[i].pts <= t)
+                    .find(|&i| read_sample(&mut file, file_len, &track.samples[i], i).is_ok_and(|d| filmcraft_vp9::is_keyframe(&d)))
+                    .unwrap_or(0);
+            }
+            Decoder::Vp9(Box::new(filmcraft_vp9::Decoder::with_threads(1)))
+        }
     };
-    // A file that states no matrix gets the one the macOS decoder assumes:
-    // the one that goes with its primaries when it states those, otherwise
-    // BT.709 from 720 pixels on the longer side and BT.601 below.
-    let bt709 = match (matrix, primaries) {
-        (Some(m), _) => m == 1,
-        (None, Some(p)) => p == 1,
-        (None, None) => track.info.width.max(track.info.height) >= 720,
-    };
+    let bt709 = assumed_bt709(matrix, primaries, track.info.width, track.info.height);
     let mut times: Vec<f64> = track.samples[first..].iter().map(|s| s.pts).collect();
     times.sort_by(f64::total_cmp);
-    let file_len = file.metadata()?.len();
-    Ok(Reader { file, file_len, track, decoder, next_sample: first, times, emitted: 0, ready: VecDeque::new(), flushed: false, start, bt709, full_range: full_range.unwrap_or(false), declared: (matrix, full_range), errors: 0, last_error: None })
+    Ok(Mp4Reader { file, file_len, track, decoder, next_sample: first, times, emitted: 0, ready: VecDeque::new(), flushed: false, start, bt709, full_range: full_range.unwrap_or(false), declared: (matrix, full_range), errors: 0, last_error: None })
 }
 
 struct Bits<'a> {
@@ -622,46 +715,66 @@ fn hevc_colour(rbsp: &[u8]) -> Option<(Option<u16>, Option<u16>, bool)> {
 
 impl Reader {
     pub fn info(&self) -> VideoInfo {
-        self.track.info
+        match &self.0 {
+            Kind::Mp4(r) => r.track.info,
+            Kind::Webm(r) => r.info,
+        }
     }
 
     /// The matrix coefficients and range the file states, when it does.
     pub fn declared(&self) -> (Option<u16>, Option<bool>) {
-        self.declared
+        match &self.0 {
+            Kind::Mp4(r) => r.declared,
+            Kind::Webm(r) => r.declared,
+        }
     }
 
-    /// NAL units the decoder rejected so far, and the first reason it gave.
+    /// NAL units or packets the decoder rejected so far, and the first
+    /// reason it gave.
     pub fn errors(&self) -> (usize, Option<&str>) {
-        (self.errors, self.last_error.as_deref())
+        match &self.0 {
+            Kind::Mp4(r) => (r.errors, r.last_error.as_deref()),
+            Kind::Webm(r) => (r.errors, r.last_error.as_deref()),
+        }
     }
 
     /// Why nothing could be decoded, for an error message.
     fn why_empty(&self, path: &Path) -> anyhow::Error {
-        match &self.last_error {
+        match self.errors().1 {
             Some(e) => anyhow!("{} cannot be decoded by the pure-Rust reader: {e}", path.display()),
             None => anyhow!("no frames decoded from {}", path.display()),
         }
     }
+}
 
+impl Source for Reader {
+    fn duration(&self) -> f64 {
+        self.info().duration
+    }
+
+    fn next(&mut self) -> Option<(f64, Yuv)> {
+        match &mut self.0 {
+            Kind::Mp4(r) => r.next(),
+            Kind::Webm(r) => r.next(),
+        }
+    }
+}
+
+impl Mp4Reader {
     /// Feed the next sample (or flush) and queue the frames that come out.
     fn advance(&mut self) -> Result<()> {
-        let sample = self.track.samples.get(self.next_sample).map(|s| (s.offset, s.size as usize, s.pts));
-        let data = match sample {
-            Some((offset, size, _)) => {
-                // Nothing is allocated for a sample the file is too short to hold.
-                ensure!(size <= 256 << 20 && offset.saturating_add(size as u64) <= self.file_len, "sample {} lies outside the file", self.next_sample);
-                let mut buf = vec![0u8; size];
-                self.file.seek(SeekFrom::Start(offset))?;
-                self.file.read_exact(&mut buf)?;
+        let index = self.next_sample;
+        let (data, pts) = match self.track.samples.get(index) {
+            Some(s) => {
+                let buf = read_sample(&mut self.file, self.file_len, s, index)?;
                 self.next_sample += 1;
-                Some(buf)
+                (Some(buf), s.pts)
             }
             None => {
                 self.flushed = true;
-                None
+                (None, 0.0)
             }
         };
-        let pts = sample.map_or(0.0, |s| s.2);
         // (time when the decoder carries it, width, height, luma, interleaved chroma)
         let mut out: Vec<(Option<f64>, usize, usize, Vec<u8>, Vec<u8>)> = Vec::new();
         let mut errors = 0usize;
@@ -731,6 +844,21 @@ impl Reader {
                     out.push((None, w, h, y, uv));
                 }
             }
+            Decoder::Vp9(dec) => {
+                let pictures = match &data {
+                    Some(buf) => dec.decode(buf, index as i64).unwrap_or_else(|e| {
+                        self.last_error.get_or_insert_with(|| e.to_string());
+                        errors += 1;
+                        Vec::new()
+                    }),
+                    None => dec.flush(),
+                };
+                for p in pictures {
+                    let (shown_by, w, h, y, uv) = vp9_planes(p)?;
+                    let t = usize::try_from(shown_by).ok().and_then(|i| self.track.samples.get(i)).map(|s| s.pts);
+                    out.push((t, w, h, y, uv));
+                }
+            }
         }
         self.errors += errors;
         for (t, w, h, y, uv) in out {
@@ -741,7 +869,29 @@ impl Reader {
     }
 }
 
-impl Source for Reader {
+/// A VP8 or VP9 picture, 8-bit: the time passed to the decoder with the
+/// chunk that showed it, width, height, luma and interleaved chroma.
+type Picture8 = (i64, usize, usize, Vec<u8>, Vec<u8>);
+
+/// A VP9 picture reduced to 8 bits. Only 4:2:0 is accepted.
+fn vp9_planes(p: filmcraft_vp9::Picture) -> Result<Picture8> {
+    ensure!(p.subsampling_x && p.subsampling_y, "not 4:2:0 video");
+    let (w, h) = (p.width as usize, p.height as usize);
+    let (cw, ch) = (p.chroma_width as usize, p.chroma_height as usize);
+    let depth = p.bit_depth as u8;
+    use filmcraft_vp9::Plane::{U16, U8};
+    let (y, uv) = match (p.y, p.u, p.v) {
+        (U8(y), U8(u), U8(v)) if u.len() >= cw * ch && v.len() >= cw * ch => {
+            let uv = interleave(w, h, cw, ch, |i| (u[i], v[i]));
+            (y, uv)
+        }
+        (U16(y), U16(u), U16(v)) if u.len() >= cw * ch && v.len() >= cw * ch => (y.iter().map(|&s| to8(s, depth)).collect(), interleave(w, h, cw, ch, |i| (to8(u[i], depth), to8(v[i], depth)))),
+        _ => bail!("decoder returned planes of unexpected shape"),
+    };
+    Ok((p.pts, w, h, y, uv))
+}
+
+impl Source for Mp4Reader {
     fn duration(&self) -> f64 {
         self.track.info.duration
     }
@@ -770,7 +920,7 @@ impl Source for Reader {
 
 pub fn probe(path: &Path) -> Result<VideoInfo> {
     let mut f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    Ok(read_track(&mut f, path, false)?.info)
+    read_track(&mut f, path, false).map(|t| t.info).or_else(|e| webm::open_if_matroska(path, None, e).map(|r| r.info))
 }
 
 /// Preflight a bounded HTTP upload before passing it to a video decoder.
@@ -849,6 +999,10 @@ pub(crate) fn validate_upload(path: &Path) -> Result<()> {
             ensure!(has_sps, "HEVC stream has no initial sequence parameters");
             usize::from(config[21] & 3) + 1
         }
+        // A VP9 inter frame can state a new frame size of its own, so bounding
+        // a stream's pictures needs every frame header read; uploads do not
+        // take VP9 until that is done.
+        Codec::Vp9 => bail!("VP9 video is not supported for uploads"),
     };
 
     let mut remaining = file_len;
@@ -931,7 +1085,7 @@ pub fn frame_at(path: &Path, t: f64) -> Result<Rgb> {
     let mut r = open(path, Some(t))?;
     match r.next() {
         Some((_, f)) => Ok(f.to_rgb()),
-        None if r.last_error.is_some() => Err(r.why_empty(path)),
+        None if r.errors().1.is_some() => Err(r.why_empty(path)),
         None => bail!("no frame at {t:.2}s in {}", path.display()),
     }
 }
@@ -1025,6 +1179,135 @@ mod tests {
         assert_eq!(interleave(3, 3, 1, 1, |_| (7, 9)), vec![7, 9, 7, 9, 7, 9, 7, 9]);
         assert_eq!(interleave(4, 2, 2, 1, |i| (i as u8, 10 + i as u8)), vec![0, 10, 1, 11]);
     }
+
+    fn fixture(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+    }
+
+    /// Every frame `r` gives: the SHA-256 of the frames laid out as FFmpeg's
+    /// `-f rawvideo -pix_fmt yuv420p` writes them (Y, Cb, Cr planes, frame
+    /// after frame), and the frames' times and pictures.
+    fn decoded(r: &mut Reader) -> (String, Vec<(f64, Yuv)>) {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        let mut frames = Vec::new();
+        while let Some((t, f)) = r.next() {
+            let (y, uv) = f.samples();
+            hash.update(y);
+            hash.update(uv.iter().step_by(2).copied().collect::<Vec<u8>>());
+            hash.update(uv.iter().skip(1).step_by(2).copied().collect::<Vec<u8>>());
+            frames.push((t, f));
+        }
+        (hash.finalize().iter().map(|b| format!("{b:02x}")).collect(), frames)
+    }
+
+    // The expected digests are libvpx's, through FFmpeg:
+    // `ffmpeg -c:v libvpx-vp9 -i FILE -fps_mode passthrough -f rawvideo -pix_fmt yuv420p - | shasum -a 256`
+    // (`-c:v libvpx` for VP8). FFmpeg's own decoders give the same.
+
+    #[test]
+    fn vp9_in_mp4_matches_libvpx_frame_for_frame() {
+        // Twelve frames at 12 per second, a key frame every fourth, alt-ref frames hidden in superframes.
+        let mut r = open(&fixture("vp9.mp4"), None).unwrap();
+        let info = r.info();
+        assert_eq!((info.width, info.height, info.duration, info.fps), (96, 64, 1.0, 12.0));
+        let (digest, frames) = decoded(&mut r);
+        assert_eq!(digest, "0d20acce6eea4caf5f866d7f5f8ca149928f9621733bff85d08db1337cbc3e7d");
+        assert_eq!(frames.iter().map(|f| f.0).collect::<Vec<_>>(), (0..12).map(|i| i as f64 / 12.0).collect::<Vec<_>>());
+        assert_eq!(r.errors(), (0, None));
+        // Untagged and smaller than 720 pixels: BT.601, and the stream's own limited range.
+        assert_eq!(r.declared(), (None, Some(false)));
+        assert_eq!(frames[0].1.tags(), (false, false));
+        assert_eq!(probe(&fixture("vp9.mp4")).unwrap().fps, 12.0);
+    }
+
+    #[test]
+    fn a_vp9_seek_starts_at_a_key_frame_and_gives_the_frame_on_screen() {
+        let path = fixture("vp9.mp4");
+        let (_, all) = decoded(&mut open(&path, None).unwrap());
+        // Key frames are frames 0, 4 and 8.
+        for (t, key, shown) in [(0.30, 0, 3), (0.34, 4, 4), (0.95, 8, 11)] {
+            let mut r = open(&path, Some(t)).unwrap();
+            let Kind::Mp4(mp4) = &r.0 else { panic!("not read as MP4") };
+            assert_eq!(mp4.next_sample, key, "at {t}s");
+            let (pts, frame) = r.next().unwrap();
+            assert_eq!(pts, all[shown].0, "at {t}s");
+            assert!(frame.same_as(&all[shown].1), "at {t}s");
+            assert_eq!(r.errors(), (0, None));
+            assert_eq!(frame_at(&path, t).unwrap().data, all[shown].1.to_rgb().data);
+        }
+    }
+
+    #[test]
+    fn vp9_in_webm_matches_libvpx_on_the_video_timeline() {
+        // 35x27, eight unevenly spaced frames, and a two-second audio track that the duration must ignore.
+        let path = fixture("vp9.webm");
+        let mut r = open(&path, None).unwrap();
+        let info = r.info();
+        assert_eq!((info.width, info.height, info.duration, info.fps), (35, 27, 1.375, 8.0));
+        let (digest, frames) = decoded(&mut r);
+        assert_eq!(digest, "5d4b1c521352fe68f59d326941e8df5f58ad928f54b1ddc80dfbd7f1df32fabb");
+        assert_eq!(frames.iter().map(|f| f.0).collect::<Vec<_>>(), [0.0, 0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.25]);
+        assert_eq!(r.errors(), (0, None));
+        // The stream says BT.709; the range is the stream's.
+        assert_eq!(r.declared(), (Some(1), Some(false)));
+        assert_eq!(frames[0].1.tags(), (true, false));
+        // Seeking gives the frame on screen at the time asked for.
+        let mut seek = open(&path, Some(0.74)).unwrap();
+        assert_eq!(seek.next().unwrap().0, 0.5);
+        assert_eq!(seek.next().unwrap().0, 0.75);
+    }
+
+    #[test]
+    fn vp8_in_webm_matches_libvpx_whatever_the_file_is_called() {
+        use std::io::Write;
+        // The VP8 study's fixture, under an MP4 name: the reader goes by the contents.
+        let mut renamed = tempfile::Builder::new().suffix(".mp4").tempfile().unwrap();
+        renamed.write_all(include_bytes!("../tests/fixtures/vp8.webm")).unwrap();
+        let mut r = open(renamed.path(), None).unwrap();
+        let info = r.info();
+        assert_eq!((info.width, info.height, info.duration, info.fps), (34, 26, 1.375, 8.0));
+        let (digest, frames) = decoded(&mut r);
+        assert_eq!(digest, "1fddae316e5fd5808f8f2ac7ee269eab421c2d0f4eef8332c2ef2f4b0d9c4ebf");
+        assert_eq!(frames.iter().map(|f| f.0).collect::<Vec<_>>(), [0.0, 0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.25]);
+        assert_eq!(r.errors(), (0, None));
+        // Untagged VP8 is BT.601 (RFC 6386), not the size rule.
+        assert_eq!(frames[0].1.tags(), (false, false));
+        let mut seek = open(renamed.path(), Some(0.74)).unwrap();
+        assert_eq!(seek.next().unwrap().0, 0.5);
+    }
+
+    #[test]
+    fn other_matroska_codecs_and_vp9_other_than_4_2_0_are_refused_by_name() {
+        use std::io::Write;
+        let mut bytes = include_bytes!("../tests/fixtures/vp8.webm").to_vec();
+        let at = bytes.windows(5).position(|w| w == b"V_VP8").unwrap();
+        bytes[at..at + 5].copy_from_slice(b"V_AV1");
+        let mut other = tempfile::NamedTempFile::new().unwrap();
+        other.write_all(&bytes).unwrap();
+        assert!(format!("{:#}", probe(other.path()).unwrap_err()).contains("V_AV1"));
+        // VP9 profile 1, 4:4:4.
+        assert!(format!("{:#}", open(&fixture("vp9-444.mp4"), None).err().unwrap()).contains("not 4:2:0"));
+    }
+
+    #[test]
+    fn http_video_preflight_refuses_vp9() {
+        assert!(format!("{:#}", validate_upload(&fixture("vp9.mp4")).unwrap_err()).contains("VP9 video is not supported for uploads"));
+    }
+
+    #[test]
+    fn webm_times_are_the_ones_an_mp4_of_the_same_instants_gives() {
+        // Millisecond units against the 1/16000 timescale FFmpeg writes for them in MP4.
+        assert!((0..200_000u64).all(|ms| webm::seconds(ms as f64, 1e6) == (ms * 16) as f64 / 16_000.0));
+    }
+
+    #[test]
+    fn vp9_colour_codes_follow_ffmpeg() {
+        assert_eq!([0, 1, 2, 3, 4, 5, 6, 7].map(vp9_matrix), [None, Some(5), Some(1), Some(6), Some(7), Some(9), None, Some(0)]);
+        // The untagged rule the macOS decoder follows.
+        assert!(assumed_bt709(None, None, 1280, 720) && !assumed_bt709(None, None, 640, 360));
+        assert!(assumed_bt709(None, Some(1), 640, 360) && !assumed_bt709(Some(6), Some(1), 1280, 720));
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
@@ -1038,6 +1321,38 @@ mod against_system_decoder {
         assert!(c.frames > 0, "{c:?}");
         assert_eq!((c.identical, c.produced.0), (c.frames, c.produced.1), "{c:?}");
         assert!(c.max_time_difference < 1e-3, "{c:?}");
+    }
+}
+
+#[cfg(test)]
+mod reference {
+    /// Per-frame digests of what the reader decodes, for checking it against
+    /// another decoder. Needs real clips: `TINTYPE_TEST_VIDEOS=clips.txt
+    /// TINTYPE_DIGESTS=out.tsv cargo test --release --lib swdec::reference --
+    /// --ignored`. Writes one line per frame: clip, index, presentation time,
+    /// width, height, the SHA-256 of the Y, Cb and Cr planes (8-bit planar,
+    /// as FFmpeg's `yuv420p` lays them out) and the colour tags.
+    #[test]
+    #[ignore]
+    fn frame_digests() {
+        use crate::yuv::Source;
+        use sha2::{Digest, Sha256};
+        use std::io::Write;
+        let hex = |d: &[u8]| Sha256::digest(d).iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let list = std::fs::read_to_string(std::env::var("TINTYPE_TEST_VIDEOS").expect("set TINTYPE_TEST_VIDEOS")).unwrap();
+        let mut out = std::fs::File::create(std::env::var("TINTYPE_DIGESTS").expect("set TINTYPE_DIGESTS")).unwrap();
+        for path in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let mut r = super::open(std::path::Path::new(path), None).unwrap();
+            let mut index = 0;
+            while let Some((pts, f)) = r.next() {
+                let (y, uv) = f.samples();
+                let (u, v): (Vec<u8>, Vec<u8>) = uv.chunks_exact(2).map(|p| (p[0], p[1])).unzip();
+                let (bt709, full_range) = f.tags();
+                writeln!(out, "{path}\t{index}\t{pts:?}\t{}\t{}\t{}\t{}\t{}\t{bt709}\t{full_range}", f.w, f.h, hex(y), hex(&u), hex(&v)).unwrap();
+                index += 1;
+            }
+            assert_eq!(r.errors(), (0, None), "{path}");
+        }
     }
 }
 
