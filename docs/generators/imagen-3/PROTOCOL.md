@@ -163,3 +163,20 @@ gateway with the same instruction file. Nothing else changes.
 
 Generation now has two blockers. The key does not allow Imagen models,
 and the Google project needs credits.
+
+## Amendment 2 (2026-11-25, before any caption text existed)
+
+All 50 requests to `anthropic/claude-haiku-5-5` returned
+`401 invalid x-api-key`: the gateway's Anthropic key is not valid. No
+caption text was produced. That log is kept as `captions-401.jsonl`.
+
+A probe on one training-store photo from outside this run found the
+models the gateway serves:
+- `NVIDIA Build/nvidia/nemotron-3.5-super-vl-120b-a12b` and its
+  OpenRouter free copy answer;
+- the Anthropic models return 401, and the Gemini models return 402.
+
+The caption model is now
+`NVIDIA Build/nvidia/nemotron-3.5-super-vl-120b-a12b`, with `max_tokens`
+2000 so that its reasoning tokens do not cut the caption short. Same
+instruction file. Nothing else changes.

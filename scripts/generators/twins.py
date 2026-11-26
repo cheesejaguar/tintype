@@ -200,7 +200,7 @@ def cmd_fetch(a):
 
 def chat_caption(url, vk, model, instruction, jpeg):
     b64 = base64.b64encode(jpeg).decode()
-    body = {"model": model, "messages": [{"role": "user", "content": [
+    body = {"model": model, "max_tokens": 2000, "messages": [{"role": "user", "content": [
         {"type": "text", "text": instruction},
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]}]}
     return http_json(f"{url}/v1/chat/completions", body, {"x-bf-vk": vk}, timeout=180)
