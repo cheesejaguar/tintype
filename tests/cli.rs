@@ -236,8 +236,10 @@ fn vp9_and_webm_clips_are_scored_like_any_other_video() {
     }
     // The video timeline, not the longer audio track's.
     assert_eq!(rows[1]["duration_s"], 1.375);
-    // The pure-Rust reader is what decodes these on macOS as well, so asking for it changes nothing.
-    assert_eq!(json_lines(&run(Some("rust"))), rows);
+    // The pure-Rust reader is what decodes these on macOS as well, so asking
+    // for it changes nothing but the last bits a separate CPU run can move.
+    let rust = serde_json::Value::Array(json_lines(&run(Some("rust"))));
+    assert!(same_but_for_rounding(&rust, &serde_json::Value::Array(rows.clone())), "{rust} against {rows:?}");
 }
 
 #[test]
