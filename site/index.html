@@ -51,12 +51,22 @@
               <code id="install-command">curl -fsSL https://cheesejaguar.github.io/tintype/install.sh | sh</code>
               <button type="button" data-copy="install-command" aria-label="Copy macOS and Linux install command" hidden>Copy</button>
             </div>
+            <p class="install-skill-label">Optional Claude Code and Codex skill · install after the CLI</p>
+            <div class="command command-install">
+              <code id="skill-command">curl -fsSL https://cheesejaguar.github.io/tintype/install-skill.sh | sh</code>
+              <button type="button" data-copy="skill-command" aria-label="Copy macOS and Linux agent skill install command" hidden>Copy</button>
+            </div>
           </div>
           <div class="install-panel" id="panel-windows">
             <p class="install-label">Windows, in PowerShell</p>
             <div class="command command-install">
               <code id="install-command-windows">irm https://cheesejaguar.github.io/tintype/install.ps1 | iex</code>
               <button type="button" data-copy="install-command-windows" aria-label="Copy Windows install command" hidden>Copy</button>
+            </div>
+            <p class="install-skill-label">Optional Claude Code and Codex skill · install after the CLI</p>
+            <div class="command command-install">
+              <code id="skill-command-windows">irm https://cheesejaguar.github.io/tintype/install-skill.ps1 | iex</code>
+              <button type="button" data-copy="skill-command-windows" aria-label="Copy Windows agent skill install command" hidden>Copy</button>
             </div>
           </div>
         </div>
@@ -65,6 +75,7 @@
           <a href="https://github.com/cheesejaguar/tintype/blob/main/scripts/install.sh">install.sh</a>
           <a href="https://github.com/cheesejaguar/tintype/blob/main/scripts/install.ps1">install.ps1</a>
           <a href="https://github.com/cheesejaguar/tintype/releases/latest">Downloads</a>
+          <a id="agent-skill" href="https://github.com/cheesejaguar/tintype#agent-skill">Agent skill guide</a>
         </p>
         <p class="install-note">Apple silicon macOS · x86-64, x86 and ARM64 glibc Linux · x86-64 and x86 Windows 10 or later. Bundled weights are <a href="https://github.com/cheesejaguar/tintype/blob/main/models/LICENSE.md">noncommercial</a>.</p>
       </div>
@@ -270,16 +281,6 @@ target/release/tintype provenance provenance-original.png \
               <code id="request-command">curl --fail-with-body -F 'file=@photo.jpg' http://127.0.0.1:8080/v1/detect</code>
               <button type="button" data-copy="request-command" aria-label="Copy API request" hidden>Copy</button>
             </div>
-          </div>
-        </div>
-        <div class="workflow" id="agent-skill">
-          <div>
-            <h3>Use Tintype from an agent</h3>
-            <p>Install the <a href="https://github.com/cheesejaguar/tintype/tree/main/skills/tintype">Agent Skill</a> after the CLI, then ask your agent to review a local photo, clip, or folder.</p>
-          </div>
-          <div class="command">
-            <code id="skill-command">npx skills add cheesejaguar/tintype --skill tintype</code>
-            <button type="button" data-copy="skill-command" aria-label="Copy agent skill install command" hidden>Copy</button>
           </div>
         </div>
       </div>
