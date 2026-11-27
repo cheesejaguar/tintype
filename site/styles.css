@@ -340,11 +340,14 @@ code { font-family: var(--mono); }
   text-wrap: pretty;
 }
 
-.measurement-note {
-  max-width: 90ch;
+.benchmark-followup {
   margin-top: 1rem;
   color: var(--secondary);
-  font-size: .87rem;
+}
+
+.benchmark-followup .text-link {
+  display: inline;
+  margin-top: 0;
 }
 
 .workflow {
@@ -510,17 +513,20 @@ code { font-family: var(--mono); }
 .demo-score { margin-top: .4rem; font: .82rem/1.4 var(--mono); }
 .demo-explain { margin-top: .5rem; font-size: .84rem; line-height: 1.45; color: #d6d1c6; }
 
-.legal {
+.legal, .benchmark-notes {
   max-width: 44rem;
   padding-block: clamp(2.2rem, 4vw, 3.6rem);
 }
 
-.legal h1 { font-size: clamp(3rem, 6vw, 4.8rem); margin-bottom: .6rem; }
-.legal h2 { font: 650 1.12rem/1.3 var(--sans); letter-spacing: 0; margin-top: 2rem; }
-.legal p, .legal ul { margin-top: .7rem; }
+:is(.legal, .benchmark-notes) h1 { font-size: clamp(3rem, 6vw, 4.8rem); margin-bottom: .6rem; }
+:is(.legal, .benchmark-notes) h2 { font: 650 1.12rem/1.3 var(--sans); letter-spacing: 0; margin-top: 2rem; }
+.legal p, .legal ul, .benchmark-notes p { margin-top: .7rem; }
 .legal ul { padding-left: 1.2rem; }
 .legal li + li { margin-top: .35rem; }
 .legal .updated { color: var(--secondary); font: .85rem/1.5 var(--mono); }
+
+.benchmark-notes h1 { max-width: none; }
+.benchmark-notes > .text-link { margin-block: 0 1rem; }
 
 @media (max-width: 51rem) {
   .try { grid-template-columns: minmax(0, 1fr); }
