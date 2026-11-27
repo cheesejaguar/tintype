@@ -1,0 +1,13 @@
+round	detector	seconds	ms_per_image	load1	busy	output
+1	Tintype 0947f3a6 (registered)	5.15	2.573	3.18	-	2000
+1	Tintype origin/main 273e03f3 (B)	5.17	2.586	3.97	-	2000
+1	Tintype photo chunk 4096 (C)	4.50	2.250	3.73	-	2000
+1	BSF (AIGIBench release)	4.84	2.421	4.55	sysmond:25.8	BSF-main: scored 1984, flagged 1056
+2	Tintype origin/main 273e03f3 (B)	5.22	2.610	4.01	-	2000
+2	Tintype photo chunk 4096 (C)	4.53	2.264	5.77	-	2000
+2	BSF (AIGIBench release)	4.88	2.440	6.51	-	BSF-main: scored 1984, flagged 1056
+2	Tintype 0947f3a6 (registered)	5.24	2.619	5.97	-	2000
+3	Tintype photo chunk 4096 (C)	4.50	2.249	6.61	-	2000
+3	BSF (AIGIBench release)	4.91	2.455	6.85	-	BSF-main: scored 1984, flagged 1056
+3	Tintype 0947f3a6 (registered)	5.29	2.644	6.30	-	2000
+3	Tintype origin/main 273e03f3 (B)	5.29	2.644	6.12	-	2000
