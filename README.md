@@ -33,8 +33,8 @@ not a probability that the file is AI-generated ([why](#-reading-the-output)).
 
 | 📷 Photos | 🎬 Video | ⚡ Speed |
 |:---:|:---:|:---:|
-| **0.990** precision · **0.933** recall | **0.997** precision · **0.941** recall | **300–364** photos/s on an Apple GPU |
-| 24,961 photos in batch 9 (not a blind test) | 2,056 clips in 3 blind sets | 540–579 without the second network |
+| **0.990** precision · **0.933** recall | **0.997** precision · **0.941** recall | **442–445** photos/s on an Apple GPU |
+| 24,961 photos in batch 9 (not a blind test) | 2,056 clips in 3 blind sets | benchmark speed sample; BSF 407–413 in the same rounds |
 
 A tintype is a photograph made directly on a metal plate: one exposure, one
 original. This project is about telling that kind of picture from the other
