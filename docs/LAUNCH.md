@@ -17,10 +17,10 @@ The site’s image is the sample bundled in the executable. It was generated wit
 
 With the shipped photo checkpoint on CPU, the default profile returns `likely-real` at a score of 0.420 and the sensitive profile returns `ai-generated` at 0.974. Both output rows report `fixture_label: "ai-generated"` with `--json`. Use this example to explain what the profiles do. Sensitive mode can recover missed detections and can also flag more real images. The score summarizes model evidence at a profile’s operating point.
 
-For agent users, install the CLI first and add the [Tintype Agent Skill](../skills/tintype/SKILL.md).
+For agent users, install the CLI first, then add the [Tintype Agent Skill](../skills/tintype/SKILL.md) to Claude Code and Codex ([other options](../README.md#agent-skill)).
 
 ```sh
-npx skills add cheesejaguar/tintype --skill tintype
+curl -fsSL https://cheesejaguar.github.io/tintype/install-skill.sh | sh
 ```
 
 Try “Use Tintype to screen `./incoming` for signs of AI generation and summarize what should be reviewed.” The skill guides the agent through local scoring and explains what the output can support.
