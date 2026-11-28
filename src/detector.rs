@@ -1348,6 +1348,59 @@ impl Detector {
         self.score_staged(paths.len(), threads, exit, 1, |i| image_io::load(&paths[i]).ok().map(|img| vec![img]))
     }
 
+    /// [`Detector::score_files_adaptive`] and the photo second opinion at
+    /// once. Each photo whose first-stage calibrated logit lies inside `band`
+    /// goes to `second` (the network of [`load_photo_second`]) as soon as its
+    /// first stage is done, while the first stage goes on with the other
+    /// photos: `second_threads` workers of its own read the photo again and
+    /// prepare its view, and the two networks take turns on the GPU. Returns
+    /// the first stage's logits, as [`Detector::score_files_adaptive`] does,
+    /// and `(index, probability)` for each photo asked that could be read, in
+    /// index order, as [`photo_second_opinion_with`] does.
+    ///
+    /// The GPU engine only, where a view's logit does not depend on what it
+    /// is run with (see [`Detector::run_size_changes_logits`]): which photos
+    /// are asked, every view's pixels and every logit are what running the
+    /// two stages one after the other gives. Only when each batch runs, and
+    /// what it is run with, change.
+    #[cfg(target_os = "macos")]
+    pub fn score_files_adaptive_with_second(&self, paths: &[PathBuf], threads: usize, exit: &EarlyExit, second: &Detector, band: &PhotoSecondOpinion, second_threads: usize) -> (Vec<Option<Vec<f32>>>, Vec<(usize, f32)>) {
+        assert!(
+            matches!(self.engine, Engine::Mps { .. }) && matches!(second.engine, Engine::Mps { .. }),
+            "the second opinion runs beside the first stage on the GPU engine only"
+        );
+        let load = |i: usize| image_io::load(&paths[i]).ok().map(|img| vec![img]);
+        let (ask, asked) = crossbeam_channel::unbounded::<usize>();
+        // One network run at a time: the two networks running at once take
+        // longer on the GPU than the same runs one after the other.
+        let turn = std::sync::Mutex::new(());
+        let turn = &turn;
+        let (first, scored) = std::thread::scope(|s| {
+            let lent = OneThreadAtATime(second);
+            let scoring = s.spawn(move || {
+                let second = lent;
+                // Up to two batches of photos wait, prepared, for the network.
+                let queue = 2 * second.0.batch.max(1);
+                second.0.score_stream_from(paths.len(), second_threads, || asked.recv().ok(), queue, load, Some(turn)).0
+            });
+            let frames = |i: usize| load(i).map(|imgs| imgs.into_iter().map(crate::video::Frame::Rgb).collect());
+            let (first, _) = self.score_staged_frames_then(paths.len(), threads, exit, 1, frames, &mut |i, seen| {
+                if band.wanted(self.calibrated_logit(seen)) {
+                    ask.send(i).expect("the second-opinion thread takes photos until the first stage is done");
+                }
+            }, Some(turn));
+            // Nothing more to ask: the second stage finishes what it has.
+            drop(ask);
+            (first, scoring.join().expect("the second-opinion thread finishes"))
+        });
+        let probabilities = scored
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, r)| Some((i, band.probability(self.calibrated_logit(first[i].as_ref()?), r?.first()?[0]))))
+            .collect();
+        (first, probabilities)
+    }
+
     /// Score clips with early exit over frames. `exit` is written in frames:
     /// `order` is the order the frames are looked at, and a stage's `views`
     /// is a number of frames. Every view of a frame is looked at; a clip
@@ -1472,6 +1525,17 @@ impl Detector {
     where
         F: Fn(usize) -> Option<Vec<crate::video::Frame>> + Sync,
     {
+        self.score_staged_frames_then(n_items, threads, exit, images, load, &mut |_, _| {}, None)
+    }
+
+    /// [`Detector::score_staged_frames`], handing each item's logits to
+    /// `done` as soon as the item is finished, on the calling thread. With
+    /// `turn`, each network run holds it, so that the runs of this detector
+    /// and of another one that holds it too never overlap.
+    fn score_staged_frames_then<F>(&self, n_items: usize, threads: usize, exit: &EarlyExit, images: usize, load: F, done: &mut dyn FnMut(usize, &[f32]), turn: Option<&std::sync::Mutex<()>>) -> (Vec<Option<Vec<f32>>>, Timing)
+    where
+        F: Fn(usize) -> Option<Vec<crate::video::Frame>> + Sync,
+    {
         use rayon::prelude::*;
         use std::collections::{HashMap, VecDeque};
         let nv = self.spec.views.len();
@@ -1552,7 +1616,10 @@ impl Detector {
                     let det = engine;
                     for (buf, n) in job_rx {
                         let t = std::time::Instant::now();
-                        let logits = det.0.logits_n(&buf, n, vl);
+                        let logits = {
+                            let _turn = turn.map(|m| m.lock().unwrap_or_else(|e| e.into_inner()));
+                            det.0.logits_n(&buf, n, vl)
+                        };
                         if done_tx.send((logits, buf, t.elapsed().as_secs_f64())).is_err() {
                             break;
                         }
@@ -1608,7 +1675,10 @@ impl Detector {
                         job_tx.send((buf, n)).expect("the network thread is running");
                     } else {
                         let t = std::time::Instant::now();
-                        let logits = self.logits_n(&buf, n, vl);
+                        let logits = {
+                            let _turn = turn.map(|m| m.lock().unwrap_or_else(|e| e.into_inner()));
+                            self.logits_n(&buf, n, vl)
+                        };
                         ran = Some((logits, buf, t.elapsed().as_secs_f64()));
                     }
                     sent.push_back(plan);
@@ -1673,11 +1743,12 @@ impl Detector {
                 } else {
                     moved.iter_mut().for_each(step);
                 }
-                for (i, mut it, _, done) in moved {
-                    let now = if done { 0 } else { it.kept_bytes() };
+                for (i, mut it, _, finished) in moved {
+                    let now = if finished { 0 } else { it.kept_bytes() };
                     kept.fetch_sub(it.kept - now, Ordering::Relaxed);
                     it.kept = now;
-                    if done {
+                    if finished {
+                        done(i, &it.seen);
                         results[i] = Some(it.seen);
                     } else {
                         pending += it.todo.len();
@@ -1767,14 +1838,28 @@ impl Detector {
     where
         F: Fn(usize) -> Option<Vec<Rgb>> + Sync,
     {
+        let next = AtomicUsize::new(0);
+        let next = || Some(next.fetch_add(1, Ordering::Relaxed)).filter(|&i| i < n_items);
+        self.score_stream_from(n_items, threads, next, threads.max(1) * 2, load, None)
+    }
+
+    /// [`Detector::score_stream`] over the items that `next` hands out (each
+    /// at most once, all below `n_items`) until it returns `None`; `queue`
+    /// items may wait, prepared, between the workers and the network. With
+    /// `turn`, each network run holds it (see
+    /// [`Detector::score_staged_frames_then`]).
+    fn score_stream_from<N, F>(&self, n_items: usize, threads: usize, next: N, queue: usize, load: F, turn: Option<&std::sync::Mutex<()>>) -> (Vec<Option<Vec<Vec<f32>>>>, Timing)
+    where
+        N: Fn() -> Option<usize> + Sync,
+        F: Fn(usize) -> Option<Vec<Rgb>> + Sync,
+    {
         let nv = self.spec.views.len();
         let pre = self.preprocessor();
         let vl = pre.fed_len();
         let reuse = self.reuses(false);
-        let next = AtomicUsize::new(0);
         // (item, where each view of each image finds its score among the
         // item's scored views, those views in fed form)
-        let (tx, rx) = crossbeam_channel::bounded::<(usize, Vec<usize>, Vec<u8>)>(threads.max(1) * 2);
+        let (tx, rx) = crossbeam_channel::bounded::<(usize, Vec<usize>, Vec<u8>)>(queue.max(1));
         let mut results: Vec<Option<Vec<Vec<f32>>>> = vec![None; n_items];
         let start = std::time::Instant::now();
         let mut model_s = 0f64;
@@ -1782,21 +1867,19 @@ impl Detector {
             for _ in 0..threads.max(1) {
                 let tx = tx.clone();
                 let (next, pre, load) = (&next, &pre, &load);
-                s.spawn(move || loop {
-                    let i = next.fetch_add(1, Ordering::Relaxed);
-                    if i >= n_items {
-                        break;
-                    }
-                    let Some(imgs) = load(i) else { continue };
-                    let mut at = Vec::with_capacity(imgs.len() * nv);
-                    let mut v = Vec::with_capacity(imgs.len() * nv * vl);
-                    for im in &imgs {
-                        let (own, views) = pre.distinct(im, reuse, true);
-                        at.extend(own.iter().map(|k| v.len() / vl + k));
-                        v.extend_from_slice(&views);
-                    }
-                    if tx.send((i, at, v)).is_err() {
-                        break;
+                s.spawn(move || {
+                    while let Some(i) = next() {
+                        let Some(imgs) = load(i) else { continue };
+                        let mut at = Vec::with_capacity(imgs.len() * nv);
+                        let mut v = Vec::with_capacity(imgs.len() * nv * vl);
+                        for im in &imgs {
+                            let (own, views) = pre.distinct(im, reuse, true);
+                            at.extend(own.iter().map(|k| v.len() / vl + k));
+                            v.extend_from_slice(&views);
+                        }
+                        if tx.send((i, at, v)).is_err() {
+                            break;
+                        }
                     }
                 });
             }
@@ -1810,7 +1893,10 @@ impl Detector {
                     return;
                 }
                 let t = std::time::Instant::now();
-                let logits = self.logits_n(buf, owners.len(), vl);
+                let logits = {
+                    let _turn = turn.map(|m| m.lock().unwrap_or_else(|e| e.into_inner()));
+                    self.logits_n(buf, owners.len(), vl)
+                };
                 model_s += t.elapsed().as_secs_f64();
                 for (k, &i) in owners.iter().enumerate() {
                     acc.entry(i).or_default().push(logits[k]);
