@@ -70,14 +70,33 @@ tintype serve --bind 127.0.0.1:8080
 
 The recursive scanner streams JSON Lines and keeps its models loaded across
 chunks. The server keeps models loaded across requests. See the
-[HTTP API](docs/API.md), [Linux container images](docs/DISTRIBUTION.md#published-images), [hosting on Cloud Run](docs/HOSTING.md), and [agent skill](skills/tintype/SKILL.md).
+[HTTP API](docs/API.md), [Linux container images](docs/DISTRIBUTION.md#published-images), and [hosting on Cloud Run](docs/HOSTING.md).
 
-Install the skill for a supported coding agent after installing the CLI.
+### Agent skill
+
+Install the Tintype CLI above, then run this in a terminal to add the
+skill to Claude Code and Codex.
 
 ```sh
-npx skills add cheesejaguar/tintype --skill tintype
+curl -fsSL https://cheesejaguar.github.io/tintype/install-skill.sh | sh
 ```
 
+On Windows, use PowerShell.
+
+```powershell
+irm https://cheesejaguar.github.io/tintype/install-skill.ps1 | iex
+```
+
+The command installs or updates [the same skill file](skills/tintype/SKILL.md)
+in `~/.claude/skills/tintype/` and `~/.agents/skills/tintype/` for your user
+account. Start a new agent session and ask it to check a local image for
+signs of AI generation. You can also invoke it as `/tintype` in Claude Code
+or `$tintype` in Codex.
+
+To install for just one agent, replace the last `sh` with
+`sh -s -- claude-code` or `sh -s -- codex`. In PowerShell, run
+`& ([scriptblock]::Create((irm https://cheesejaguar.github.io/tintype/install-skill.ps1))) -Agent codex`
+or use `-Agent claude-code`.
 
 ### Inspect an embedded Content Credential
 

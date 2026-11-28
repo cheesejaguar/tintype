@@ -5,14 +5,15 @@ description: >
   when asked to assess a media file, triage a folder, or interpret Tintype
   JSON. The score measures model evidence and video results describe the
   sampled portion of the clip.
-compatibility: Requires the Tintype CLI and compatible local model weights.
 license: MIT OR Apache-2.0
 ---
 
 # Tintype media screening
 
-Run `tintype --version` to check that the CLI is available. If it is missing,
-offer the project installer and explain that the bundled checkpoints are
+Run `tintype --version` to check that the CLI is available in the agent's
+shell. On macOS or Linux, if the command is missing but
+`$HOME/.local/bin/tintype` exists, use that executable. Otherwise, offer
+the CLI installer and explain that the bundled checkpoints are
 CC BY-NC-SA 4.0. Follow the user's environment rules for installing tools.
 
 ```sh
@@ -25,20 +26,22 @@ On Windows, use the PowerShell installer instead.
 irm https://cheesejaguar.github.io/tintype/install.ps1 | iex
 ```
 
-Use paths supplied by the user. Quote each path and put flags before `--`.
-Detection runs locally and accepts a photo or video. Batch scans a directory
-recursively and emits one JSON object per file.
+Use local paths supplied by the user. For a chat attachment, use the original
+file if it is available on disk. Otherwise ask for a local path. Quote each
+path and put flags before `--`. Detection runs locally and accepts photos or
+videos. A batch scans a directory recursively and emits one JSON object per
+file.
 
 ```sh
-tintype detect --json -- "/path/to/media.mp4"
+tintype detect --json -- "/path/to/photo.jpg"
 tintype batch --json -- "/path/to/folder"
 ```
 
-For each relevant file, report the verdict and score, and for video report
-the sampled time span and whether decoding completed. A score above 0.5
-flags media at the chosen operating point. A score of 0.8 expresses model
-evidence on that scale. Report an error row as unreadable and
-`verdict: "inconclusive"` as incomplete analysis. Exit code 2 indicates
+For each relevant file, report the verdict and score. For video, also report
+the sampled time span and whether Tintype gathered enough frames for a
+verdict. Present the score as model evidence on a 0–1 scale and use the
+verdict field for the model's decision. Report an error row as unreadable
+and `verdict: "inconclusive"` as incomplete analysis. Exit code 2 indicates
 some input errors and the other rows are still usable.
 
 The default samples video frames across the first 30 seconds and may stop

@@ -181,12 +181,13 @@ code { font-family: var(--mono); }
   color: var(--ink);
 }
 
-.install-label {
+.install-label, .install-skill-label {
   margin-bottom: .4rem;
   color: var(--secondary);
   font: .8rem/1.5 var(--mono);
 }
 
+.install-skill-label { margin-top: .85rem; }
 .install-panel + .install-panel { margin-top: .9rem; }
 .install.tabbed .install-label { display: none; }
 .install.tabbed .install-panel + .install-panel { margin-top: 0; }

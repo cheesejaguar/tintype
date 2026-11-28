@@ -7,6 +7,8 @@ on:
       - site/**
       - scripts/install.sh
       - scripts/install.ps1
+      - scripts/install-skill.sh
+      - scripts/install-skill.ps1
       - .github/workflows/pages.yml
   release:
     types: [published]
@@ -50,8 +52,17 @@ jobs:
       - run: |
           cp scripts/install.sh site/install.sh
           cp scripts/install.ps1 site/install.ps1
+          cp scripts/install-skill.sh site/install-skill.sh
+          cp scripts/install-skill.ps1 site/install-skill.ps1
           sh -n site/install.sh
-          pwsh -NoProfile -Command '$null = [scriptblock]::Create((Get-Content -Raw site/install.ps1))'
+          sh -n site/install-skill.sh
+          # shellcheck disable=SC2016
+          pwsh -NoProfile -Command '
+            $ErrorActionPreference = "Stop"
+            foreach ($installer in Get-ChildItem site/install*.ps1) {
+              $null = [scriptblock]::Create((Get-Content -Raw -LiteralPath $installer.FullName))
+            }
+          '
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site
