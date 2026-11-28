@@ -1,0 +1,19 @@
+03:16:29 files 24961 chunk 1500 binaries ['B', 'C1', 'C2'] | resuming after 0 chunks
+03:16:49 chunk 0: 1500 files, rows [1500, 1500, 1500], copy 11 s, score 9 s, load 3.06 | cumulative rows 1500, differing rows 0, chunks whose output differs 0
+03:17:12 chunk 1: 1500 files, rows [1500, 1500, 1500], copy 16 s, score 7 s, load 4.63 | cumulative rows 3000, differing rows 0, chunks whose output differs 0
+03:17:38 chunk 2: 1500 files, rows [1500, 1500, 1500], copy 16 s, score 10 s, load 3.70 | cumulative rows 4500, differing rows 0, chunks whose output differs 0
+03:18:16 chunk 3: 1500 files, rows [1500, 1500, 1500], copy 25 s, score 13 s, load 8.30 | cumulative rows 6000, differing rows 0, chunks whose output differs 0
+03:19:01 chunk 4: 1500 files, rows [1500, 1500, 1500], copy 28 s, score 17 s, load 14.02 | cumulative rows 7500, differing rows 0, chunks whose output differs 0
+03:19:19 chunk 5: 1500 files, rows [1500, 1500, 1500], copy 9 s, score 9 s, load 12.82 | cumulative rows 9000, differing rows 0, chunks whose output differs 0
+03:19:51 chunk 6: 1500 files, rows [1500, 1500, 1500], copy 26 s, score 7 s, load 11.94 | cumulative rows 10500, differing rows 0, chunks whose output differs 0
+03:20:26 chunk 7: 1500 files, rows [1500, 1500, 1500], copy 24 s, score 11 s, load 9.78 | cumulative rows 12000, differing rows 0, chunks whose output differs 0
+03:20:45 chunk 8: 1500 files, rows [1500, 1500, 1500], copy 9 s, score 10 s, load 7.55 | cumulative rows 13500, differing rows 0, chunks whose output differs 0
+03:20:59 chunk 9: 1500 files, rows [1500, 1500, 1500], copy 4 s, score 9 s, load 8.43 | cumulative rows 15000, differing rows 0, chunks whose output differs 0
+03:21:14 chunk 10: 1500 files, rows [1500, 1500, 1500], copy 2 s, score 13 s, load 7.39 | cumulative rows 16500, differing rows 0, chunks whose output differs 0
+03:21:25 chunk 11: 1500 files, rows [1500, 1500, 1500], copy 2 s, score 9 s, load 6.80 | cumulative rows 18000, differing rows 0, chunks whose output differs 0
+03:21:36 chunk 12: 1500 files, rows [1500, 1500, 1500], copy 5 s, score 5 s, load 7.41 | cumulative rows 19500, differing rows 0, chunks whose output differs 0
+03:21:48 chunk 13: 1500 files, rows [1500, 1500, 1500], copy 4 s, score 9 s, load 7.26 | cumulative rows 21000, differing rows 0, chunks whose output differs 0
+03:22:09 chunk 14: 1500 files, rows [1500, 1500, 1500], copy 9 s, score 11 s, load 5.91 | cumulative rows 22500, differing rows 0, chunks whose output differs 0
+03:22:57 chunk 15: 1500 files, rows [1500, 1500, 1500], copy 33 s, score 15 s, load 4.16 | cumulative rows 24000, differing rows 0, chunks whose output differs 0
+03:23:23 chunk 16: 961 files, rows [961, 961, 961], copy 16 s, score 10 s, load 6.97 | cumulative rows 24961, differing rows 0, chunks whose output differs 0
+done: rows compared 24961 | rows differing in any field, over all pairs: 0 | chunks whose standard output differs: 0

@@ -1,0 +1,11 @@
+B: exit 0, 1300 rows, 0 errors, 17.2 s
+C1: exit 0, 1300 rows, 0 errors, 16.5 s
+C2: exit 1, 0 rows, 0 errors, 2.9 s
+C1 vs B: standard output byte-identical
+C2 vs B: standard output DIFFERS
+--- rerun after freeing the RAM disk (the first C2 run stopped: No space left on device while writing its GPU cache)
+B: exit 0, 1300 rows, 0 errors, 15.4 s
+C1: exit 0, 1300 rows, 0 errors, 15.4 s
+C2: exit 0, 1300 rows, 0 errors, 17.2 s
+C1 vs B: standard output byte-identical
+C2 vs B: standard output byte-identical
