@@ -1,0 +1,1 @@
+C3 rows 2000 differing rows 0 stdout byte-identical True
