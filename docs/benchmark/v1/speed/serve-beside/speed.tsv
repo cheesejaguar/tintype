@@ -1,0 +1,11 @@
+round	server	seconds	ms_per_image	load1	busy	other_tintype	results	same_results
+1	B	16.007	8.003	4.48	mediaanalysisd:111.2	0	2000	True
+1	C	15.922	7.961	4.31	diskimagesiod:98.6	0	2000	True
+2	C	15.929	7.964	4.03	corespotlightd:168.1;tintype-c4:21.1	0	2000	True
+2	B	16.082	8.041	4.23	tintype-c4:20.3;mediaanalysisd:109.5	0	2000	True
+3	B	16.258	8.129	4.48	mediaanalysisd:87.6	0	2000	True
+3	C	16.336	8.168	4.03	tintype-c3:23.8	0	2000	True
+4	C	16.439	8.219	3.87	tintype-c4:22.6;replayd:25.4	0	2000	True
+4	B	16.402	8.201	3.84	-	0	2000	True
+5	B	16.526	8.263	3.32	tintype-c3:23.4	0	2000	True
+5	C	16.790	8.395	3.02	-	0	2000	True
