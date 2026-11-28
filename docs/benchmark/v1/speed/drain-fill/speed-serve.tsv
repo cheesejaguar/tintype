@@ -1,0 +1,11 @@
+round	server	seconds	ms_per_image	load1	busy	other_tintype	results	same_results
+1	B	16.038	8.019	7.45	FPCKService:90.6	0	2000	True
+1	C	14.604	7.302	6.89	FPCKService:96.8	0	2000	True
+2	C	14.465	7.233	5.96	FPCKService:90.3;tintype-d2:25.1	0	2000	True
+2	B	15.986	7.993	5.22	FPCKService:96.4;tintype-d2:20.9	0	2000	True
+3	B	16.019	8.010	4.80	FPCKService:94.5	0	2000	True
+3	C	15.100	7.550	4.52	FPCKService:90.3;tintype-c3:24.6	0	2000	True
+4	C	14.857	7.429	4.96	FPCKService:84.4;tintype-d2:24.2;diskimagesiod:98.2	0	2000	True
+4	B	16.248	8.124	4.96	FPCKService:91.2;tintype-d2:24.0	0	2000	True
+5	B	16.645	8.323	4.66	FPCKService:94.5	0	2000	True
+5	C	14.954	7.477	4.37	FPCKService:92.2;diskimagesiod:99.5	0	2000	True
