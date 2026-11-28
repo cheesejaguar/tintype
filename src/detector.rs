@@ -1561,34 +1561,23 @@ impl Detector {
             } else {
                 drop((job_rx, done_tx));
             }
-            // The batch the network is running: its items, in slot order.
-            let mut running: Option<Vec<usize>> = None;
-            let mut spare: Vec<Vec<u8>> = vec![Vec::new(), Vec::new()];
+            // Batches given to the network and not yet handed out, oldest
+            // first: their items, in slot order. On the GPU engine a second
+            // batch waits behind the one running, so that the network goes
+            // from one to the next without waiting for this thread, which
+            // meanwhile takes in what the workers finish and hands out the
+            // logits of the batch before.
+            let depth = if pipelined { 2 } else { 1 };
+            let mut sent: VecDeque<Vec<usize>> = VecDeque::new();
+            // The logits of a batch run on this thread (CPU engine).
+            let mut ran: Option<(Vec<f32>, Vec<u8>, f64)> = None;
+            let mut spare: Vec<Vec<u8>> = vec![Vec::new(), Vec::new(), Vec::new()];
             loop {
-                // Gather items; while the network runs, only those already waiting.
-                while pending < self.batch && open && items.len() < in_flight_cap {
-                    let got = if running.is_some() {
-                        match rx.try_recv() {
-                            Ok(x) => Some(x),
-                            Err(crossbeam_channel::TryRecvError::Empty) => break,
-                            Err(crossbeam_channel::TryRecvError::Disconnected) => None,
-                        }
-                    } else {
-                        rx.recv().ok()
-                    };
-                    match got {
-                        Some((i, it)) => {
-                            pending += it.todo.len();
-                            waiting[0].push_back(i);
-                            items.insert(i, it);
-                        }
-                        None => open = false,
-                    }
-                }
-                // The next batch, once it is full or nothing more is coming
-                // (or the network is idle and the loop above has waited).
-                let ready = pending > 0 && (running.is_none() || pending >= self.batch || !open || items.len() >= in_flight_cap);
-                let next = ready.then(|| {
+                // The next batches: a full one whenever there is room for it,
+                // and one that is not full only when nothing more is coming
+                // and the network has nothing else, so that the views the
+                // batch in flight hands on can join it.
+                while sent.len() < depth && pending > 0 && (pending >= self.batch || (sent.is_empty() && (!open || items.len() >= in_flight_cap))) {
                     // One batch, filled from every stage: later stages first,
                     // to finish items and free what they hold.
                     let mut plan: Vec<usize> = Vec::new();
@@ -1615,31 +1604,53 @@ impl Detector {
                         }
                     }
                     pending -= n;
-                    (plan, buf, n)
-                });
-                let (plan, logits) = if let Some(plan) = running.take() {
-                    let (logits, buf, secs) = done_rx.recv().expect("the network thread runs every batch it is given");
-                    model_s += secs;
-                    spare.push(buf);
-                    if let Some((next_plan, buf, n)) = next {
-                        job_tx.send((buf, n)).expect("the network thread is running");
-                        running = Some(next_plan);
-                    }
-                    (plan, logits)
-                } else if let Some((plan, buf, n)) = next {
                     if pipelined {
                         job_tx.send((buf, n)).expect("the network thread is running");
-                        running = Some(plan);
-                        continue;
+                    } else {
+                        let t = std::time::Instant::now();
+                        let logits = self.logits_n(&buf, n, vl);
+                        ran = Some((logits, buf, t.elapsed().as_secs_f64()));
                     }
-                    let t = std::time::Instant::now();
-                    let logits = self.logits_n(&buf, n, vl);
-                    model_s += t.elapsed().as_secs_f64();
-                    spare.push(buf);
-                    (plan, logits)
-                } else {
-                    break;
+                    sent.push_back(plan);
+                }
+                if sent.is_empty() {
+                    if !open {
+                        break;
+                    }
+                    // Nothing for the network yet: wait for the workers.
+                    match rx.recv() {
+                        Ok((i, it)) => {
+                            pending += it.todo.len();
+                            waiting[0].push_back(i);
+                            items.insert(i, it);
+                        }
+                        Err(_) => open = false,
+                    }
+                    continue;
+                }
+                // The oldest batch's logits; while they are on their way,
+                // take in items for the batch after the ones already sent.
+                let (logits, buf, secs) = match ran.take() {
+                    Some(r) => r,
+                    None if open && pending < self.batch && items.len() < in_flight_cap => crossbeam_channel::select! {
+                        recv(rx) -> got => {
+                            match got {
+                                Ok((i, it)) => {
+                                    pending += it.todo.len();
+                                    waiting[0].push_back(i);
+                                    items.insert(i, it);
+                                }
+                                Err(_) => open = false,
+                            }
+                            continue;
+                        }
+                        recv(done_rx) -> r => r.expect("the network thread runs every batch it is given"),
+                    },
+                    None => done_rx.recv().expect("the network thread runs every batch it is given"),
                 };
+                model_s += secs;
+                spare.push(buf);
+                let plan = sent.pop_front().expect("a batch was sent");
                 // Hand each item its logits, then move the items on. Getting
                 // an item's next stage ready can mean converting frames and
                 // resizing, so several items do it side by side.
