@@ -271,8 +271,17 @@ pub fn bundled_photo_second(weights: &Path, spec: &ModelSpec) -> Option<PathBuf>
 /// than one chunk or request loads it once and passes it to
 /// [`photo_second_opinion_with`].
 pub fn load_photo_second(weights2: &Path, batch: usize, device: Device) -> Result<Detector> {
-    Detector::load(weights2, Some(ModelSpec::commfor(384)), batch.max(1), device)
+    let mut det = Detector::load(weights2, Some(ModelSpec::commfor(384)), batch.max(1), device)?;
+    det.prefer_runs_of(SECOND_RUN_VIEWS);
+    Ok(det)
 }
+
+/// Views per GPU run of the second network. A batch is split into runs of
+/// this size (see [`Detector::prefer_runs_of`]): at 384 pixels a 64-view run
+/// holds large attention maps, and on the M6 the GPU gets through 16-view
+/// runs about 8% faster per view (`tintype profile --model-only`: 441 views
+/// per second at 16, 401 at 64).
+const SECOND_RUN_VIEWS: usize = 16;
 
 /// Cutoff of the local-edit check, on the edit model's logit. Frozen on
 /// development data before the blind reads (research `EDIT-HEAD.md`): a
@@ -1003,15 +1012,16 @@ fn gpu_runs(g: &Graph, w: &Weights, cfg: &VitConfig, batch: usize) -> Result<Vec
 }
 
 /// Logits for the views in `x` (`fl` bytes each, any number of them):
-/// runs of the largest batch, then one run of the smallest batch size that
-/// holds what is left, padded.
+/// runs of `unit` views (the largest batch when `None`), then one run of the
+/// smallest batch size that holds what is left, padded. `unit` is one of the
+/// batch sizes in `runs`.
 #[cfg(target_os = "macos")]
-fn gpu_run(g: &Graph, runs: &[Executable], x: &[u8], fl: usize) -> Vec<f32> {
+fn gpu_run(g: &Graph, runs: &[Executable], x: &[u8], fl: usize, unit: Option<usize>) -> Vec<f32> {
     let n = x.len() / fl;
-    let largest = runs.last().expect("at least one batch size").batch();
+    let unit = unit.unwrap_or_else(|| runs.last().expect("at least one batch size").batch());
     let mut out = Vec::with_capacity(n);
     let mut padded = Vec::new();
-    for chunk in x[..n * fl].chunks(largest * fl) {
+    for chunk in x[..n * fl].chunks(unit * fl) {
         let k = chunk.len() / fl;
         let exe = runs.iter().find(|e| e.batch() >= k).expect("the largest batch holds every chunk");
         let feed = if k == exe.batch() {
@@ -1044,6 +1054,10 @@ pub struct Detector {
     pub spec: ModelSpec,
     /// Whether identical views of one image are scored once.
     pub reuse: ViewReuse,
+    /// Views per GPU run when it is not the whole batch (see
+    /// [`Detector::prefer_runs_of`]).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    run_views: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1080,7 +1094,7 @@ impl Detector {
             let runs = vec![g.compile_native(&inp, &shape, &[out])];
             let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
             let warm = Warm::default();
-            return Ok(Self { engine: Engine::Mps { g, runs, pixels, warm }, device, batch, spec, reuse: ViewReuse::from_env() });
+            return Ok(Self { engine: Engine::Mps { g, runs, pixels, warm }, device, batch, spec, reuse: ViewReuse::from_env(), run_views: None });
         }
         let cfg = VitConfig::by_name(&spec.arch, spec.img).ok_or_else(|| anyhow::anyhow!("unknown architecture `{}`", spec.arch))?;
         let engine = match device {
@@ -1104,7 +1118,7 @@ impl Detector {
                 Engine::Cpu { vit }
             }
         };
-        Ok(Self { engine, device, batch, spec, reuse: ViewReuse::from_env() })
+        Ok(Self { engine, device, batch, spec, reuse: ViewReuse::from_env(), run_views: None })
     }
 
     pub fn load(weights: &Path, spec: Option<ModelSpec>, batch: usize, device: Device) -> Result<Self> {
@@ -1142,7 +1156,7 @@ impl Detector {
         }
         let pixels = std::sync::Arc::new(PixelFeed::new(g.prec));
         let warm = warm(&g, &runs);
-        Ok(Self { engine: Engine::Mps { g, runs, pixels, warm }, device, batch, spec, reuse: ViewReuse::from_env() })
+        Ok(Self { engine: Engine::Mps { g, runs, pixels, warm }, device, batch, spec, reuse: ViewReuse::from_env(), run_views: None })
     }
 
     fn view_len(&self) -> usize {
@@ -1206,13 +1220,28 @@ impl Detector {
                     let _ = warming.join();
                 }
                 let fl = self.view_len() * pixels.width();
-                gpu_run(g, runs, x, fl)
+                gpu_run(g, runs, x, fl, self.run_views)
             }
             Engine::Cpu { vit } => {
                 crate::stats::NETWORK_RUNS.add(1);
                 vit.forward(x)
             }
         }
+    }
+
+    /// On the GPU engine, run the network in runs of the smallest batch size
+    /// it has of at least `views` views, rather than of the whole batch;
+    /// every batch size it has gives the whole batch's logits bit for bit
+    /// ([`gpu_runs`]), so no logit changes. Without such a size, or on the
+    /// CPU engine, nothing changes. What the detector is given at a time,
+    /// and the pipelines' batches, stay as they are.
+    pub fn prefer_runs_of(&mut self, views: usize) {
+        #[cfg(target_os = "macos")]
+        if let Engine::Mps { runs, .. } = &self.engine {
+            self.run_views = runs.iter().map(Executable::batch).filter(|&b| b >= views).min();
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = views;
     }
 
     /// The preprocessing half of the detector; unlike the GPU graph it is
