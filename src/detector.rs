@@ -1394,11 +1394,22 @@ impl Detector {
     /// what it is run with, change.
     #[cfg(target_os = "macos")]
     pub fn score_files_adaptive_with_second(&self, paths: &[PathBuf], threads: usize, exit: &EarlyExit, second: &Detector, band: &PhotoSecondOpinion, second_threads: usize) -> (Vec<Option<Vec<f32>>>, Vec<(usize, f32)>) {
+        self.score_staged_with_second(paths.len(), threads, exit, second, band, second_threads, |i| image_io::load(&paths[i]).ok())
+    }
+
+    /// [`Detector::score_files_adaptive_with_second`] over `n_items` photos
+    /// that `load(i)` reads: once for the first stage, and again for each
+    /// photo the second network is asked about.
+    #[cfg(target_os = "macos")]
+    pub fn score_staged_with_second<F>(&self, n_items: usize, threads: usize, exit: &EarlyExit, second: &Detector, band: &PhotoSecondOpinion, second_threads: usize, load: F) -> (Vec<Option<Vec<f32>>>, Vec<(usize, f32)>)
+    where
+        F: Fn(usize) -> Option<Rgb> + Sync,
+    {
         assert!(
             matches!(self.engine, Engine::Mps { .. }) && matches!(second.engine, Engine::Mps { .. }),
             "the second opinion runs beside the first stage on the GPU engine only"
         );
-        let load = |i: usize| image_io::load(&paths[i]).ok().map(|img| vec![img]);
+        let load = |i: usize| load(i).map(|img| vec![img]);
         let (ask, asked) = crossbeam_channel::unbounded::<usize>();
         // One network run at a time: the two networks running at once take
         // longer on the GPU than the same runs one after the other.
@@ -1406,14 +1417,15 @@ impl Detector {
         let turn = &turn;
         let (first, scored) = std::thread::scope(|s| {
             let lent = OneThreadAtATime(second);
+            let load = &load;
             let scoring = s.spawn(move || {
                 let second = lent;
                 // Up to two batches of photos wait, prepared, for the network.
                 let queue = 2 * second.0.batch.max(1);
-                second.0.score_stream_from(paths.len(), second_threads, || asked.recv().ok(), queue, load, Some(turn)).0
+                second.0.score_stream_from(n_items, second_threads, || asked.recv().ok(), queue, load, Some(turn)).0
             });
             let frames = |i: usize| load(i).map(|imgs| imgs.into_iter().map(crate::video::Frame::Rgb).collect());
-            let (first, _) = self.score_staged_frames_then(paths.len(), threads, exit, 1, frames, &mut |i, seen| {
+            let (first, _) = self.score_staged_frames_then(n_items, threads, exit, 1, frames, &mut |i, seen| {
                 if band.wanted(self.calibrated_logit(seen)) {
                     ask.send(i).expect("the second-opinion thread takes photos until the first stage is done");
                 }

@@ -888,6 +888,22 @@ fn score_uploads(
     files: Vec<Upload>,
     cancelled: impl Fn() -> bool + Sync,
 ) -> Option<Vec<Value>> {
+    score_uploads_as(photo, second, clip, frames, bands, files, cancelled, true)
+}
+
+/// [`score_uploads`]; without `beside_allowed` the second opinion always
+/// runs after the first stage, for checking that the two give the same.
+#[allow(clippy::too_many_arguments)]
+fn score_uploads_as(
+    photo: &Detector,
+    second: Option<&Detector>,
+    clip: Option<&Detector>,
+    frames: usize,
+    bands: Bands,
+    files: Vec<Upload>,
+    cancelled: impl Fn() -> bool + Sync,
+    beside_allowed: bool,
+) -> Option<Vec<Value>> {
     if cancelled() {
         return None;
     }
@@ -923,44 +939,45 @@ fn score_uploads(
             .early_exit
             .as_ref()
             .filter(|e| e.covers(photo.spec.views.len()));
-        let (scores, _) = match exit {
-            Some(exit) => {
-                photo.score_staged(images.len(), 2, exit, 1, |i| {
-                    if cancelled() {
-                        return None;
-                    }
-                    decode_image(&images[i].1.bytes)
-                        .ok()
-                        .filter(|_| !cancelled())
-                        .map(|image| vec![image])
-                })
+        let read = |i: usize| {
+            if cancelled() {
+                return None;
             }
-            None => {
-                let (scores, time) = photo.score_stream(images.len(), 2, |i| {
-                    if cancelled() {
-                        return None;
-                    }
-                    decode_image(&images[i].1.bytes)
-                        .ok()
-                        .filter(|_| !cancelled())
-                        .map(|image| vec![image])
-                });
-                (
-                    scores
-                        .into_iter()
-                        .map(|s| s.map(|mut v| v.remove(0)))
-                        .collect(),
-                    time,
-                )
+            decode_image(&images[i].1.bytes).ok().filter(|_| !cancelled())
+        };
+        // On the GPU engine the second opinion runs beside early exit, as in
+        // `batch` (see `Detector::score_staged_with_second`): the same
+        // photos are asked and every logit is the same.
+        let band = photo.spec.second_opinion;
+        let beside = cfg!(target_os = "macos")
+            && beside_allowed
+            && exit.is_some()
+            && band.is_some()
+            && second.is_some_and(|second| !second.device().is_cpu() && !photo.device().is_cpu());
+        let mut blended: Vec<Option<f32>> = vec![None; images.len()];
+        let scores: Vec<Option<Vec<f32>>> = match exit {
+            #[cfg(target_os = "macos")]
+            Some(exit) if beside => {
+                let (scores, asked) = photo.score_staged_with_second(images.len(), 2, exit, second.unwrap(), band.as_ref().unwrap(), 1, read);
+                for (k, p) in asked {
+                    blended[k] = Some(p).filter(|p| p.is_finite());
+                }
+                scores
             }
+            Some(exit) => photo.score_staged(images.len(), 2, exit, 1, |i| read(i).map(|image| vec![image])).0,
+            None => photo
+                .score_stream(images.len(), 2, |i| read(i).map(|image| vec![image]))
+                .0
+                .into_iter()
+                .map(|s| s.map(|mut v| v.remove(0)))
+                .collect(),
         };
         if cancelled() {
             return None;
         }
         // The second opinion: the photos inside the band, scored once more by
         // the second network and blended, as `detect` does.
-        let mut blended: Vec<Option<f32>> = vec![None; images.len()];
-        if let Some((second, band)) = second.zip(photo.spec.second_opinion) {
+        if let Some((second, band)) = second.zip(band).filter(|_| !beside) {
             let first: Vec<Option<f32>> = scores
                 .iter()
                 .map(|s| s.as_ref().map(|l| photo.calibrated_logit(l)))
@@ -969,15 +986,7 @@ fn score_uploads(
                 .filter(|&k| first[k].is_some_and(|z| band.wanted(z)))
                 .collect();
             if !pick.is_empty() {
-                let (res, _) = second.score_stream(pick.len(), 2, |j| {
-                    if cancelled() {
-                        return None;
-                    }
-                    decode_image(&images[pick[j]].1.bytes)
-                        .ok()
-                        .filter(|_| !cancelled())
-                        .map(|image| vec![image])
-                });
+                let (res, _) = second.score_stream(pick.len(), 2, |j| read(pick[j]).map(|image| vec![image]));
                 if cancelled() {
                     return None;
                 }
@@ -1117,6 +1126,58 @@ mod tests {
     use axum::body::{to_bytes, Body};
     use std::io::Cursor;
     use tower::ServiceExt;
+
+    /// The second opinion run beside early exit answers as running it after
+    /// the first stage does, field for field. Needs the Apple GPU:
+    /// `cargo test --release --lib server -- --ignored`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn the_second_opinion_beside_early_exit_answers_as_after_it() {
+        let dir = std::env::temp_dir().join(format!("tintype-test-serve-beside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The only test selected with --ignored here, so the only one that reads this.
+        std::env::set_var("TINTYPE_GPU_CACHE", dir.join("gpu-cache"));
+        let models = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("models");
+        let mut photos = Photos::new(models.join("tintype.safetensors"), Device::Gpu, false).unwrap();
+        let shipped = photos.standard.spec.second_opinion.expect("the shipped model has a band");
+        let second = crate::detector::load_photo_second(&models.join(crate::detector::BUNDLED_PHOTO_SECOND), 32, Device::Gpu).unwrap();
+        let sizes = [(120, 90), (224, 224), (224, 300), (448, 224), (320, 256), (640, 480), (500, 700), (800, 600)];
+        let uploads = || -> Vec<Upload> {
+            let mut files: Vec<Upload> = (0..15u32)
+                .map(|k| {
+                    let (w, h) = sizes[k as usize % sizes.len()];
+                    let picture = image::RgbImage::from_fn(w, h, |x, y| {
+                        let mut v = x.wrapping_mul(0x9E37_79B1) ^ y.wrapping_mul(0x85EB_CA77) ^ (k + 1).wrapping_mul(0xC2B2_AE3D);
+                        v ^= v >> 15;
+                        v = v.wrapping_mul(0x2C1B_3C6D);
+                        let grain = (v >> 12) % (4 + 6 * (k % 5));
+                        image::Rgb([((x * 255 / w) + grain) as u8, ((y * 255 / h) + grain) as u8, ((x + y + 30 * k) % 256) as u8])
+                    });
+                    let mut png = Vec::new();
+                    picture.write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+                    Upload { name: format!("{k:02}.png"), bytes: png }
+                })
+                .collect();
+            files.insert(6, Upload { name: "broken.png".into(), bytes: b"broken".to_vec() });
+            files
+        };
+        // The shipped band, and one that asks about every photo.
+        for band in [shipped, crate::detector::PhotoSecondOpinion { lo: -1e6, hi: 1e6, ..shipped }] {
+            photos.standard.spec.second_opinion = Some(band);
+            let photo = &photos.standard;
+            let after = score_uploads_as(photo, Some(&second), None, 0, Bands::default(), uploads(), || false, false).unwrap();
+            let beside = score_uploads_as(photo, Some(&second), None, 0, Bands::default(), uploads(), || false, true).unwrap();
+            assert_eq!(beside, after, "{band:?}");
+            assert_eq!(after.len(), 16);
+            assert!(after[6].get("error").is_some());
+            if band.lo < -1e5 {
+                assert!(after.iter().filter(|r| r.get("error").is_none()).all(|r| r["second_opinion"] == true), "{after:?}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn request(method: &str, uri: &str, auth: Option<&str>, files: &[(&str, &[u8])]) -> Request {
         let mut request = Request::builder().method(method).uri(uri);
