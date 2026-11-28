@@ -41,11 +41,17 @@ The timed runs came after gate 1 and before gates 2 and 3, as registered.
 
 ## Speed
 
-The Apple M6, with the speed sample on a RAM disk. No other `tintype`
-process ran during any timed pass. `FPCKService`, a system file-provider
-check, used about 90% of one core throughout. The research session had
-said a short GPU read of its own would start around this time; whether it
-overlapped these runs is not known, so treat them as possibly shared.
+The Apple M6, with the speed sample on a RAM disk. **The GPU was free.**
+The research session's two GPU reads ran from 04:27:28 to 04:28:01 and from
+about 04:29:20 to 04:29:42, before these runs began. Nothing of its ran on
+the GPU from 04:30 on.
+
+The CPU was not quiet:
+- the research session's network-bound jobs ran throughout (OpenRouter
+  generation and the blind-2 fetch), as during `../e2e-overlap/RESULT-3.md`;
+- `FPCKService`, a system file-provider check, used about 90% of one core.
+
+No other `tintype` process ran during any timed pass.
 
 ### `serve`: D is faster
 
