@@ -1,0 +1,2 @@
+C1 rows 2000 differing rows 0 stdout byte-identical True
+C2 rows 2000 differing rows 0 stdout byte-identical True

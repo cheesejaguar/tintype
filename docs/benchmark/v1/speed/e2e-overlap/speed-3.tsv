@@ -1,0 +1,15 @@
+round	binary	seconds	ms_per_image	load1	busy	other_processes	rows	same_rows
+1	B	4.560	2.280	2.69	trustd:32.4;swtransparencyd:59.9;spotlightknowledged.updater:28.0;privatecloudcomputed:90.4;diskimagesiod:59.9	-	2000	True
+1	C3	3.845	1.922	2.64	-	-	2000	True
+2	C3	3.944	1.972	3.55	-	-	2000	True
+2	B	4.479	2.240	7.03	-	-	2000	True
+3	B	4.540	2.270	6.78	-	-	2000	True
+3	C3	3.949	1.975	6.40	diskimagesiod:97.7	-	2000	True
+4	C3	3.884	1.942	6.21	-	-	2000	True
+4	B	4.477	2.238	7.07	-	-	2000	True
+5	B	4.520	2.260	7.63	-	-	2000	True
+5	C3	3.986	1.993	8.30	-	-	2000	True
+6	C3	4.129	2.065	8.35	diskimagesiod:99.6	-	2000	True
+6	B	4.696	2.348	7.84	Grok Bot:37.9	-	2000	True
+7	B	4.775	2.387	7.38	diskimagesiod:22.5	-	2000	True
+7	C3	4.238	2.119	6.95	-	-	2000	True

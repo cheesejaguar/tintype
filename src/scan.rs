@@ -401,21 +401,40 @@ impl Scan {
             !self.options.fast && !self.options.all_views && e.covers(det.spec.views.len())
         });
         let threads = self.threads.min(paths.len());
-        let (logits, _) = match exit {
-            Some(e)
-                if !warm
-                    && !self.photo_device.is_cpu()
-                    && paths.len() <= 64 / det.spec.views.len() =>
-            {
-                let (all, timing) = det.score_files(paths, threads);
+        let band = det.spec.second_opinion;
+        // A few photos to `detect` are scored in one go, without early exit.
+        let few = !warm && !self.photo_device.is_cpu() && paths.len() <= 64 / det.spec.views.len();
+        // On the GPU engine the second opinion runs beside early exit (see
+        // `Detector::score_files_adaptive_with_second`).
+        let beside = cfg!(target_os = "macos")
+            && exit.is_some()
+            && !few
+            && self.photo_second.is_some()
+            && band.is_some()
+            && !self.photo_device.is_cpu()
+            && !self.device.is_cpu();
+        if beside && self.photo_second_det.is_none() {
+            let batch = if warm { 64 } else { 64.min(paths.len()) };
+            let weights = self.photo_second.as_ref().unwrap();
+            self.photo_second_det = Some(detector::load_photo_second(weights, batch, self.device)?);
+        }
+        let (logits, asked) = match exit {
+            #[cfg(target_os = "macos")]
+            Some(e) if beside => {
+                let second = self.photo_second_det.as_ref().unwrap();
+                let (logits, asked) = det.score_files_adaptive_with_second(paths, threads, e, second, band.as_ref().unwrap(), (threads / 2).max(1));
+                (logits, Some(asked))
+            }
+            Some(e) if few => {
+                let (all, _) = det.score_files(paths, threads);
                 let seen = all
                     .into_iter()
                     .map(|r| r.map(|l| e.looked_at(&l, det.threshold_logit())))
                     .collect();
-                (seen, timing)
+                (seen, None)
             }
-            Some(e) => det.score_files_adaptive(paths, threads, e),
-            None => det.score_files(paths, threads),
+            Some(e) => (det.score_files_adaptive(paths, threads, e).0, None),
+            None => (det.score_files(paths, threads).0, None),
         };
         let mut rows: Vec<_> = paths
             .iter()
@@ -434,27 +453,28 @@ impl Scan {
             })
             .collect();
         if let Some(weights) = &self.photo_second {
-            let band = det
-                .spec
-                .second_opinion
-                .context("the photo model has no second-opinion band")?;
-            let first: Vec<_> = logits
-                .iter()
-                .map(|r| r.as_ref().map(|l| det.calibrated_logit(l)))
-                .collect();
-            if !warm {
-                // One chunk only: make room for the second network.
-                self.photo = None;
-            }
-            if self.photo_second_det.is_none() {
-                let batch = if warm { 64 } else { 64.min(paths.len()) };
-                self.photo_second_det =
-                    Some(detector::load_photo_second(weights, batch, self.device)?);
-            }
-            let second = self.photo_second_det.as_ref().unwrap();
-            for (i, score) in
-                detector::photo_second_opinion_with(second, &band, paths, &first, threads).0
-            {
+            let band = band.context("the photo model has no second-opinion band")?;
+            let scored = match asked {
+                Some(scored) => scored,
+                None => {
+                    let first: Vec<_> = logits
+                        .iter()
+                        .map(|r| r.as_ref().map(|l| det.calibrated_logit(l)))
+                        .collect();
+                    if !warm {
+                        // One chunk only: make room for the second network.
+                        self.photo = None;
+                    }
+                    if self.photo_second_det.is_none() {
+                        let batch = if warm { 64 } else { 64.min(paths.len()) };
+                        self.photo_second_det =
+                            Some(detector::load_photo_second(weights, batch, self.device)?);
+                    }
+                    let second = self.photo_second_det.as_ref().unwrap();
+                    detector::photo_second_opinion_with(second, &band, paths, &first, threads).0
+                }
+            };
+            for (i, score) in scored {
                 if score.is_finite() {
                     rows[i].score = Some(score);
                     rows[i].calibrated = review::logit_of(score);
