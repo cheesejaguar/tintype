@@ -69,7 +69,7 @@ re-time under `../PROTOCOL.md` on an idle machine.
   logit are the same, so precision and recall are unchanged.
 - C3 changes only how the second network's batches are run on the GPU. It
   applies wherever that network runs on the GPU engine: `batch`, `detect`,
-  `serve` and `demo`.
+  `serve`, `demo` and `evaluate`.
 - Peak resident memory of C3 on the speed sample was 1.95 and 2.00 GB in
   two runs, against 1.62 and 1.68 GB for origin/main, measured with
   `/usr/bin/time -l` after the timed run. User CPU time was the same, about
