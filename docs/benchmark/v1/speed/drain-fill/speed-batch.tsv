@@ -1,0 +1,11 @@
+round	binary	seconds	ms_per_image	load1	busy	other_processes	rows	same_rows
+1	B	4.037	2.018	4.21	FPCKService:91.6	-	2000	True
+1	D	4.194	2.097	5.40	FPCKService:89.5	-	2000	True
+2	D	4.360	2.180	5.40	FPCKService:86.8	-	2000	True
+2	B	4.434	2.217	6.49	FPCKService:85.5	-	2000	True
+3	B	4.621	2.310	6.21	FPCKService:88.6	-	2000	True
+3	D	4.515	2.258	7.55	FPCKService:85.5;diskimagesiod:98.6	-	2000	True
+4	D	4.459	2.230	8.63	FPCKService:89.5	-	2000	True
+4	B	4.524	2.262	9.54	corespotlightd:148.3;FPCKService:87.2	-	2000	True
+5	B	4.521	2.260	10.38	FPCKService:90.3	-	2000	True
+5	D	4.407	2.204	10.83	FPCKService:89.8	-	2000	True

@@ -787,6 +787,11 @@ struct Staged {
     stage: usize,
     /// Units that stage still has to put through the network.
     todo: Vec<usize>,
+    /// Units of later stages going through the network with `todo`, in
+    /// slots the run would otherwise fill with padding.
+    ahead: Vec<usize>,
+    /// Units that went through the network before their stage was reached.
+    early: Vec<bool>,
     /// Bytes of its images counted against [`KEPT_IMAGE_BYTES`].
     kept: usize,
 }
@@ -804,6 +809,8 @@ impl Staged {
             seen: Vec::with_capacity(units),
             stage: 0,
             todo: Vec::new(),
+            ahead: Vec::new(),
+            early: vec![false; units],
             kept: 0,
         }
     }
@@ -900,6 +907,28 @@ impl Stages<'_> {
         it.todo = todo;
     }
 
+    /// Up to `free` units of the stages after the one `it` is waiting for,
+    /// nearest stage first, to go through the network in a run's padding
+    /// slots: units that are their own `same`, are cut out already and have
+    /// no logit yet. Each joins `it.ahead`.
+    fn ahead(&self, it: &mut Staged, depth: usize, free: &mut usize) -> bool {
+        let k = it.stage + depth;
+        if k >= self.checkpoints.len() {
+            return false;
+        }
+        for &u in self.looked(k) {
+            if *free == 0 {
+                break;
+            }
+            // A unit the stage scores already, as the first with its pixels, is left out.
+            if it.same[u] == u && it.logit[u].is_none() && it.fed[u].is_some() && !it.todo.contains(&u) && !it.ahead.contains(&u) {
+                it.ahead.push(u);
+                *free -= 1;
+            }
+        }
+        true
+    }
+
     /// Cut out every view of every image now and drop the images: what the
     /// pipeline did for every item before it kept images.
     fn prepare_everything(&self, it: &mut Staged) {
@@ -921,7 +950,8 @@ impl Stages<'_> {
     fn advance(&self, it: &mut Staged, mut scored: usize) -> bool {
         loop {
             let looked = self.looked(it.stage);
-            crate::stats::REUSED_VIEWS.add(looked.len() - scored);
+            let early = looked.iter().filter(|&&u| it.early[u]).count();
+            crate::stats::REUSED_VIEWS.add(looked.len() - scored - early);
             scored = 0;
             it.seen.extend(looked.iter().map(|&u| it.logit[it.same[u]].expect("scored in this stage or an earlier one")));
             if it.seen.len() == self.units || self.exit.decided(&it.seen, self.thr) {
@@ -1226,6 +1256,21 @@ impl Detector {
                 crate::stats::NETWORK_RUNS.add(1);
                 vit.forward(x)
             }
+        }
+    }
+
+    /// How many views the engine computes for a run of `n` views: on the GPU
+    /// engine `n` padded up to the batch sizes it runs (see [`gpu_run`]), on
+    /// the CPU engine `n`.
+    fn run_slots(&self, n: usize) -> usize {
+        match &self.engine {
+            #[cfg(target_os = "macos")]
+            Engine::Mps { runs, .. } => {
+                let unit = self.run_views.unwrap_or_else(|| runs.last().expect("at least one batch size").batch());
+                let rest = n % unit;
+                n - rest + if rest == 0 { 0 } else { runs.iter().map(Executable::batch).filter(|&b| b >= rest).min().expect("the largest batch holds every chunk") }
+            }
+            Engine::Cpu { .. } => n,
         }
     }
 
@@ -1689,17 +1734,37 @@ impl Detector {
                             n += per;
                         }
                     }
+                    // A run that is not full is padded on the GPU engine. Its
+                    // padding slots take views the same items would look at
+                    // next and that are cut out already: an item that gets
+                    // there finds them scored and needs no run of its own for
+                    // them. A view's logit does not depend on what it is run
+                    // with, so nothing an item looks at changes.
+                    pending -= n;
+                    let mut free = self.run_slots(n) - n;
+                    let mut depth = 1;
+                    while free > 0 {
+                        let mut further = false;
+                        for i in &plan {
+                            further |= stages.ahead(items.get_mut(i).unwrap(), depth, &mut free);
+                        }
+                        if !further {
+                            break;
+                        }
+                        depth += 1;
+                    }
                     let mut buf = spare.pop().unwrap_or_default();
-                    buf.resize(n * vl, 0);
                     let mut slot = 0;
                     for i in &plan {
                         let it = items.get_mut(i).unwrap();
-                        for &u in &it.todo {
+                        buf.resize((slot + it.todo.len() + it.ahead.len()) * vl, 0);
+                        for &u in it.todo.iter().chain(&it.ahead) {
                             buf[slot * vl..(slot + 1) * vl].copy_from_slice(&it.fed[u].take().expect("a view is prepared until it is scored"));
                             slot += 1;
                         }
                     }
-                    pending -= n;
+                    let n = slot;
+                    buf.truncate(n * vl);
                     if pipelined {
                         job_tx.send((buf, n)).expect("the network thread is running");
                     } else {
@@ -1761,6 +1826,11 @@ impl Detector {
                         let scored = it.todo.len();
                         for u in std::mem::take(&mut it.todo) {
                             it.logit[u] = Some(logits[at]);
+                            at += 1;
+                        }
+                        for u in std::mem::take(&mut it.ahead) {
+                            it.logit[u] = Some(logits[at]);
+                            it.early[u] = true;
                             at += 1;
                         }
                         (i, it, scored, false)

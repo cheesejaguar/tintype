@@ -1,0 +1,2 @@
+04:32:25 folder: 2000 files, batch rows [2000, 2000], batch rows differing 0, batch output differs 0, served results differing 0, served vs batch disagreements 0, request seconds B 15.7 C 14.1, load 8.16
+done: files 2000 | batch rows differing 0 | batch output differs 0 | served results differing 0 | served vs batch disagreements 0

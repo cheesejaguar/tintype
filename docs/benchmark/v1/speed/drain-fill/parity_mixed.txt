@@ -1,0 +1,5 @@
+B: batch exit 0, 1300 rows, served 1300 results in 38.4 s, served vs batch disagreements 300 (photos 0)
+C: batch exit 0, 1300 rows, served 1300 results in 38.4 s, served vs batch disagreements 300 (photos 0)
+batch standard output C vs B: byte-identical
+served results C vs B: 0 differ
+served vs batch disagreements the same, file for file and field for field, for B and C: True
